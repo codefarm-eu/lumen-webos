@@ -60,6 +60,10 @@ export interface UserConfig {
 	weatherCountry: string;
 	/** weather place: '' = from the internet connection, else a name from config/cities.ts */
 	weatherCity: string;
+	/** a place found from a postcode or a name (Settings > Weather > Postcode or place), used while weatherCity is '@postcode'; null = none */
+	weatherPlace: WeatherPlace | null;
+	/** Settings > Home Screen > Home opens Lumen: the Home watcher installed from the app and its takeover on (lib/root.ts setHomeTakeover) */
+	homeTakeover: boolean;
 	/** app folders: apps listed here are shown inside the folder, not on the rows */
 	folders: {name: string; appIds: string[]}[];
 	/** no transitions or animations */
@@ -132,6 +136,8 @@ export const DEFAULT_CONFIG: UserConfig = {
 	showWeather: true,
 	weatherCountry: '',
 	weatherCity: '',
+	weatherPlace: null,
+	homeTakeover: false,
 	folders: [],
 	reduceMotion: false,
 	hideNames: false,
@@ -171,6 +177,23 @@ export function hasSavedConfig (): boolean {
 	try { return localStorage.getItem(STORAGE_KEY) !== null; } catch { return false; }
 }
 
+export interface WeatherPlace {
+	/** what was typed ("CF10 3AT") */
+	query: string;
+	/** short, under the clock ("Cathays") */
+	name: string;
+	/** in full, in Settings ("Cathays, Cardiff · CF10 3AT") */
+	label: string;
+	lat: number;
+	lon: number;
+}
+
+function parsePlace (v: unknown): WeatherPlace | null {
+	const p = v as Partial<WeatherPlace> | null | undefined;
+	if (!p || typeof p !== 'object' || typeof p.name !== 'string' || typeof p.lat !== 'number' || typeof p.lon !== 'number' || !isFinite(p.lat) || !isFinite(p.lon)) return null;
+	return {query: typeof p.query === 'string' ? p.query : '', name: p.name, label: typeof p.label === 'string' ? p.label : p.name, lat: p.lat, lon: p.lon};
+}
+
 /** A config from JSON, with every field checked and anything missing or wrong replaced by its default. Throws on malformed JSON. */
 export function parseConfig (raw: string): UserConfig {
 	const parsed = JSON.parse(raw) as Partial<UserConfig>;
@@ -197,6 +220,8 @@ export function parseConfig (raw: string): UserConfig {
 		showWeather: parsed.showWeather !== false,
 		weatherCountry: typeof parsed.weatherCountry === 'string' ? parsed.weatherCountry : '',
 		weatherCity: typeof parsed.weatherCity === 'string' ? parsed.weatherCity : '',
+		weatherPlace: parsePlace(parsed.weatherPlace),
+		homeTakeover: parsed.homeTakeover === true,
 		folders: Array.isArray(parsed.folders) ? parsed.folders : [],
 		reduceMotion: parsed.reduceMotion === true,
 		hideNames: parsed.hideNames === true,

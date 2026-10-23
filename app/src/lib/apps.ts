@@ -10,7 +10,8 @@
 import {APP_CATALOG, type CatalogApp} from '../config/catalog';
 import {APP_ID} from '../config/constants';
 import {isWebOS} from './luna';
-import {listLaunchPoints, readIcons} from './root';
+import {appInfo, listLaunchPoints, readIcons} from './root';
+import {lunaCall} from './luna';
 import {appExists} from './launch';
 import {ICON_PACK} from '../config/iconpack';
 import {SYSTEM_APPS} from '../config/systemApps';
@@ -92,16 +93,29 @@ function addSystemApps (list: AppList): Promise<AppList> {
 	const have = list.apps.map((a) => a.id);
 	const extra = SYSTEM_APPS.filter((a) => have.indexOf(a.id) === -1);
 	const check = isWebOS() ? Promise.all(extra.map((a) => appExists(a.id))) : Promise.resolve(extra.map(() => true));
-	return check.then((present) => ({...list, apps: list.apps.concat(extra.filter((_, i) => present[i]).map((a) => ({id: a.id, title: a.title, iconUrl: packIcon(a.id, a.title), color: a.color})))}));
+	return check.then((present) => {
+		const found = extra.filter((_, i) => present[i]);
+		// the TV's own icon for each, as for the other apps (only with the Homebrew Channel: the app manager's app info is read as root)
+		const points = list.source === 'homebrew' ? Promise.all(found.map((a) => appInfo(a.id).then((info): LaunchPoint => ({id: a.id, title: a.title, ...iconFields(info)})).catch((): LaunchPoint => ({id: a.id, title: a.title}))))
+			: Promise.resolve(found.map((a): LaunchPoint => ({id: a.id, title: a.title})));
+		return points.then((pts) => loadIcons(pts, list.source === 'homebrew').then((icons) => Promise.all(found.map((a, i) => {
+			const pack = packIcon(a.id, a.title);
+			return withIconColor({id: a.id, title: a.title, iconUrl: pack || icons[a.id], color: tvColor(pts[i]) || a.color, plain: !pack && !!icons[a.id]});
+		})))).then((apps) => ({...list, apps: list.apps.concat(apps)}));
+	});
 }
 
 function listAppsBase (useHomebrew: boolean): Promise<AppList> {
 	if (!isWebOS()) return Promise.all(catalogEntries(APP_CATALOG).map(withIconColor)).then((apps): AppList => ({apps, source: 'catalog'}));
 	const catalog = () => listViaCatalog().then((apps): AppList => ({apps, source: 'catalog'}));
-	if (!useHomebrew) return catalog();
+	// without root, the app manager's list may still be open to apps (it is not on webOS 6); its icons then load as files or not at all
+	const direct = () => lunaCall<{launchPoints?: LaunchPoint[]}>(LIST_LAUNCH_POINTS, {}, 8000, true)
+		.then((r) => fromLaunchPoints(r.launchPoints, false))
+		.then((apps): AppList => ({apps, source: 'catalog'}), catalog);
+	if (!useHomebrew) return direct();
 	return listViaHomebrew()
 		.then((apps): AppList => ({apps, source: 'homebrew'}))
-		.catch(catalog);
+		.catch(direct);
 }
 
 // ---------- provider 1: catalogue ----------
@@ -126,7 +140,27 @@ function listViaCatalog (): Promise<AppEntry[]> {
 
 // ---------- provider 2: Homebrew Channel (opt-in) ----------
 
-interface LaunchPoint { id: string; title: string; largeIcon?: string; icon?: string; }
+/** a launch point as applicationManager/listLaunchPoints (and getAppInfo) gives it: absolute icon paths on the TV
+ *  (/usr/palm/applications/<id>/..., /media/cryptofs/apps/usr/palm/applications/<id>/...), and the colours LG's launcher draws them on */
+interface LaunchPoint { id: string; title: string; largeIcon?: string; mediumLargeIcon?: string; icon?: string; iconColor?: string; bgColor?: string; }
+
+const LIST_LAUNCH_POINTS = 'luna://com.webos.applicationManager/listLaunchPoints';
+
+/** the sharpest icon: largeIcon (130 px on webOS 4), then mediumLargeIcon, then icon (80 px) */
+const bestIcon = (p: LaunchPoint): string | undefined => p.largeIcon || p.mediumLargeIcon || p.icon;
+
+const COLOR = /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9., %]+\))$/;
+/** LG's tile colour for the app: iconColor, else bgColor (white is LG's "not set" for both, so it is skipped) */
+function tvColor (p: LaunchPoint): string | undefined {
+	for (const c of [p.iconColor, p.bgColor]) if (c && COLOR.test(c.trim()) && !/^#f{3}(f{3})?$/i.test(c.trim())) return c.trim();
+	return undefined;
+}
+
+/** the icon fields of an app info, with any relative path made absolute against its folder */
+function iconFields (info: {folderPath?: string; icon?: string; largeIcon?: string; mediumLargeIcon?: string; iconColor?: string; bgColor?: string}): Partial<LaunchPoint> {
+	const abs = (v?: string) => (!v ? undefined : v.charAt(0) === '/' ? v : info.folderPath ? `${info.folderPath.replace(/\/$/, '')}/${v}` : undefined);
+	return {icon: abs(info.icon), largeIcon: abs(info.largeIcon), mediumLargeIcon: abs(info.mediumLargeIcon), iconColor: info.iconColor, bgColor: info.bgColor};
+}
 
 /** Apps LG lists but that make no sense on a launcher (ourselves, promos). */
 const HIDDEN_IDS = [APP_ID, 'google.assistant.promo', 'com.webos.app.discovery'];
@@ -134,56 +168,82 @@ const HIDDEN_IDS = [APP_ID, 'google.assistant.promo', 'com.webos.app.discovery']
 const ICON_CACHE_KEY = 'launcher-icon-cache-v1';
 
 function listViaHomebrew (): Promise<AppEntry[]> {
-	return listLaunchPoints()
-		.then((out) => {
-			const parsed = JSON.parse(out) as {launchPoints?: LaunchPoint[]};
-			const points = (parsed.launchPoints || []).filter((p) => p.id && p.title && HIDDEN_IDS.indexOf(p.id) === -1);
-			if (!points.length) throw new Error('no launch points');
-			bootMark('apps-parsed', `${points.length}`);
-			return loadIcons(points).then((icons) => Promise.all(points.map((p) => {
-				const path = p.largeIcon || p.icon;
-				if (path && icons[p.id]) iconPaths[p.id] = path;
-				const known = APP_CATALOG.find((c) => c.id === p.id);
-				return {
-					id: p.id,
-					// the catalogue's titles are shorter than LG's ("IPTV Player" vs "webOS IPTV Player")
-					title: known ? known.title : p.title,
-					// the catalogue's own icon before the TV's: they are full squares picked to fill a tile, the TV's often have a margin
-					iconUrl: packIcon(p.id, known ? known.title : p.title) || (known && known.icon ? ICON_DIR + known.icon : undefined) || icons[p.id],
-					color: known && known.color,
-					plain: !packIcon(p.id, known ? known.title : p.title) && !!(icons[p.id] || (known && known.icon))
-				} as AppEntry;
-			}).map(withIconColor)).then((list) => { bootMark('apps-colours'); return list; }));
-		});
+	return listLaunchPoints().then((out) => fromLaunchPoints((JSON.parse(out) as {launchPoints?: LaunchPoint[]}).launchPoints, true));
 }
 
-/** Read the icons as data URIs in one shell round-trip, cached in localStorage by path.
- *  Icons are requested by *index*, so app IDs never reach the shell. */
-function loadIcons (points: LaunchPoint[]): Promise<Record<string, string>> {
+/** The list from the TV's launch points. `root`: icons the app cannot load as files are read through the Homebrew Channel. */
+function fromLaunchPoints (all: LaunchPoint[] | undefined, root: boolean): Promise<AppEntry[]> {
+	const points = (all || []).filter((p) => p.id && p.title && HIDDEN_IDS.indexOf(p.id) === -1);
+	if (!points.length) return Promise.reject(new Error('no launch points'));
+	bootMark('apps-parsed', `${points.length}`);
+	return loadIcons(points, root).then((icons) => Promise.all(points.map((p) => {
+		const path = bestIcon(p);
+		if (path && icons[p.id]) iconPaths[p.id] = path;
+		const known = APP_CATALOG.find((c) => c.id === p.id);
+		return {
+			id: p.id,
+			// the catalogue's titles are shorter than LG's ("IPTV Player" vs "webOS IPTV Player")
+			title: known ? known.title : p.title,
+			// the catalogue's own icon before the TV's: they are full squares picked to fill a tile, the TV's often have a margin
+			iconUrl: packIcon(p.id, known ? known.title : p.title) || (known && known.icon ? ICON_DIR + known.icon : undefined) || icons[p.id],
+			color: (known && known.color) || tvColor(p),
+			plain: !packIcon(p.id, known ? known.title : p.title) && !!(icons[p.id] || (known && known.icon))
+		} as AppEntry;
+	}).map(withIconColor)).then((list) => { bootMark('apps-colours'); return list; }));
+}
+
+/** Does the icon load straight from its file? A web app on webOS 4 runs from file:// and can usually read other apps' files; if not, error. */
+function probeFile (path: string): Promise<string | null> {
+	const url = 'file://' + path.split('/').map(encodeURIComponent).join('/');
+	return new Promise((resolve) => {
+		const img = new Image();
+		const timer = window.setTimeout(() => { img.onload = img.onerror = null; resolve(null); }, 4000);
+		img.onload = () => { window.clearTimeout(timer); resolve(img.naturalWidth > 0 ? url : null); };
+		img.onerror = () => { window.clearTimeout(timer); resolve(null); };
+		img.src = url;
+	});
+}
+
+/** icons read per shell call: a long reply of base64 through the Homebrew Channel's Luna answer can be cut short or time out */
+const ICON_BATCH = 8;
+
+/** Each app's own icon from the TV, cached in localStorage by path: first as a file:// URL (cheap, nothing copied); an icon the app may
+ *  not read as a file is read as root through the Homebrew Channel (`root`), a few at a time, as a data URI. Icons are requested by *index*,
+ *  so app IDs never reach the shell. A tile whose icon still fails to draw shows its letter (components/Tile.tsx). */
+function loadIcons (points: LaunchPoint[], root: boolean): Promise<Record<string, string>> {
 	const cache = readIconCache();
 	const result: Record<string, string> = {};
 	const missing: {id: string; path: string}[] = [];
 	for (const p of points) {
-		const path = p.largeIcon || p.icon;
-		if (!path) continue;
+		const path = bestIcon(p);
+		if (!path || !/^\/[A-Za-z0-9._\/+@-]+$/.test(path)) continue;
 		if (cache[path]) result[p.id] = cache[path];
 		else missing.push({id: p.id, path});
 	}
 	if (!missing.length) return Promise.resolve(result);
 
-	// one line per icon, "<index> <base64>" (lib/root.ts skips any path that is not a plain absolute path); app IDs never reach the shell
-	return readIcons(missing.map((m) => m.path)).then((out) => {
-		for (const line of out.split('\n')) {
-			const match = /^(\d+) ([A-Za-z0-9+\/=]+)$/.exec(line);
-			const entry = match && missing[Number(match[1])];
-			if (!match || !entry) continue;
-			const url = `data:image/png;base64,${match[2]}`;
-			result[entry.id] = url;
-			cache[entry.path] = url;
-		}
-		writeIconCache(cache);
-		return result;
-	}).catch(() => result);
+	return Promise.all(missing.map((m) => probeFile(m.path))).then((urls) => {
+		const unread: {id: string; path: string}[] = [];
+		missing.forEach((m, i) => {
+			const url = urls[i];
+			if (url) { result[m.id] = url; cache[m.path] = url; } else unread.push(m);
+		});
+		bootMark('icons-file', `${missing.length - unread.length}/${missing.length}`);
+		if (!unread.length || !root) { writeIconCache(cache); return result; }
+		const batches: {id: string; path: string}[][] = [];
+		for (let i = 0; i < unread.length; i += ICON_BATCH) batches.push(unread.slice(i, i + ICON_BATCH));
+		// one batch after another: one line per icon, "<index> <base64>" (lib/root.ts skips any path that is not a plain absolute path)
+		return batches.reduce((chain, batch) => chain.then(() => readIcons(batch.map((m) => m.path)).then((out) => {
+			for (const line of out.split('\n')) {
+				const match = /^(\d+) ([A-Za-z0-9+\/=]+)$/.exec(line);
+				const entry = match && batch[Number(match[1])];
+				if (!match || !entry || !match[2]) continue;
+				const url = `data:${/\.jpe?g$/i.test(entry.path) ? 'image/jpeg' : 'image/png'};base64,${match[2]}`;
+				result[entry.id] = url;
+				cache[entry.path] = url;
+			}
+		}, () => undefined)), Promise.resolve()).then(() => { writeIconCache(cache); return result; });
+	});
 }
 
 function readIconCache (): Record<string, string> {

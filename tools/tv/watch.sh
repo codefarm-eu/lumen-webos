@@ -14,12 +14,20 @@
 #    opens Lumen with {"view":"ambient"} (your Immich photos) and ends LG's screensaver. The video wallpaper, when on and in front, wins.
 #  - When the TV's power state becomes "Screen Saver" (LG's screensaver is not a foreground app, so the power state is what shows it) and
 #    /var/lib/homehook/frame-screensaver exists: opens Frame in screensaver mode, then ends LG's screensaver (turnOnScreen) so Frame is what shows.
+#  - What counts as LG Home: com.webos.app.home (webOS 3 to 6: the launcher bar and its Recent list, whatever brought it up: Home, a long
+#    press, Back out of an app to the top level, power on) and com.webos.app.launcher, seen in front or in the extraInfo list of foreground
+#    windows (where webOS 4 also reports the launcher bar while it overlays another app). With /var/lib/homehook/livetv-to-lumen (Lumen sets
+#    it while its own Live TV is off): Live TV coming to the front from another app (Back out of an app falls back to it) counts too, unless
+#    Lumen itself was in front just before (you picked Live TV there) or /tmp/allow_lg_home is fresh.
 # Never spins: reacts only when the app changes, and at most once every 3 s. Does nothing if the app is not installed.
 # ME lists every Lumen build (stable, dev). Home opens the one that was last in front, or the first installed one in this list. The flag files in
 # /var/lib/homehook/ are shared by all of them, which is fine while only one is in front at a time.
 ME="com.ovsteenb.lumen com.ovsteenb.lumen.dev com.samrenfrew.lumen com.samrenfrew.lumen.dev com.ammar027.lumen com.ammar027.lumen.dev"
 FRAME=com.ammar027.lumen.gallery
 LGHOME=com.webos.app.home
+LGHOMES="com.webos.app.home com.webos.app.launcher"
+LIVETV=com.webos.app.livetv
+LIVETV_FLAG=/var/lib/homehook/livetv-to-lumen
 FLAG=/tmp/allow_lg_home
 SAVER_FLAG=/var/lib/homehook/frame-screensaver
 VIDEO_FLAG=/var/lib/homehook/video-wallpaper
@@ -34,6 +42,7 @@ NOPRELOAD_FLAG=/var/lib/homehook/no-boot-preload
 RECENT=/var/lib/homehook/recent
 prev=""
 prevapp=""
+prevxhome=1   # no launch for a launcher window already listed when the watcher starts
 last=0
 okhome=0
 ticks=0
@@ -44,6 +53,11 @@ pwlast=""
 tick=$(date +%s)
 wakeuntil=$((tick + 90))   # a boot counts as a wake; LG Home may take a while to come up
 preloadat=$((tick + 60))   # once, after the boot rush; 0 when done
+# true when LG Home (any of LGHOMES) is in $1
+lg_home_in() {
+  for id in $LGHOMES; do case "$1" in *'"appId":"'$id'"'*) return 0 ;; esac; done
+  return 1
+}
 # prints the Lumen build in front, if any
 me_in_front() {
   for id in $ME; do case "$1" in *'"appId":"'$id'"'*) echo "$id"; return 0 ;; esac; done
@@ -79,10 +93,29 @@ while true; do
     wakeuntil=$((now + WAKE_SECS)); last=0
     echo "$(date +%T) wake (gap ${gap}s, power $pwstate)" >> /tmp/homehook.log
   fi
-  out=$(luna-send -n 1 luna://com.webos.applicationManager/getForegroundAppInfo '{}' </dev/null 2>/dev/null)
-  front=$(me_in_front "$out") && lastme=$front
-  app=$(printf '%s' "$out" | sed -n 's/.*"appId":"\([^"]*\)".*/\1/p')
+  # the foreground app ("appId"), and with extraInfo every foreground window (webOS 4 lists the launcher bar there while it overlays an app);
+  # spaces after the colons dropped, as luna-send prints them on some firmware and not on others
+  main=$(luna-send -n 1 luna://com.webos.applicationManager/getForegroundAppInfo '{}' </dev/null 2>/dev/null | sed 's/": *"/":"/g')
+  extra=$(luna-send -n 1 luna://com.webos.applicationManager/getForegroundAppInfo '{"extraInfo":true}' </dev/null 2>/dev/null | sed 's/": *"/":"/g')
+  case "$extra" in *'"returnValue":true'*|*'"returnValue": true'*) ;; *) extra="" ;; esac
+  out=$main
+  front=$(me_in_front "$main") && lastme=$front
+  app=$(printf '%s' "$main" | sed -n 's/.*"appId":"\([^"]*\)".*/\1/p')
+  homeup=0
+  lg_home_in "$main" && homeup=1
+  # the launcher bar over another app: only when it has just appeared (edge, not level), so a firmware that keeps listing a hidden launcher
+  # window can never bounce every app back to Lumen
+  xhome=0
+  [ -n "$extra" ] && lg_home_in "$extra" && xhome=1
+  [ "$homeup" -eq 0 ] && [ "$xhome" -eq 1 ] && [ "$prevxhome" -eq 0 ] && homeup=1
+  prevxhome=$xhome
+  if [ "$homeup" -eq 0 ] && [ -f "$LIVETV_FLAG" ] && [ "$app" = "$LIVETV" ]; then
+    # Live TV straight after another app (not Lumen): what Back out of an app falls back to. Or right after a wake (the TV powers on into it).
+    if [ "$prevapp" != "$LIVETV" ] && [ -n "$prevapp" ] && [ -z "$(me_in_front "\"appId\":\"$prevapp\"")" ]; then homeup=1; fi
+    if [ ! -f "$NOWAKE_FLAG" ] && [ "$now" -lt "$wakeuntil" ]; then homeup=1; fi
+  fi
   if [ -n "$app" ] && [ "$app" != "$prevapp" ]; then prevapp=$app; note_recent "$app"; fi
+  [ "$homeup" -eq 1 ] && out="\"appId\":\"$LGHOME\""
   case "$out" in
     *'"appId":"'$LGHOME'"'*)
       # LG Home is in front. Unless the launcher's own LG Home button just asked for it, send it to the launcher, and keep trying (every 3 s) until it

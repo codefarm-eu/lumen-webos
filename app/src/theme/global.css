@@ -758,7 +758,9 @@ html.night:not(.light):not(.wp-video):not(.liveblur) .screen--plainglass .topbar
 @keyframes status-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ---------- scroll windows: room at the sides so the focus ring and shadow are never clipped ---------- */
-.grid__viewport { padding: 16px 24px; margin: 0 -24px; }
+/* the grid window: room above and below for the focused tile's zoom (x1.22, raised 6 px) and the fade of the mask (padding = PAD_TOP / PAD_BOTTOM
+   in components/Grid.tsx, which sets the height to whole rows, at most 720 px of them); it ends by y ~1000, inside the TV's title-safe area */
+.grid__viewport { height: 796px; padding: 40px 24px 36px; margin: -24px -24px 0; }
 .wp__viewport { padding: 20px 16px 0; margin: -20px -16px 0; }
 .wp__viewport, .grid__viewport { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 26px), transparent 100%); mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 26px), transparent 100%); }
 
@@ -1529,3 +1531,29 @@ html.fakeglass:not(.light):not(.wp-video) .cc__mod:not(.cc__mod--focused) {
 	}
 	.grid__track > .tile { flex: 0 0 auto; margin: 0 calc(var(--layout-tile-gap) / 2) 40px; }
 }
+
+/* ---------- text prompt (components/TextPrompt.tsx): Settings > Weather > Postcode or place. Solid colours, no backdrop-filter: it draws the
+   same on Chromium 53. Sits in the top half, so the TV's on-screen keyboard (bottom) does not cover it. ---------- */
+.prompt { position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 50; background: rgba(0, 0, 0, 0.45); }
+.prompt__panel {
+	position: absolute; left: 50%; top: 90px; width: 1000px; margin-left: -500px; padding: 44px 56px 48px; border-radius: 36px;
+	background: rgba(28, 30, 40, 0.94); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5); color: #fff; text-align: center;
+}
+.prompt__title { margin: 0 0 10px; font-size: 44px; font-weight: 600; }
+.prompt__hint { margin: 0 0 30px; font-size: 24px; line-height: 1.4; color: rgba(255, 255, 255, 0.7); }
+.prompt__input {
+	display: block; width: 100%; height: 84px; padding: 0 28px; border: 0; border-radius: 20px; outline: none;
+	background: rgba(255, 255, 255, 0.14); color: #fff; font: inherit; font-size: 38px; text-align: center;
+	box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+}
+.prompt__input::-webkit-input-placeholder { color: rgba(255, 255, 255, 0.4); }
+.prompt__input::placeholder { color: rgba(255, 255, 255, 0.4); }
+.prompt__input--focused { background: #fff; color: #111; box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.5); }
+.prompt__status { min-height: 34px; margin: 18px 0 26px; font-size: 26px; color: rgba(255, 255, 255, 0.8); }
+.prompt__status--error { color: #ff8a80; }
+.prompt__buttons { display: flex; justify-content: center; }
+.prompt__button {
+	margin: 0 12px; min-width: 200px; padding: 18px 34px; border-radius: 999px; font-size: 28px; font-weight: 600;
+	background: rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.85); transition: transform 120ms ease-out;
+}
+.prompt__button--focused { background: #fff; color: #111; transform: scale(1.06); }

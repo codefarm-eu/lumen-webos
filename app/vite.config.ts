@@ -1,4 +1,4 @@
-import {cpSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync} from 'node:fs';
+import {cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync} from 'node:fs';
 import {dirname, join, normalize, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {defineConfig, loadEnv, type Plugin} from 'vite';
@@ -152,11 +152,25 @@ function classicScriptTag (): Plugin {
 		};
 	}
 
+	/** The TV-side Home watcher (tools/tv/watch.sh and its boot hook) goes into the build's homehook/, so Settings > Home Screen > Home opens
+	 *  Lumen can install it from the .ipk alone (lib/root.ts setHomeTakeover), without SSH. */
+	function homehook (): Plugin {
+		return {
+			name: 'lumen-homehook',
+			apply: 'build',
+			writeBundle (opts) {
+				const out = join(opts.dir || join(APP_DIR, 'dist'), 'homehook');
+				mkdirSync(out, {recursive: true});
+				for (const f of ['watch.sh', '60-homehook']) cpSync(join(APP_DIR, '..', 'tools', 'tv', f), join(out, f));
+			}
+		};
+	}
+
 	export default defineConfig(({mode}) => {
 		const lumen = lumenSettings(mode);
 		return {
 		base: './',            // the app is loaded from a local file path on the TV
-		plugins: [preact(), classicScriptTag(), polyfills(), lumenPrivate(lumen.privateDir, lumen.appId, lumen.title)],
+		plugins: [preact(), classicScriptTag(), polyfills(), lumenPrivate(lumen.privateDir, lumen.appId, lumen.title), homehook()],
 		css: {postcss: {plugins: [autoprefixer({overrideBrowserslist: BROWSERSLIST, grid: false}), fontWeightFallback()]}},
 		define: {__LUMEN_APP_ID__: JSON.stringify(lumen.appId), __LUMEN_DEV__: JSON.stringify(mode === 'development' || lumen.dev)},
 		build: {

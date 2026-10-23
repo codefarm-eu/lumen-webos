@@ -1,3 +1,4 @@
+import {useState} from 'preact/hooks';
 import {CheckMark, Glyph, type GlyphName} from './Glyph';
 import {ChannelTile, type LiveTile} from './ChannelTile';
 
@@ -39,6 +40,8 @@ interface Props {
 }
 
 export function Tile ({model, focused, lifted, checked, dimmed, onHover, onActivate}: Props) {
+	// an icon that fails to load (a TV file the app may not read, a broken cache entry) gives way to the letter tile
+	const [broken, setBroken] = useState('');
 	const classes = ['tile', focused && 'tile--focused', lifted && 'tile--lifted', dimmed && 'tile--dimmed'].filter(Boolean).join(' ');
 	if (model.live) return <ChannelTile live={model.live} classes={classes} onHover={onHover} onActivate={onActivate} />;
 	// pointer: the focused tile tilts a little towards the cursor, like the Apple TV parallax (transform only, set straight on the element)
@@ -54,14 +57,15 @@ export function Tile ({model, focused, lifted, checked, dimmed, onHover, onActiv
 		const box = (e.currentTarget as HTMLElement).querySelector('.tile__box') as HTMLElement | null;
 		if (box) { box.style.removeProperty('--rx'); box.style.removeProperty('--ry'); }
 	};
+	const image = model.imageUrl && model.imageUrl !== broken ? model.imageUrl : undefined;
 	return (
 		<div class={classes} onMouseEnter={onHover} onClick={onActivate} onMouseMove={focused ? tilt : undefined} onMouseLeave={untilt}>
 			<div class={model.running ? 'tile__dot tile__dot--on' : 'tile__dot'} />
-			<div class="tile__box" style={model.color && (!model.imageUrl || model.plain) ? {background: model.color} : undefined}>
+			<div class="tile__box" style={model.color && (!image || model.plain) ? {background: model.color} : undefined}>
 				{model.children
 					? <div class="tile__folder">{model.children.slice(0, 4).map((u, i) => <div key={i} class="tile__mini" style={u ? {backgroundImage: `url("${u}")`} : undefined} />)}</div>
-					: model.imageUrl
-					? <img class={model.plain ? 'tile__image tile__image--icon' : 'tile__image'} src={model.imageUrl} alt="" decoding="async" />
+					: image
+					? <img class={model.plain ? 'tile__image tile__image--icon' : 'tile__image'} src={image} alt="" decoding="async" onError={() => setBroken(image)} />
 					: model.glyphImageUrl
 						? <img class="tile__image tile__image--glyph" src={model.glyphImageUrl} alt="" decoding="async" />
 						: model.wordmark

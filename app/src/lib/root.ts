@@ -68,6 +68,17 @@ export function runningApps (): Promise<string[]> {
 	});
 }
 
+/** An app's info from the app manager (its folder and icon paths), for the TV's own apps that are not launch points. Root because getAppInfo
+ *  is not offered to apps. */
+export function appInfo (id: string): Promise<{folderPath?: string; icon?: string; largeIcon?: string; mediumLargeIcon?: string; iconColor?: string; bgColor?: string}> {
+	if (!APP_ID.test(id)) return Promise.reject(new Error('refused: app id'));
+	return run(luna('luna://com.webos.applicationManager/getAppInfo', {id})).then((text) => {
+		const r = JSON.parse(text) as {appInfo?: Record<string, string>};
+		if (!r.appInfo) throw new Error('no app info');
+		return r.appInfo;
+	});
+}
+
 /** Icons as "<index> <base64>" lines, one per path; paths that are not plain absolute paths are skipped (their line is missing). */
 export function readIcons (paths: string[]): Promise<string> {
 	const script = paths
@@ -240,6 +251,31 @@ const APP_DIR = /^\/media\/developer\/apps\/usr\/palm\/applications\/com\.(ovste
 export function copyFontIn (appDir: string): Promise<boolean> {
 	if (!APP_DIR.test(appDir)) return Promise.reject(new Error('refused: app folder'));
 	return run(`[ -f ${HOMEHOOK}/fonts/sf.woff2 ] && mkdir -p ${appDir}/fonts && cp ${HOMEHOOK}/fonts/sf.woff2 ${appDir}/fonts/sf.woff2 && echo ok; true`).then((out) => out.trim() === 'ok');
+}
+
+const INIT_D = '/var/lib/webosbrew/init.d';
+/** kills every running copy of the watcher (found in /proc as 60-homehook does: busybox ps lists too little on some firmware; matched on the
+ *  start of the command line, so this shell, whose -c text names the watcher too, is not one), then starts it through its boot hook */
+const RESTART_WATCHER = `for p in /proc/[0-9]*; do case "$(tr '\\0' ' ' < $p/cmdline 2>/dev/null)" in "/bin/sh ${HOMEHOOK}/watch.sh"*|"sh ${HOMEHOOK}/watch.sh"*) kill \${p#/proc/} 2>/dev/null ;; esac; done; sh ${INIT_D}/60-homehook`;
+
+/** Settings > Home Screen > Home opens Lumen. On: installs tools/tv/watch.sh and its boot hook from the app's own folder (homehook/, copied in by
+ *  the build), turns the takeover on (home-takeover, and wake launch back on) and (re)starts the watcher. Off: removes the takeover flags, so
+ *  the watcher (still useful for the Recent row) leaves LG Home alone, also after a wake. `livetv`: Live TV coming up after an app also counts as
+ *  LG Home (Lumen's Live TV is off). Resolves "installed", "updated" or "same" (the watcher already the bundled one, and running). */
+export function setHomeTakeover (appDir: string, on: boolean, livetv: boolean): Promise<string> {
+	if (!APP_DIR.test(appDir)) return Promise.reject(new Error('refused: app folder'));
+	if (!on) return run(`rm -f ${HOMEHOOK}/home-takeover ${HOMEHOOK}/livetv-to-lumen; mkdir -p ${HOMEHOOK} && touch ${HOMEHOOK}/no-wake-launch`).then(() => 'off');
+	const src = `${appDir}/homehook`;
+	const flags = `mkdir -p ${HOMEHOOK} && touch ${HOMEHOOK}/home-takeover && rm -f ${HOMEHOOK}/no-wake-launch && ${livetv ? `touch ${HOMEHOOK}/livetv-to-lumen` : `rm -f ${HOMEHOOK}/livetv-to-lumen`}`;
+	const running = `for p in /proc/[0-9]*; do case "$(tr '\\0' ' ' < $p/cmdline 2>/dev/null)" in "/bin/sh ${HOMEHOOK}/watch.sh"*|"sh ${HOMEHOOK}/watch.sh"*) echo run; break ;; esac; done`;
+	return run(`[ -f ${src}/watch.sh ] && [ -f ${src}/60-homehook ] || { echo missing; exit 0; }; ${flags}; `
+		+ `if cmp -s ${src}/watch.sh ${HOMEHOOK}/watch.sh && cmp -s ${src}/60-homehook ${INIT_D}/60-homehook && [ -n "$(${running})" ]; then echo same; exit 0; fi; `
+		+ `[ -f ${HOMEHOOK}/watch.sh ] && w=updated || w=installed; mkdir -p ${INIT_D} && cp ${src}/watch.sh ${HOMEHOOK}/watch.sh && cp ${src}/60-homehook ${INIT_D}/60-homehook `
+		+ `&& chmod 755 ${HOMEHOOK}/watch.sh ${INIT_D}/60-homehook && { ${RESTART_WATCHER}; } >/dev/null 2>&1; echo $w`, 10000).then((out) => {
+		const r = out.trim().split('\n').pop() || '';
+		if (r === 'missing') throw new Error('watcher not in this build');
+		return r;
+	});
 }
 
 /** Writes text to one of FILES. The text travels as base64, so nothing in it is ever read by the shell. */

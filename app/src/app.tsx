@@ -30,12 +30,17 @@ import {setAmbientFlag, setVideoFlag, startScreensaver} from './lib/system';
 import {setFpsCounter} from './lib/fps';
 import {ControlCenter, prefetchControls, type CenterAction} from './components/ControlCenter';
 import {CITIES, COUNTRIES} from './config/cities';
-import {AUTO_PLACE, peekWeather, readWeather, type Weather} from './lib/weather';
+import {AUTO_PLACE, POSTCODE_PLACE, findPlace, peekWeather, readWeather, type Weather} from './lib/weather';
+import {TextPrompt} from './components/TextPrompt';
 import {useLiveTv} from './hooks/useLiveTv';
 import {channelColor, nowNextAt, rowChannels, type Channel} from './lib/livetv';
-import {openChannel, runningApps} from './lib/root';
+import {openChannel, runningApps, setHomeTakeover} from './lib/root';
+
 import {bootMark, navMark} from './lib/log';
 import {isDark, LANGS, setClockMode, setLang} from './lib/i18n';
+
+/** Lumen's install folder on the TV (the page's own folder) */
+const appDir = () => decodeURIComponent(location.pathname).replace(/\/[^/]*$/, '');
 
 type Screen = 'home' | 'settings' | 'ambient' | 'guide';
 
@@ -47,7 +52,7 @@ const LIVE_INFO_W = 660;
 /** how much higher the Live TV row sits when focused, so its now/next block fits on screen */
 const LIVE_BELOW = 150;
 const MISC = {lgHome: 'lg-home', settings: 'settings'} as const;
-const OPTION = {liveTv: 'live-tv-row', ambient: 'ambient', ambientOn: 'ambient-on', ambientSeconds: 'ambient-seconds', ambientBrightness: 'ambient-brightness', ambientPrint: 'ambient-print', fps: 'fps-counter', restore: 'restore-backup', focus: 'focus-strength', firstRow: 'first-row', videoHours: 'video-hours', dockBlur: 'dock-blur', liquidDock: 'liquid-dock', reduceMotion: 'reduce-motion', hideNames: 'hide-names', showRecents: 'show-recents', useHomebrew: 'use-homebrew', videoWallpaper: 'video-wallpaper', videoClip: 'video-clip', dockHide: 'dock-hide', showAmPm: 'show-ampm', showAll: 'show-all-apps', weather: 'show-weather', city: 'weather-city', country: 'weather-country', idle: 'idle-screensaver', wpAuto: 'wp-auto', immichDays: 'immich-recent-days', wpType: 'wp-type', wpNew: 'wp-new', nightDim: 'night-dim', darkMode: 'dark-mode', language: 'language', clock: 'clock-format'} as const;
+const OPTION = {liveTv: 'live-tv-row', ambient: 'ambient', ambientOn: 'ambient-on', ambientSeconds: 'ambient-seconds', ambientBrightness: 'ambient-brightness', ambientPrint: 'ambient-print', fps: 'fps-counter', restore: 'restore-backup', focus: 'focus-strength', firstRow: 'first-row', videoHours: 'video-hours', dockBlur: 'dock-blur', liquidDock: 'liquid-dock', reduceMotion: 'reduce-motion', hideNames: 'hide-names', showRecents: 'show-recents', useHomebrew: 'use-homebrew', videoWallpaper: 'video-wallpaper', videoClip: 'video-clip', dockHide: 'dock-hide', showAmPm: 'show-ampm', showAll: 'show-all-apps', weather: 'show-weather', city: 'weather-city', postcode: 'weather-postcode', homeTakeover: 'home-takeover', country: 'weather-country', idle: 'idle-screensaver', wpAuto: 'wp-auto', immichDays: 'immich-recent-days', wpType: 'wp-type', wpNew: 'wp-new', nightDim: 'night-dim', darkMode: 'dark-mode', language: 'language', clock: 'clock-format'} as const;
 const WP_AUTO_CHOICES = [0, 0.5, 1, 5, 15, 30, 60];   // minutes
 /** when the video wallpaper plays (Settings > Wallpaper > Video wallpaper hours): [first hour, hour it stops]; always = no limit */
 const VIDEO_HOURS: Record<string, [number, number]> = {day: [7, 19], evening: [17, 23], night: [19, 7]};
@@ -81,6 +86,8 @@ const MENU_ITEMS: TileModel[] = [
 
 
 export function App () {
+	/** the Postcode or place text field is open over Settings */
+	const [prompt, setPrompt] = useState(false);
 	const [screen, setScreen] = useState<Screen>(import.meta.env.DEV && /[?&]settings/.test(location.search) ? 'settings' : 'home');
 	// Immich (Settings > Wallpaper > Photos): whether a server is set up on the TV, and its albums; read again each time Settings opens
 	const [immich, setImmich] = useState<{ready: boolean; albums: {id: string; title: string}[]}>({ready: !!cachedServer(), albums: []});
@@ -215,7 +222,9 @@ export function App () {
 	useEffect(() => setPicks(config.wallpaperPicks, config.wpNewOnLaunch), [config.wallpaperPicks, config.wpNewOnLaunch]);
 
 	// the weather under the clock at the top left
-	const weatherCity = (c: UserConfig) => (c.weatherCity === AUTO_PLACE ? null : CITIES.filter((x) => x.name === c.weatherCity)[0] || null);
+	const weatherCity = (c: UserConfig) => (c.weatherCity === AUTO_PLACE ? null
+		: c.weatherCity === POSTCODE_PLACE ? (c.weatherPlace ? {name: c.weatherPlace.name, lat: c.weatherPlace.lat, lon: c.weatherPlace.lon} : null)
+		: CITIES.filter((x) => x.name === c.weatherCity)[0] || null);
 	// the last reading is shown at once on a cold start, however old, so the pill does not change size when the new one comes in
 	const [weather, setWeather] = useState<Weather | null>(() => (config.showWeather && config.weatherCity && (config.weatherCity === AUTO_PLACE || weatherCity(config)) ? peekWeather(weatherCity(config)) : null));
 	useEffect(() => {
@@ -227,7 +236,7 @@ export function App () {
 		const cancel = afterFirstFrame(load);
 		const id = window.setInterval(load, 30 * 60000);
 		return () => { cancel(); window.clearInterval(id); };
-	}, [config.showWeather, config.weatherCity]);
+	}, [config.showWeather, config.weatherCity, config.weatherPlace]);
 
 	// a new wallpaper every N minutes, from the picks or the Immich sources
 	useEffect(() => {
@@ -300,6 +309,9 @@ export function App () {
 		root.toggle('focus-strong', config.focusStrength === 'strong');
 	}, [config.focusStrength]);
 	useEffect(() => { setAmbientFlag(config.ambientOn); }, [config.ambientOn]);
+	// Home opens Lumen: at start, and when Live TV is switched, bring the watcher up to the one in this build and its flags up to date (never
+	// run while off: a watcher set up by hand over SSH is left as it is)
+	useEffect(() => { if (config.homeTakeover && isWebOS()) setHomeTakeover(appDir(), true, !config.liveTv).catch(() => undefined); }, [config.liveTv]);
 	useEffect(() => { setVideoPaused(screen !== 'home'); document.documentElement.classList.toggle('in-settings', screen === 'settings' || screen === 'guide'); }, [screen]);
 	const lastScreen = useRef(screen);
 	useEffect(() => { if (lastScreen.current !== screen) navMark(`${lastScreen.current}>${screen}`); lastScreen.current = screen; }, [screen]);
@@ -415,7 +427,10 @@ export function App () {
 		const cities = (country ? country.cities : CITIES).map((c) => c.name);
 		return {
 			[OPTION.country]: {labels: ['Any'].concat(COUNTRIES.map((c) => c.name)), values: [''].concat(COUNTRIES.map((c) => c.code)), now: config.weatherCountry},
-			[OPTION.city]: {labels: ['Not set', 'Auto'].concat(cities), values: ['', AUTO_PLACE].concat(cities), now: config.weatherCity},
+			// the place found from a postcode comes after Auto, while there is one
+			[OPTION.city]: config.weatherPlace
+				? {labels: ['Not set', 'Auto', config.weatherPlace.name].concat(cities), values: ['', AUTO_PLACE, POSTCODE_PLACE].concat(cities), now: config.weatherCity}
+				: {labels: ['Not set', 'Auto'].concat(cities), values: ['', AUTO_PLACE].concat(cities), now: config.weatherCity},
 			[OPTION.wpType]: {labels: ['Pictures', 'Video', 'Immich photos', 'Plain'], values: ['pictures', 'video', 'immich', 'plain'], now: config.wallpaperType},
 			[OPTION.immichDays]: {labels: ['Last month', 'Last 3 months', 'Last 6 months', 'Last year'], values: [30, 90, 180, 365], now: config.immichRecentDays},
 			[OPTION.wpAuto]: {labels: ['Off', '30 sec', '1 min', '5 min', '15 min', '30 min', '60 min'], values: WP_AUTO_CHOICES, now: config.wpAutoMinutes},
@@ -446,6 +461,15 @@ export function App () {
 			label: 'Live TV',
 			description: 'A row of TV channels under your apps, showing what is on now and next, with the Guide at the end, and the Guide button opens the Guide. OK on a channel opens Live TV on it. Off, Lumen does not read the TV\'s channels or guide at all. Takes effect at once, no relaunch needed. Needs the Homebrew Channel.',
 			value: config.liveTv
+		},
+		{
+			id: OPTION.homeTakeover,
+			group: 'home' as const,
+			label: 'Home opens Lumen',
+			description: 'Whenever LG\'s own home comes up, Lumen opens instead: the Home button (short or long press), Back out of an app to the top level, and turning the TV on.'
+				+ (config.liveTv ? '' : ' With Live TV off, Live TV coming up after an app (where Back out of an app lands) opens Lumen too.')
+				+ ' LG\'s home shows for about a second first. On installs a small watcher (/var/lib/homehook/watch.sh, started at boot by the Homebrew Channel); Off leaves LG\'s home alone again. Lumen\'s LG Home button still opens it. Needs the Homebrew Channel.',
+			value: config.homeTakeover
 		},
 		{
 			id: OPTION.useHomebrew,
@@ -480,9 +504,18 @@ export function App () {
 			id: OPTION.city,
 			group: 'weather' as const,
 			label: 'Weather city',
-			description: 'Not set: no weather. Auto finds your area from your internet connection, which sends your IP address to ipwho.is and can be a few towns off. Or pick a city.',
+			description: 'Not set: no weather. Auto finds your area from your internet connection, which sends your IP address to ipwho.is and can be a few towns off. Or pick a city, or type a postcode below.',
 			value: config.weatherCity !== '',
 			...listed(OPTION.city, config.weatherCity)
+		},
+		{
+			id: OPTION.postcode,
+			group: 'weather' as const,
+			label: 'Postcode or place',
+			description: (config.weatherPlace ? `${config.weatherPlace.label}${config.weatherCity === POSTCODE_PLACE ? '' : ' (not in use: a city is picked above)'}. ` : '')
+				+ 'OK, then type a UK postcode (CF10 3AT, or just CF10) or a town anywhere, with the on-screen keyboard. It is looked up once, at postcodes.io (UK postcodes) or open-meteo.com (places), and the weather then comes for that spot.',
+			value: !!config.weatherPlace && config.weatherCity === POSTCODE_PLACE,
+			valueText: config.weatherPlace && config.weatherCity === POSTCODE_PLACE ? config.weatherPlace.name : 'Not set'
 		},
 		{
 			id: OPTION.wpType,
@@ -684,7 +717,7 @@ export function App () {
 			description: 'Frames drawn in the last second and the longest frame, in the top-left corner. Only in dev builds.',
 			value: config.fpsCounter
 		}] : [])
-	], [config.liveTv, config.fpsCounter, choices, config.weatherCountry, config.dockHide, config.videoPlaces, config.videoClip, config.darkMode, config.language, config.clockFormat, config.useHomebrew, config.videoWallpaper, config.showAmPm, config.idleSeconds, config.wpAutoMinutes, config.wallpaperType, config.wpNewOnLaunch, config.nightDim, config.showAllApps, config.showWeather, config.weatherCity, config.hideNames, config.showRecents, config.reduceMotion, config.dockBlur, config.liquidDock, config.ambient, config.ambientOn, config.ambientSeconds, config.ambientBrightness, config.ambientPrint, immich.ready]);
+	], [config.liveTv, config.fpsCounter, choices, config.weatherCountry, config.weatherPlace, config.dockHide, config.videoPlaces, config.videoClip, config.darkMode, config.language, config.clockFormat, config.useHomebrew, config.videoWallpaper, config.showAmPm, config.idleSeconds, config.wpAutoMinutes, config.wallpaperType, config.wpNewOnLaunch, config.nightDim, config.showAllApps, config.showWeather, config.weatherCity, config.hideNames, config.showRecents, config.reduceMotion, config.dockBlur, config.liquidDock, config.ambient, config.ambientOn, config.ambientSeconds, config.ambientBrightness, config.ambientPrint, immich.ready]);
 
 	const wallpaper: WallpaperTab = useMemo(() => {
 		if (!inSettings) return {categories: [], entries: [], onPick: () => undefined};
@@ -824,8 +857,16 @@ export function App () {
 			});
 			return;
 		}
+		if (optionId === OPTION.postcode) { setPrompt(true); return; }
 		if (optionId === OPTION.useHomebrew) updateConfig({...config, useHomebrew: !config.useHomebrew});
 		else if (optionId === OPTION.liveTv) updateConfig({...config, liveTv: !config.liveTv});
+		else if (optionId === OPTION.homeTakeover) {
+			const on = !config.homeTakeover;
+			updateConfig({...config, homeTakeover: on});
+			if (isWebOS()) setHomeTakeover(appDir(), on, !config.liveTv)
+				.then((r) => showToast(on ? (r === 'same' ? 'Home opens Lumen' : 'Home watcher ' + r + ': Home opens Lumen') : 'Home opens LG\'s home again'))
+				.catch((e: Error) => showToast('Could not set up the Home watcher: ' + e.message, 'error'));
+		}
 		else if (optionId === OPTION.videoWallpaper) updateConfig({...config, videoWallpaper: !config.videoWallpaper});
 		else if (optionId === OPTION.videoClip) {
 			const names = [''].concat(VIDEO_PLACES);
@@ -888,7 +929,7 @@ export function App () {
 			<Home rows={rows} tiles={TILES_FOR[firstRow] || TILES_FOR[6]} perRow={firstRow} topItems={TOP_ITEMS} menuItems={MENU_ITEMS} inputs={shownInputs.map(inputTile)} active={screen === 'home' && !controls} onActivate={onActivate} showPeriod={config.showAmPm} onEdit={onEdit} folders={folderMap} weather={weather} dockHide={config.dockHide} focusRow={focusRow} />
 			{screen === 'ambient' && <Ambient source={config.ambient} seconds={config.ambientSeconds} backlight={AMBIENT_BACKLIGHT[config.ambientBrightness]} weather={weather} showPeriod={config.showAmPm} print={config.ambientPrint} opening={ambientOpening.current} onExit={() => setScreen('home')} />}
 			{screen === 'guide' && config.liveTv && <Guide channels={live.channels} listings={live.listings} logos={live.logos} now={live.now} schedule={live.schedule} pending={live.pending} full={config.guideFull} onMode={(full) => { if (configRef.current.guideFull !== full) updateConfig({...configRef.current, guideFull: full}); }} active={!controls} onOpen={watchChannel} onClose={() => setScreen('home')} />}
-			{screen === 'settings' && <Settings tabs={tabs} wallpaper={wallpaper} options={options} active onToggle={onToggle} onReorder={onReorder} onOption={onOption} onChoose={onChoose} onClose={() => setScreen('home')} />}
+			{screen === 'settings' && <Settings tabs={tabs} wallpaper={wallpaper} options={options} active={!prompt} onToggle={onToggle} onReorder={onReorder} onOption={onOption} onChoose={onChoose} onClose={() => setScreen('home')} />}
 			{controls && <ControlCenter
 				darkMode={config.darkMode}
 				clockFormat={config.clockFormat}
@@ -898,6 +939,23 @@ export function App () {
 				onCloseDown={() => { setControls(false); setFocusRow({id: ROW.apps, seq: Date.now()}); }}
 				onError={(text) => showToast(text, 'error')}
 				onAction={(a: CenterAction) => { setControls(false); if (a === 'art') showScreensaver(true); else onActivate('menu', {key: MISC.lgHome, label: 'LG Home'}); }}
+			/>}
+			{prompt && screen === 'settings' && <TextPrompt
+				title="Postcode or place"
+				hint="A UK postcode (CF10 3AT, or just CF10), or a town anywhere. Down for the buttons, Back to cancel."
+				placeholder="CF10 3AT"
+				initial={config.weatherPlace ? config.weatherPlace.query : ''}
+				current={config.weatherPlace ? config.weatherPlace.label : undefined}
+				onSubmit={(text) => findPlace(text).then((place) => {
+					updateConfig({...configRef.current, weatherPlace: place, weatherCity: POSTCODE_PLACE, showWeather: true});
+					showToast(`Weather for ${place.name}`);
+				})}
+				onClear={() => {
+					const c = configRef.current;
+					// back to the automatic place (from the internet connection), as before a postcode was set
+					updateConfig({...c, weatherPlace: null, weatherCity: c.weatherCity === POSTCODE_PLACE ? AUTO_PLACE : c.weatherCity});
+				}}
+				onClose={() => setPrompt(false)}
 			/>}
 			<Toast message={toast} />
 		</>
