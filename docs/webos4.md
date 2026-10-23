@@ -67,3 +67,9 @@ wallpapers.
   (about 33 KB each). Chromium 53 on a 2018 TV has less room for decoded images, so cloud and Immich wallpapers may load more slowly.
 - The core-js scan works on the minified bundle by property name, so a polyfill could in theory be missed; the app has no other
   dependencies beyond Preact.
+
+## Publishing
+
+`.github/workflows/release.yml` builds the public `.ipk` and updates the Channel index on the `hbc-repo` branch, which GitHub Pages serves.
+A push to `main` (or any branch) adds a dev build (`1.0.9xxx`) to the rolling `dev` release, which keeps the last five; Actions > release >
+Run workflow does the same by hand. A `v*` tag makes a stable release and `stable/apps.json`.
