@@ -8,6 +8,7 @@
     "deploy:home": "LUMEN_APP_ID=com.ovsteenb.lumen LUMEN_APP_TITLE=Lumen LUMEN_DEV=1 sh tools/deploy.sh",
     "push-font": "sh tools/push_sf_font.sh",
     "dev": "npm --prefix app run dev",
-    "release": "python3 tools/build_release.py"
+    "release": "python3 tools/build_release.py",
+    "test": "node --test tools/test/"
   }
 }

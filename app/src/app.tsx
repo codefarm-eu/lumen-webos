@@ -25,6 +25,7 @@ import {resized, setLiveBlur, setPicks, setWallpaper, shownWallpaper} from './li
 import {restoreLeftoverBacklight} from './lib/tvcontrols';
 import {albums as immichAlbums, cachedServer, IMMICH_SOURCES, loadServer} from './lib/immich';
 import {Ambient} from './components/Ambient';
+import {screensaverSource} from './lib/screensaver';
 import {setVideoChoice, setVideoPaused, setVideoWallpaper, VIDEO_PLACES} from './lib/wallpaperVideo';
 import {setAmbientFlag, setVideoFlag, startScreensaver} from './lib/system';
 import {setFpsCounter} from './lib/fps';
@@ -329,12 +330,16 @@ export function App () {
 	}, [apps, restoring]);
 	const allApps = useMemo(() => withBuiltins(apps), [apps]);
 
-	/** Your photos straight away, without LG's screensaver showing first; LG's own when the photos are not turned on (unless forced, from Control Center). */
-	const showScreensaver = (photos = configRef.current.ambientOn) => {
-		if (photos && cachedServer()) { ambientOpening.current = videoOnRef.current ? null : shownWallpaper(); setScreen('ambient'); return; }
-		if (photos) { showToast('Set up Immich first (Settings > Wallpaper > Choose wallpaper > Photos)', 'error'); return; }
+	/** Lumen's screensaver straight away, without LG's showing first: your Immich photos when they are on and Immich is set up, else Lumen's
+	 *  bundled pictures (lib/screensaver.ts). The idle timer (`own` false) opens LG's own when Use my photos is off; Control Center always opens Lumen's. */
+	const showScreensaver = (own = configRef.current.ambientOn) => {
+		if (own && (LOCAL_WALLPAPERS.length > 0 || screensaverSource(configRef.current, !!cachedServer()).kind === 'immich')) {
+			ambientOpening.current = videoOnRef.current ? null : shownWallpaper(); setScreen('ambient'); return;
+		}
 		startScreensaver().catch(() => showToast("Couldn't start the screensaver (it needs the Homebrew Channel)", 'error'));
 	};
+	const saver = screensaverSource(config, immich.ready);
+	const builtinFiles = useMemo(() => LOCAL_WALLPAPERS.map((w) => w.file), []);
 
 	// idle screensaver: after the chosen time on the home screen without a key press or pointer move, while the launcher is in front
 	useEffect(() => {
@@ -577,10 +582,10 @@ export function App () {
 		{
 			id: OPTION.ambientOn,
 			group: 'screensaver' as const,
-			label: 'Use my photos',
+			label: immich.ready ? 'Use my photos' : 'Use Lumen\'s screensaver',
 			description: immich.ready
-				? 'When the TV\'s screensaver starts, show your photos from Immich instead of LG\'s: a slow crossfade, with the clock. Any key returns to the home screen. Screensaver in Control Center shows them either way.'
-				: 'Your photos from Immich instead of LG\'s screensaver. Set up Immich first (Settings > Wallpaper > Choose wallpaper > Photos).',
+				? 'When the TV\'s screensaver starts, show your photos from Immich instead of LG\'s: a slow crossfade, with the clock. Any key returns to the home screen. Off, Screensaver in Control Center shows Lumen\'s own pictures.'
+				: 'Lumen\'s screensaver instead of LG\'s: a slow crossfade of Lumen\'s own pictures, with the clock. With Immich set up (Settings > Wallpaper > Choose wallpaper > Photos) it shows your photos instead.',
 			value: config.ambientOn
 		},
 		...(immich.ready ? [{
@@ -599,18 +604,19 @@ export function App () {
 			value: config.idleSeconds > 0,
 			...listed(OPTION.idle)
 		},
-		...(immich.ready ? [{
+		// these apply to Lumen's own pictures too, so they show without Immich
+		...[{
 			id: OPTION.ambientSeconds,
 			group: 'screensaver' as const,
 			label: 'Time on each photo',
-			description: 'How long each photo stays on the screensaver before the next one fades in.',
+			description: 'How long each picture stays on the screensaver before the next one fades in.',
 			value: true,
 			...listed(OPTION.ambientSeconds)
 		}, {
 			id: OPTION.ambientBrightness,
 			group: 'screensaver' as const,
 			label: 'Brightness',
-			description: 'Turns the TV\'s backlight down while your photos show, and back up when you press a key.',
+			description: 'Turns the TV\'s backlight down while the screensaver shows, and back up when you press a key.',
 			value: config.ambientBrightness !== 'tv',
 			...listed(OPTION.ambientBrightness)
 		}, {
@@ -619,7 +625,7 @@ export function App () {
 			label: 'Print look',
 			description: 'Makes your photos look like prints on a wall rather than a glowing screen: softer blacks, paper-white whites and a gentle fall of light.',
 			value: config.ambientPrint
-		}] : []),
+		}],
 		{
 			id: OPTION.videoHours,
 			group: 'wallpaper' as const,
@@ -966,7 +972,7 @@ export function App () {
 		<>
 			{/* Home stays mounted under Settings so it keeps its focus position. */}
 			<Home rows={rows} tiles={TILES_FOR[firstRow] || TILES_FOR[6]} perRow={firstRow} topItems={TOP_ITEMS} menuItems={MENU_ITEMS} inputs={shownInputs.map(inputTile)} active={screen === 'home' && !controls} onActivate={onActivate} showPeriod={config.showAmPm} onEdit={onEdit} folders={folderMap} weather={weather} dockHide={config.dockHide} focusRow={focusRow} />
-			{screen === 'ambient' && <Ambient source={config.ambient} seconds={config.ambientSeconds} backlight={AMBIENT_BACKLIGHT[config.ambientBrightness]} weather={weather} showPeriod={config.showAmPm} print={config.ambientPrint} opening={ambientOpening.current} onExit={() => setScreen('home')} />}
+			{screen === 'ambient' && <Ambient source={config.ambient} builtin={saver.kind === 'builtin' ? builtinFiles : undefined} seconds={config.ambientSeconds} backlight={AMBIENT_BACKLIGHT[config.ambientBrightness]} weather={weather} showPeriod={config.showAmPm} print={config.ambientPrint} opening={ambientOpening.current} onExit={() => setScreen('home')} />}
 			{screen === 'guide' && config.liveTv && <Guide channels={live.channels} listings={live.listings} logos={live.logos} now={live.now} schedule={live.schedule} pending={live.pending} full={config.guideFull} onMode={(full) => { if (configRef.current.guideFull !== full) updateConfig({...configRef.current, guideFull: full}); }} active={!controls} onOpen={watchChannel} onClose={() => setScreen('home')} />}
 			{screen === 'settings' && <Settings tabs={tabs} wallpaper={wallpaper} options={options} active={!prompt} onToggle={onToggle} onReorder={onReorder} onOption={onOption} onChoose={onChoose} onClose={() => setScreen('home')} />}
 			{controls && <ControlCenter

@@ -42,6 +42,9 @@ jobs:
         env:
           LUMEN_DEV: ${{ (github.ref_type == 'tag' && !contains(github.ref_name, '-')) && '0' || '1' }}
         run: python3 tools/build_release.py
+      - name: Test
+        # unit tests in tools/test/ (use esbuild from app/node_modules, installed by the build)
+        run: node --test tools/test/
       - name: Build Lumen bar
         # the overlay app (bar/), same version as Lumen
         run: LUMEN_BUILD_DIR=release sh tools/build_bar.sh
