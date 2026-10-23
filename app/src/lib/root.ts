@@ -18,8 +18,15 @@ const BASE64 = /^[A-Za-z0-9+\/]*={0,2}$/;
 
 /** The settings Lumen reads or changes, and the values it may set. A key not listed here never reaches the shell. */
 const SETTINGS: Record<string, {category: string; values?: string[]}> = {
-	pictureMode: {category: 'picture', values: ['vivid', 'normal', 'eco', 'cinema', 'sports', 'game', 'filmMaker']},
+	// every picture mode key the settings service lists on an OLED C8 (webOS 4.4, bscpylgtv docs/available_settings_C8.md), and the later
+	// models' FILMMAKER; which of them Lumen offers is decided in lib/tvcontrols.ts
+	pictureMode: {category: 'picture', values: ['vivid', 'normal', 'eco', 'cinema', 'sports', 'game', 'photo', 'hdrEffect', 'technicolor', 'expert1', 'expert2', 'filmMaker',
+		'hdrVivid', 'hdrStandard', 'hdrCinemaBright', 'hdrCinema', 'hdrGame', 'hdrTechnicolor',
+		'dolbyHdrVivid', 'dolbyHdrStandard', 'dolbyHdrCinemaBright', 'dolbyHdrCinema', 'dolbyHdrGame',
+		'technicolorHdrVivid', 'technicolorHdrStandard', 'technicolorHdrCinemaBright', 'technicolorHdrCinema', 'technicolorHdrGame', 'technicolorHdrTechnicolor']},
 	soundMode: {category: 'sound', values: ['standard', 'news', 'movie', 'music', 'sports', 'game', 'aiSound']},
+	/** where the sound goes (tv_speaker, external_arc, ...): read only, an empty list refuses every value */
+	soundOutput: {category: 'sound', values: []},
 	/** for the picture mode in use (the TV keeps one per mode and input) */
 	backlight: {category: 'picture', values: Array.from({length: 101}, (_, i) => String(i))},
 	eyeComfortMode: {category: 'picture', values: ['on', 'off']}
@@ -157,6 +164,37 @@ export function getSetting (key: string): Promise<string> {
 	});
 }
 
+/** The values the TV's settings service offers for a known setting (getSystemSettingDesc), without those it marks hidden or inactive; null
+ *  when it gives no list (an older firmware, or a setting described by a range). */
+/** What the TV says about a setting (getSystemSettingDesc). On the C8 (webOS 4.4.3) "visible" is fixed, not per signal: the HDR and Dolby Vision
+ * picture modes are visible:false even while such a picture plays, and ui.active is false for soundMode while the sound goes over HDMI ARC. */
+export interface SettingDesc {
+	/** values marked active (all the TV accepts) */
+	values: string[];
+	/** values marked active and visible */
+	visible: string[];
+	/** ui.active: false when the TV greys the setting out */
+	uiActive: boolean;
+}
+export function getSettingValues (key: string): Promise<SettingDesc | null> {
+	const s = SETTINGS[key];
+	if (!s) return Promise.reject(new Error('unknown setting ' + key));
+	return run(luna('luna://com.webos.settingsservice/getSystemSettingDesc', {category: s.category, keys: [key]})).then((text) => {
+		type Ext = {value?: unknown; visible?: boolean; active?: boolean};
+		const r = JSON.parse(text) as {returnValue?: boolean; results?: {key?: string; ui?: {active?: boolean}; values?: {arrayExt?: Ext[]; array?: unknown[]}}[]};
+		const desc = (r.results || []).filter((x) => !x.key || x.key === key)[0];
+		const v = desc && desc.values;
+		if (!v) return null;
+		const uiActive = !(desc.ui && desc.ui.active === false);
+		if (Array.isArray(v.arrayExt)) {
+			const act = v.arrayExt.filter((e) => e.active !== false && typeof e.value === 'string');
+			return {values: act.map((e) => e.value as string), visible: act.filter((e) => e.visible !== false).map((e) => e.value as string), uiActive};
+		}
+		if (Array.isArray(v.array)) { const a = v.array.filter((x): x is string => typeof x === 'string'); return {values: a, visible: a, uiActive}; }
+		return null;
+	});
+}
+
 /** Rejects for a key or value not in SETTINGS, and when the TV answers returnValue:false. */
 export function setSetting (key: string, value: string): Promise<void> {
 	const s = SETTINGS[key];
@@ -182,6 +220,14 @@ export function sleepRemainSeconds (): Promise<number> {
 	return run(luna('luna://com.webos.service.tvReservationAgent/timer/sleep/getRemainTime', {})).then((text) => {
 		const m = JSON.parse(text) as {sleepTimeSecond?: number};
 		return Number(m.sleepTimeSecond) || 0;
+	});
+}
+
+/** webOS 4: LG's home bar is not an app (launching com.webos.app.home answers "notexist"). A Home key through LG's network input service
+ * (what LG's phone remote uses) brings it up. Checked on the C8 (webOS 4.4.3). */
+export function pressHomeKey (): Promise<void> {
+	return run(luna('luna://com.webos.service.networkinput/sendSpecialKey', {key: 'HOME'})).then((text) => {
+		if (text.indexOf('"returnValue":false') !== -1 || text.indexOf('"returnValue": false') !== -1) throw new Error('the TV refused the Home key');
 	});
 }
 

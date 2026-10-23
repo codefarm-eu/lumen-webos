@@ -22,7 +22,10 @@
 #  - webOS 4 (this C8): LG Home is not an app at all. It is a surface-manager window (_WEBOS_WINDOW_TYPE_HOME) drawn over the app in front, so
 #    getForegroundAppInfo keeps reporting that app (or Lumen) while it is up, and launching com.webos.app.home answers "notexist". The surface
 #    manager logs every time it comes up ("NL_HOME_SHOWN" in /var/log/messages: Home, long press, Back out of an app, power on), so that line
-#    is what counts here: each new one is LG Home coming up once.
+#    is what counts here: each new one is LG Home coming up once. A second loop (home_reader) checks the log every 0.25 s. When the bar came up over
+#    another app, Lumen is launched, which usually takes the bar down. When it came up over Lumen itself (or is still up 1.5 s after the
+#    launch), a Back key is sent through LG's network input service (what the LG phone app's remote uses), which closes the bar. Back is only
+#    sent while the log says the bar is visible, so it never reaches an app.
 # Never spins: reacts only when the app changes, and at most once every 3 s. Does nothing if the app is not installed.
 # ME lists every Lumen build (stable, dev). Home opens the one that was last in front, or the first installed one in this list. The flag files in
 # /var/lib/homehook/ are shared by all of them, which is fine while only one is in front at a time.
@@ -63,7 +66,62 @@ home_shown_stamp() {
   [ -f "$SYSLOG" ] || return 0
   grep -F NL_HOME_SHOWN "$SYSLOG" 2>/dev/null | tail -n 1 | cut -d' ' -f1
 }
-homestamp=$(home_shown_stamp)   # entries from before the watcher started are not answered
+WAKEFILE=/tmp/lumen-wakeuntil
+# true while the surface manager's log says LG's home bar is up (its newest _WEBOS_WINDOW_TYPE_HOME line); false when unknown
+home_visible() {
+  grep -F _WEBOS_WINDOW_TYPE_HOME "$SYSLOG" 2>/dev/null | tail -n 1 | grep -q '"visible": *true'
+}
+# closes LG's home bar with a Back key (network input service), only while it is up
+hide_home() {
+  home_visible || return 0
+  r=$(luna-send -n 1 luna://com.webos.service.networkinput/sendSpecialKey '{"key":"BACK"}' </dev/null 2>&1 | tr -d ' \n')
+  echo "$(date +%T) LG Home bar closed with Back ($1): $r" >> /tmp/homehook.log
+}
+# one new NL_HOME_SHOWN line ($1): answer it as the main loop would (home-takeover, or the wake window; not when LG Home was asked for)
+on_home_shown() {
+  now=$(date +%s)
+  fg=$(printf '%s' "$1" | sed -n 's/.*"foregroundId": *"\([^"]*\)".*/\1/p')
+  echo "$(date +%T) LG Home shown (over ${fg:-?})" >> /tmp/homehook.log
+  t=0
+  [ -f "$TAKEOVER_FLAG" ] && t=1
+  wu=$(cat "$WAKEFILE" 2>/dev/null)
+  [ ! -f "$NOWAKE_FLAG" ] && [ -n "$wu" ] && [ "$now" -lt "$wu" ] 2>/dev/null && t=1
+  [ "$t" -eq 1 ] || return 0
+  if [ -f "$FLAG" ]; then
+    age=$((now - $(stat -c %Y "$FLAG")))
+    [ "$age" -ge 0 ] && [ "$age" -lt 30 ] && { echo "$(date +%T) left alone (asked for from Lumen)" >> /tmp/homehook.log; return 0; }
+  fi
+  target=$(me_target) || return 0
+  if me_in_front "\"appId\":\"$fg\"" >/dev/null; then
+    # over Lumen: launching it again changes nothing on screen, the bar stays
+    usleep 300000 2>/dev/null || sleep 1
+    hide_home "over Lumen"
+    return 0
+  fi
+  r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d ' \n')
+  echo "$(date +%T) LG Home -> $target: $r" >> /tmp/homehook.log
+  i=0
+  while [ "$i" -lt 6 ]; do
+    usleep 250000 2>/dev/null || sleep 1
+    home_visible || return 0
+    i=$((i + 1))
+  done
+  hide_home "still up after the launch"
+}
+# webOS 4: watches the log for LG's home bar, 4 times a second (only greps when the file changed)
+home_reader() {
+  stamp=$(home_shown_stamp)   # entries from before the watcher started are not answered
+  sig=""
+  while true; do
+    usleep 250000 2>/dev/null || sleep 1
+    s=$(stat -c '%i %s' "$SYSLOG" 2>/dev/null)
+    [ "$s" = "$sig" ] && continue
+    sig=$s
+    l=$(grep -F NL_HOME_SHOWN "$SYSLOG" 2>/dev/null | tail -n 1)
+    st=${l%% *}
+    if [ -n "$st" ] && [ "$st" != "$stamp" ]; then stamp=$st; on_home_shown "$l"; fi
+  done
+}
 # true when LG Home (any of LGHOMES) is in $1
 lg_home_in() {
   for id in $LGHOMES; do case "$1" in *'"appId":"'$id'"'*) return 0 ;; esac; done
@@ -89,6 +147,9 @@ note_recent() {
   { echo "$1"; [ -f "$RECENT" ] && grep -vxF "$1" "$RECENT"; } | head -n 8 > "$RECENT.tmp" && mv "$RECENT.tmp" "$RECENT"
 }
 
+echo "$wakeuntil" > "$WAKEFILE"
+home_reader &
+
 while true; do
   # wake: the power state goes back to Active from standby or off (not from the screensaver), or the loop missed its ticks (suspended)
   now=$(date +%s)
@@ -102,6 +163,7 @@ while true; do
   [ -n "$pwstate" ] && pwlast=$pwstate
   if [ "$woke" -eq 1 ]; then
     wakeuntil=$((now + WAKE_SECS)); last=0
+    echo "$wakeuntil" > "$WAKEFILE"
     echo "$(date +%T) wake (gap ${gap}s, power $pwstate)" >> /tmp/homehook.log
   fi
   # the foreground app ("appId"), and with extraInfo every foreground window (webOS 4 lists the launcher bar there while it overlays an app);
@@ -120,13 +182,6 @@ while true; do
   [ -n "$extra" ] && lg_home_in "$extra" && xhome=1
   [ "$homeup" -eq 0 ] && [ "$xhome" -eq 1 ] && [ "$prevxhome" -eq 0 ] && homeup=1
   prevxhome=$xhome
-  # webOS 4: LG Home is a window over the app in front, seen only in the surface manager's log
-  shown=0
-  st=$(home_shown_stamp)
-  if [ -n "$st" ] && [ "$st" != "$homestamp" ]; then
-    homestamp=$st; homeup=1; shown=1; prev="other"
-    echo "$(date +%T) LG Home shown (log $st, in front: $app)" >> /tmp/homehook.log
-  fi
   if [ "$homeup" -eq 0 ] && [ -f "$LIVETV_FLAG" ] && [ "$app" = "$LIVETV" ]; then
     # Live TV straight after another app (not Lumen): what Back out of an app falls back to. Or right after a wake (the TV powers on into it).
     if [ "$prevapp" != "$LIVETV" ] && [ -n "$prevapp" ] && [ -z "$(me_in_front "\"appId\":\"$prevapp\"")" ]; then homeup=1; fi
@@ -149,7 +204,7 @@ while true; do
       takeover=0
       [ -f "$TAKEOVER_FLAG" ] && takeover=1
       [ ! -f "$NOWAKE_FLAG" ] && [ "$now" -lt "$wakeuntil" ] && takeover=1
-      if [ "$takeover" -eq 1 ] && [ "$okhome" -eq 0 ] && target=$(me_target) && { [ "$shown" -eq 1 ] || [ $((now - last)) -ge 3 ] || [ $((now - last)) -lt 0 ]; }; then
+      if [ "$takeover" -eq 1 ] && [ "$okhome" -eq 0 ] && target=$(me_target) && { [ $((now - last)) -ge 3 ] || [ $((now - last)) -lt 0 ]; }; then
         last=$now
         r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d '\n')
         echo "$(date +%T) LG Home -> $target: $r" >> /tmp/homehook.log

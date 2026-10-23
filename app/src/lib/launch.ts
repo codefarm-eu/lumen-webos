@@ -1,6 +1,6 @@
 import {LUNA, SYSTEM_APP} from '../config/constants';
 import {lunaCall} from './luna';
-import {allowLgHome} from './root';
+import {allowLgHome, pressHomeKey} from './root';
 
 /** Launch an app or switch to an input (HDMI inputs are apps too: com.webos.app.hdmiN). */
 export function launchApp (id: string, params: object = {}): Promise<void> {
@@ -12,7 +12,8 @@ export function launchLgHome (): Promise<void> {
 	// with the Home-button watcher installed, LG Home would bounce straight back here: the flag file lets it open (see tools/tv/watch.sh)
 	return allowLgHome()
 		.catch(() => undefined)
-		.then(() => launchApp(SYSTEM_APP.lgHome));
+		// webOS 4 has no com.webos.app.home app ("notexist"): the home bar comes up with a Home key instead
+		.then(() => launchApp(SYSTEM_APP.lgHome).catch(() => pressHomeKey()));
 }
 
 /** Whether an app with this ID exists on the TV (permitted from a web app, unlike listing). */

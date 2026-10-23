@@ -25,6 +25,9 @@ export function onRelaunch (cb: (p: LaunchParams) => void): () => void {
 		const detail = (e as CustomEvent).detail;
 		let p: unknown = detail;
 		const sys = system();
+		// a relaunch must bring the window forward itself: on webOS 4 LG's home bar stays over Lumen when the watcher relaunches Lumen while it is
+		// already the app under the bar, and activate() is what gives Lumen's window the focus back (LG's own guidance for webOSRelaunch)
+		try { const act = sys && (sys as {activate?: () => void}).activate; if (typeof act === 'function') act.call(sys); } catch { /* not on this firmware */ }
 		if (!p && sys && sys.launchParams) { try { p = JSON.parse(sys.launchParams); } catch { p = {}; } }
 		cb(clean(p));
 	};

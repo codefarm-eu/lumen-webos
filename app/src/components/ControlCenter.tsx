@@ -2,7 +2,7 @@ import {t as tr} from '../lib/i18n';
 import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'preact/hooks';
 import {Glyph, type GlyphName} from './Glyph';
 import {useKeys, clamp, type NavKey} from '../hooks/useKeys';
-import {PICTURE_LABEL, PICTURE_MODES, SOUND_LABEL, SOUND_MODES, setSoundMode, readBacklight, readControls, setBacklight, setEyeComfort, restartTv, screenOff, setPictureMode, type Controls} from '../lib/tvcontrols';
+import {OUTPUT_LABEL, PICTURE_LABEL, PICTURE_MODES, SOUND_LABEL, SOUND_MODES, pictureRange, setSoundMode, readBacklight, readControls, setBacklight, setEyeComfort, restartTv, screenOff, setPictureMode, type Controls} from '../lib/tvcontrols';
 import {safeAnimate} from '../lib/compat';
 
 export type CenterAction = 'lg-home' | 'art';
@@ -85,7 +85,7 @@ const OPT_GAP = 12;
 const listHeight = (count: number) => count * OPT_H + (count - 1) * OPT_GAP;
 
 /** the TV's values as last read or set, so the panel opens on them rather than on defaults that jump when the read lands */
-let lastValues: Controls = {volume: 0, muted: false, picture: 'normal', sound: 'standard', backlight: 100, eyeComfort: false};
+let lastValues: Controls = {volume: 0, muted: false, picture: 'normal', sound: 'standard', soundOutput: '', pictureModes: PICTURE_MODES, soundModes: SOUND_MODES, soundModeOff: '', backlight: 100, eyeComfort: false};
 /** Read the TV's values ahead of the first open (app.tsx calls it once the launcher has settled). */
 export function prefetchControls (): void { readControls().then((v) => { lastValues = v; }).catch(() => undefined); }
 
@@ -178,8 +178,8 @@ export function ControlCenter ({onClose, onCloseDown, onError, onAction, darkMod
 	};
 
 	const options = (cell: MenuCell): {value: string; label: string}[] =>
-		cell === 'sound' ? SOUND_MODES.map((m) => ({value: m, label: SOUND_LABEL[m] || m}))
-			: cell === 'picture' ? PICTURE_MODES.map((m) => ({value: m, label: PICTURE_LABEL[m] || m}))
+		cell === 'sound' ? state.current.values.soundModes.map((m) => ({value: m, label: tr(SOUND_LABEL[m] || m)}))
+			: cell === 'picture' ? state.current.values.pictureModes.map((m) => ({value: m, label: tr(PICTURE_LABEL[m] || m)}))
 				: cell === 'dark' ? [{value: 'off', label: tr('Light')}, {value: 'on', label: tr('Dark')}, {value: 'auto', label: tr('Auto')}]
 					: [{value: 'auto', label: tr('Auto')}, {value: '12h', label: tr('12-hour')}, {value: '24h', label: tr('24-hour')}];
 	const chosen = (cell: MenuCell): string => {
@@ -193,11 +193,17 @@ export function ControlCenter ({onClose, onCloseDown, onError, onAction, darkMod
 		const v = state.current.values;
 		if (cell === 'sound') {
 			const before = v.sound;
-			patch({sound: value}); setSoundMode(value).catch(() => { patch({sound: before}); onError("This TV didn't accept that sound mode"); });
+			// refused: back to the old value, and the mode leaves the list (it is not offered again)
+			patch({sound: value}); setSoundMode(value).catch(() => { setValues((x) => ({...x, sound: before, soundModes: x.soundModes.filter((m) => m !== value)})); onError("This TV didn't accept that sound mode"); });
 		}
 		else if (cell === 'picture') {
 			// each picture mode has its own backlight, so show the new mode's
-			patch({picture: value}); setPictureMode(value).then(readBacklight).then((b) => { if (b !== null) patch({backlight: b}); }).catch(fail('the picture mode'));
+			const before = v.picture;
+			patch({picture: value});
+			setPictureMode(value).then(readBacklight).then((b) => { if (b !== null) patch({backlight: b}); }, () => {
+				setValues((x) => ({...x, picture: before, pictureModes: x.pictureModes.filter((m) => m !== value)}));
+				onError("This TV didn't accept that picture mode");
+			}).catch(fail('the picture mode'));
 		}
 		else if (cell === 'dark') outer.current.onDarkMode(value);
 		else outer.current.onClockFormat(value);
@@ -305,6 +311,13 @@ export function ControlCenter ({onClose, onCloseDown, onError, onAction, darkMod
 	const openMenu = (cell: MenuCell) => {
 		if (state.current.phase !== 'grid') return;
 		const list = options(cell);
+		// the sound goes to an AV receiver, a sound bar or headphones: the TV's sound modes do nothing there (LG greys them out), so none are offered
+		if (cell === 'sound' && !list.length) {
+			const out = state.current.values.soundOutput;
+			if (state.current.values.soundModeOff === 'tv') { onError(`${tr('Sound modes are off')}: ${tr('the TV has them greyed out for this output.')}`); return; }
+			onError(`${tr('Sound modes are off')}: ${tr('the sound goes to')} ${tr(OUTPUT_LABEL[out] || out)}. ${tr('Set the sound mode on that device.')}`);
+			return;
+		}
 		const idx = Math.max(0, list.map((o) => o.value).indexOf(chosen(cell)));
 		setConfirm(false); setMenu({cell, idx}); setPhase('opening');
 		setMorph({kind: 'open', cell, geo: geometry(cell, list.length)});
@@ -358,8 +371,8 @@ export function ControlCenter ({onClose, onCloseDown, onError, onAction, darkMod
 
 	/** What a list tile shows: icon, name, current choice, and whether it shows as on. */
 	const info = (cell: MenuCell): {glyph: GlyphName; title: string; sub: string; on: boolean} =>
-		cell === 'sound' ? {glyph: 'speaker', title: tr('Sound'), sub: SOUND_LABEL[values.sound] || values.sound, on: false}
-			: cell === 'picture' ? {glyph: 'picture', title: tr('Picture'), sub: PICTURE_LABEL[values.picture] || values.picture, on: false}
+		cell === 'sound' ? {glyph: 'speaker', title: tr('Sound'), sub: !values.soundModeOff ? tr(SOUND_LABEL[values.sound] || values.sound) : tr(OUTPUT_LABEL[values.soundOutput] || values.soundOutput), on: false}
+			: cell === 'picture' ? {glyph: 'picture', title: tr('Picture'), sub: (pictureRange(values.picture) ? pictureRange(values.picture) + ' ' : '') + tr(PICTURE_LABEL[values.picture] || values.picture), on: false}
 				: cell === 'dark' ? {glyph: 'screensaver', title: tr('Theme'), sub: darkMode === 'on' ? tr('Dark') : darkMode === 'auto' ? tr('Auto') : tr('Light'), on: darkMode === 'on'}
 					: {glyph: 'timer', title: tr('Clock'), sub: clockFormat === '12h' ? tr('12-hour') : clockFormat === '24h' ? tr('24-hour') : tr('Auto'), on: clockFormat !== 'auto'};
 	const tileInside = (i: {glyph: GlyphName; title: string; sub: string}) => [

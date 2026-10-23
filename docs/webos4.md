@@ -112,20 +112,54 @@ manager window (`_WEBOS_WINDOW_TYPE_HOME`) drawn over the app in front. While it
     LSM NL_VSC {"app_id": "com.webos.app.home", "visible": true, "window_type": "_WEBOS_WINDOW_TYPE_HOME"}
     LSM NL_HOME_SHOWN {"CLOCK": 18773.395, "foregroundId": "com.ovsteenb.lumen", "params": ""}
 
-So the watcher now also reads the newest `NL_HOME_SHOWN` line each tick, and every new one counts as LG's home. Lines from before it
-started do not count. The file rotates about every 10 min (`messages.0.gz` and so on), and a new file simply has no line yet. Each answer
-is logged to `/tmp/homehook.log` (`LG Home shown …` and `LG Home -> <id>: <launch reply>`). Not yet checked on the TV: whether launching
-Lumen hides the home bar when Lumen is already the app under it.
+The watcher runs a second loop (`home_reader`) that checks the log 4 times a second, and greps it only when the file has changed. Every new
+`NL_HOME_SHOWN` line counts as LG's home. Lines from before the watcher started do not count. The file rotates about every 10 min
+(`messages.0.gz` and so on), and a new file simply has no line yet. What it does then, checked on the C8 on 23 Oct 2026 (the Home key was
+sent with `com.webos.service.networkinput/sendSpecialKey {"key":"HOME"}`):
+- **Bar over another app** (YouTube, Moonfin): Lumen is launched about 0.06 s after the bar comes up. The launch takes the bar down
+  (`visible: false` about 0.5 s later). If the bar is still up 1.5 s after the launch, Back is sent, as below.
+- **Bar over Lumen itself**: launching Lumen again changes nothing, and the bar stayed up (seen at 22:18:08 UTC, 23 s until it was closed
+  by hand). The watcher sends Back through `com.webos.service.networkinput/sendSpecialKey {"key":"BACK"}`, which is what LG's phone
+  remote uses, and the bar closes about 0.75 s after it came up. Back is only sent while the log's newest `_WEBOS_WINDOW_TYPE_HOME` line
+  says `visible: true`, so it never reaches an app.
+- Lumen also calls `webOSSystem.activate()` on every relaunch, as LG asks of apps.
+
+Each step is logged to `/tmp/homehook.log` (`LG Home shown (over <id>)`, `LG Home -> <id>`, `LG Home bar closed with Back (...)`).
+
+Lumen's own **LG Home** button (glass bar menu, Control Center): launching `com.webos.app.home` fails with `notexist` on webOS 4, so it then
+sends the Home key the same way, as root. `/tmp/allow_lg_home` is set first, so the watcher leaves that bar alone.
+
+Tried and not working on the C8: writing key events into `/dev/input/event1` (the remote's device is grabbed, so injected events are
+dropped), a key from a new `/dev/uinput` device (ignored), and the raw `/tmp/netinput.pointer.sock` socket (it closes at once).
 
 Not covered:
-- LG's home shows for up to about a second before Lumen replaces it, because the watcher polls. Only a key remap (LG Input Hook) could
-  avoid that, and it is unreliable on webOS 4 (above).
-- Launcher ids other than the two above, if the C8's firmware uses another. Check `/tmp/homehook.log` and `getForegroundAppInfo`.
-- Overlays that are not apps (the volume and settings side panels, the Q-menu) are not LG's home and are left alone.
+- The bar still flashes for a moment, about 0.5 to 0.8 s.
+- Overlays that are not LG's home (the volume and settings side panels, the Q-menu) are left alone.
 
 Off-TV tests: a simulation of the watcher with a fake `luna-send` covered Home in front, the bar over an app, a launcher listed all the
 time (no bounce), Back to Live TV with and without the flag, Live TV picked from Lumen, the LG Home button and takeover off. The
 captured install command, run as root on a Linux box, reported installed, then same, then updated, with one watcher running.
+
+## Control Center: Sound and Picture
+
+The choices come from the TV. At the first Control Center opening in a session, `getSystemSettingDesc` (as root) is read for `pictureMode`
+and `soundMode`, and `getSystemSettings` for `pictureMode`, `soundMode` and `soundOutput` each time. Read from the C8 on 23 Oct 2026:
+
+| | C8 reply | What Lumen offers |
+|---|---|---|
+| `pictureMode` | current `hdrEffect` (dimension `dynamicRange: sdr`). 28 values, all `active`. `visible` only for vivid, normal, eco, cinema, sports, game, hdrEffect, technicolor, expert1, expert2. `photo` and every hdr*/dolbyHdr*/technicolorHdr* mode are `visible: false` | SDR: exactly those 10 visible ones (no FILMMAKER, which the C8 does not have) |
+| HDR, Dolby Vision | the desc is not per signal: the HDR and Dolby Vision modes stay `visible: false` while such a picture plays | the menu of the current mode's group: HDR (Vivid, Standard, Cinema Home, Cinema, Game, Technicolor Expert), Dolby Vision (Vivid, Standard, Cinema Home, Cinema, Game), Technicolor HDR, filtered on `active`. They only appear while such content plays |
+| `soundMode` | current `movie`. Values standard, movie, news, sports, music, game (pagode, sertaWego, brazilianPunk inactive). `ui.active: false` | |
+| `soundOutput` | `external_arc` (Denon over HDMI ARC) | |
+
+The sound modes only apply to the TV's own speakers, and the C8 greys them out (`ui.active: false`) for HDMI ARC. So with the Denon,
+Sound shows "HDMI ARC" and opening it says "Sound modes are off: the sound goes to HDMI ARC. Set the sound mode on that device." With
+the speakers it offers the 6 modes. A mode the TV refuses (`returnValue: false`) is put back on screen, dropped from the list and
+remembered (`lumen-refused-modes-v1`). Lumen never sets sound output.
+
+Tested in Chromium 53 and current Chrome with a fake Luna that replays the C8's own desc replies. Scenario A (HDMI ARC, Cinema): the
+message shows and the 10 SDR modes appear. A refused mode is put back and gone at the next opening. Scenario B (Dolby Vision Cinema, TV
+speaker): 5 Dolby Vision modes and 6 sound modes.
 
 ## How it was tested (off the TV)
 
