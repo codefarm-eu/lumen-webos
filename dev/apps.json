@@ -1,0 +1,35 @@
+{
+  "paging": {
+    "page": 1,
+    "count": 1,
+    "maxPage": 1,
+    "itemsTotal": 1,
+    "prevUrl": null,
+    "nextUrl": null
+  },
+  "packages": [
+    {
+      "id": "com.ovsteenb.lumen",
+      "title": "Lumen",
+      "iconUri": "https://raw.githubusercontent.com/ovsteenb/lumen-webos/hbc-repo/dev/icon.png",
+      "manifestUrl": "https://raw.githubusercontent.com/ovsteenb/lumen-webos/hbc-repo/dev/com.ovsteenb.lumen.manifest.json",
+      "manifest": {
+        "id": "com.ovsteenb.lumen",
+        "version": "1.0.9001",
+        "type": "web",
+        "title": "Lumen",
+        "appDescription": "Lumen home screen (webOS 4 fork): apps, inputs and a way back to LG's home.",
+        "iconUri": "https://raw.githubusercontent.com/ovsteenb/lumen-webos/hbc-repo/dev/icon.png",
+        "sourceUrl": "https://github.com/ovsteenb/lumen-webos",
+        "rootRequired": true,
+        "ipkUrl": "https://github.com/ovsteenb/lumen-webos/releases/download/dev/com.ovsteenb.lumen_1.0.9001_all.ipk",
+        "ipkHash": {
+          "sha256": "ed2733f059c426e487c5ba1701cbd40f75af715626e6510adc6916fee9a83194"
+        },
+        "ipkSize": 3233612
+      },
+      "pool": "main",
+      "shortDescription": "Lumen home screen (webOS 4 fork): apps, inputs and a way back to LG's home."
+    }
+  ]
+}
