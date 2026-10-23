@@ -4,6 +4,7 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${LUMEN_BUILD_DIR:-$ROOT/build}
+case "$OUT" in /*) ;; *) OUT="$(pwd)/$OUT" ;; esac   # ares-package runs from app/
 TMP=$(mktemp -d)
 cp -R "$ROOT/bar/." "$TMP/"
 mkdir -p "$TMP/licenses" && cp "$ROOT/LICENSE" "$TMP/licenses/LICENSE.txt"
