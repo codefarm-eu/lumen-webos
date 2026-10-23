@@ -1,4 +1,4 @@
-// node --test tools/test/  (needs app/node_modules: esbuild turns the TypeScript module into JS first)
+// node --test tools/test/*.test.mjs  (needs app/node_modules: esbuild turns the TypeScript module into JS first)
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';

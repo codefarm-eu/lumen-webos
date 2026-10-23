@@ -9,6 +9,6 @@
     "push-font": "sh tools/push_sf_font.sh",
     "dev": "npm --prefix app run dev",
     "release": "python3 tools/build_release.py",
-    "test": "node --test tools/test/"
+    "test": "node --test tools/test/*.test.mjs"
   }
 }
