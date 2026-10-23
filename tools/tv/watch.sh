@@ -29,6 +29,13 @@
 #  - With /var/lib/homehook/home-bar (Lumen: Settings > Home Screen > Home shows the bar) and Lumen bar (com.ovsteenb.lumen.bar) installed:
 #    LG's bar over another app is closed with Back and Lumen bar, an overlay window, comes up over the app instead. Over Lumen, and within
 #    the wake window, as above.
+#  - The Home key itself (webOS 4 and any TV with LG Input Hook injected): with home-takeover on, the watcher adds one key bind to LG Input Hook
+#    (/home/root/.config/lginputhook/keybinds.json): key 773 (IR_KEY_HOME, Qt Key_Super_L) runs /var/lib/homehook/home-key.sh instead of
+#    reaching the surface manager, so LG's home bar never comes up for a Home press. home-key.sh runs this file as watch-key (home_key below):
+#    over another app it launches Lumen bar (home-bar) or Lumen, over Lumen it does nothing. Without the watcher it sends LG's own Home
+#    (networkinput, which Input Hook does not see). The bind is removed again when home-takeover goes, with /var/lib/homehook/no-home-key, or
+#    by stop_watch.sh. A bind on 773 that is not ours is never touched. If Input Hook stops working, Home reaches LG again and the log
+#    path (NL_HOME_SHOWN) below takes over as before.
 # Never spins: reacts only when the app changes, and at most once every 3 s. Does nothing if the app is not installed.
 # ME lists every Lumen build (stable, dev). Home opens the one that was last in front, or the first installed one in this list. The flag files in
 # /var/lib/homehook/ are shared by all of them, which is fine while only one is in front at a time.
@@ -53,6 +60,13 @@ NOWAKE_FLAG=/var/lib/homehook/no-wake-launch
 WAKE_SECS=30
 NOPRELOAD_FLAG=/var/lib/homehook/no-boot-preload
 RECENT=/var/lib/homehook/recent
+KEYBINDS=/home/root/.config/lginputhook/keybinds.json
+NOHOMEKEY_FLAG=/var/lib/homehook/no-home-key
+HOMEKEY_SH=/var/lib/homehook/home-key.sh
+HOMEKEY_RUN=/var/lib/homehook/watch-key
+# the bind, exactly as written (and looked for) in keybinds.json
+HOMEKEY_BIND='"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}'
+LASTME=/tmp/lumen-lastme
 prev=""
 prevapp=""
 prevxhome=1   # no launch for a launcher window already listed when the watcher starts
@@ -162,6 +176,72 @@ note_recent() {
   { echo "$1"; [ -f "$RECENT" ] && grep -vxF "$1" "$RECENT"; } | head -n 8 > "$RECENT.tmp" && mv "$RECENT.tmp" "$RECENT"
 }
 
+# uptime with centiseconds, for timing in the log
+up() { cut -d' ' -f1 /proc/uptime; }
+# the Home key, from LG Input Hook (home-key.sh -> watch-key): LG's bar never came up, so only Lumen bar or Lumen has to be opened
+home_key() {
+  export PATH="/bin:/sbin:/usr/bin:/usr/sbin:$PATH"
+  t0=$(up)
+  now=$(date +%s)
+  wu=$(cat "$WAKEFILE" 2>/dev/null)
+  lastme=$(cat "$LASTME" 2>/dev/null)
+  t=0
+  [ -f "$TAKEOVER_FLAG" ] && t=1
+  [ ! -f "$NOWAKE_FLAG" ] && [ -n "$wu" ] && [ "$now" -lt "$wu" ] 2>/dev/null && t=1
+  if [ "$t" -eq 0 ] || ! target=$(me_target); then
+    # takeover off (the bind is about to go) or no Lumen installed: LG's own Home, through networkinput, which Input Hook does not see
+    luna-send -n 1 luna://com.webos.service.networkinput/sendSpecialKey '{"key":"HOME"}' </dev/null >/dev/null 2>&1
+    echo "$(date +%T) Home key [$t0] -> LG Home (takeover off)" >> /tmp/homehook.log
+    return 0
+  fi
+  main=$(luna-send -n 1 luna://com.webos.applicationManager/getForegroundAppInfo '{}' </dev/null 2>/dev/null | sed 's/": *"/":"/g')
+  fg=$(printf '%s' "$main" | sed -n 's/.*"appId":"\([^"]*\)".*/\1/p')
+  if me_in_front "$main" >/dev/null; then
+    # as before: Home over Lumen closed LG's bar and left Lumen as it was
+    echo "$(date +%T) Home key [$t0] over $fg: nothing to do" >> /tmp/homehook.log
+    return 0
+  fi
+  id=$target
+  # a real Home press is never the power-on Home, so the wake window does not apply to the bar here
+  [ -f "$BAR_FLAG" ] && [ -f "$TAKEOVER_FLAG" ] && [ -d "$APPS/$BAR" ] && id=$BAR
+  r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$id\"}" </dev/null 2>&1 | tr -d ' \n')
+  echo "$(date +%T) Home key [$t0] over ${fg:-?} -> $id [$(up)]: $r" >> /tmp/homehook.log
+}
+# adds or removes the Home key bind in LG Input Hook's keybinds.json (only ours: a 773 bind someone else made is left alone)
+sync_home_key() {
+  [ -f "$KEYBINDS" ] || return 0
+  want=0
+  [ -f "$TAKEOVER_FLAG" ] && [ ! -f "$NOHOMEKEY_FLAG" ] && want=1
+  cur=$(cat "$KEYBINDS" 2>/dev/null)
+  case "$cur" in *"$HOMEKEY_BIND"*) have=1 ;; *) have=0 ;; esac
+  if [ "$want" -eq 1 ]; then
+    # home-key.sh: runs this file as watch-key; if the watcher was removed (watch.sh gone), the key does LG's own Home
+    if [ ! -f "$HOMEKEY_SH" ] || [ ! -L "$HOMEKEY_RUN" ]; then
+      ln -sf watch.sh "$HOMEKEY_RUN"
+      printf '%s\n' '#!/bin/sh' '# LG Input Hook runs this for the Home key (bind added by watch.sh; undo: touch /var/lib/homehook/no-home-key).' \
+        'export PATH="/bin:/sbin:/usr/bin:/usr/sbin:$PATH"' \
+        '[ -f /var/lib/homehook/watch-key ] && exec /bin/sh /var/lib/homehook/watch-key' \
+        "exec luna-send -n 1 luna://com.webos.service.networkinput/sendSpecialKey '{\"key\":\"HOME\"}'" > "$HOMEKEY_SH.tmp" \
+        && chmod 755 "$HOMEKEY_SH.tmp" && mv "$HOMEKEY_SH.tmp" "$HOMEKEY_SH"
+    fi
+    [ "$have" -eq 1 ] && return 0
+    case "$cur" in *'"773"'*) return 0 ;; esac
+    if [ -z "$(printf '%s' "$cur" | tr -d ' \t\r\n{}')" ]; then
+      new="{$HOMEKEY_BIND}"
+    else
+      new=$(printf '%s' "$cur" | awk -v b="$HOMEKEY_BIND" 'BEGIN { d = 0 } { if (!d && (i = index($0, "{")) > 0) { $0 = substr($0, 1, i) b "," substr($0, i + 1); d = 1 } print }')
+    fi
+    printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind added (LG Input Hook)" >> /tmp/homehook.log
+  elif [ "$have" -eq 1 ]; then
+    new=$(printf '%s' "$cur" | awk -v b="$HOMEKEY_BIND" '{ while ((i = index($0, b ",")) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
+      while ((i = index($0, "," b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
+      while ((i = index($0, b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b)); print }')
+    printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind removed" >> /tmp/homehook.log
+  fi
+}
+
+case "$0" in */watch-key) home_key; exit 0 ;; esac
+
 echo "$wakeuntil" > "$WAKEFILE"
 home_reader &
 
@@ -188,6 +268,7 @@ while true; do
   case "$extra" in *'"returnValue":true'*|*'"returnValue": true'*) ;; *) extra="" ;; esac
   out=$main
   front=$(me_in_front "$main") && lastme=$front
+  [ -n "$front" ] && [ "$front" != "$(cat "$LASTME" 2>/dev/null)" ] && echo "$front" > "$LASTME"
   app=$(printf '%s' "$main" | sed -n 's/.*"appId":"\([^"]*\)".*/\1/p')
   homeup=0
   lg_home_in "$main" && homeup=1
@@ -288,6 +369,7 @@ while true; do
   fi
   # keep the extra blocked names in /etc/hosts (about every 30 s; the dashboard rewrites the table at boot)
   ticks=$((ticks + 1))
+  [ $((ticks % 5)) -eq 1 ] && sync_home_key
   if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
     # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real
     grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | while IFS= read -r l; do

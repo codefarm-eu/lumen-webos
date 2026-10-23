@@ -42,7 +42,7 @@ All of these already fail quietly in upstream's code (a rejected Luna call shows
 | Live TV row and guide | `iepg`, `epgdb`, `apiadapter/tv/openChannel` | **off by default** (see below); if turned on and the calls fail, the row is empty and hidden |
 | Sleep timer chip | `tvReservationAgent` through root | **unknown**: if it fails there is simply no chip |
 | Home button takeover, wake launch, Recent row from other apps | `tools/tv/watch.sh` | installed from the `.ipk` by Settings > Home Screen > **Home opens Lumen** (see below), or over SSH as upstream |
-| LG Input Hook | — | **uncertain on webOS 4**: its issue tracker has reports of key binds stopping after minutes (v1.4.0, webOS 4.x) and of v1.5.0 freezing `tvservice` on webOS 4.10 and losing the picture after standby on webOS 4.5. Not needed by Lumen. |
+| LG Input Hook | — | **uncertain on webOS 4**: its issue tracker has reports of key binds stopping after minutes (v1.4.0, webOS 4.x) and of v1.5.0 freezing `tvservice` on webOS 4.10 and losing the picture after standby on webOS 4.5. Lumen does not need it; on this C8 (1.4.0, injected since boot) the watcher uses it for the Home key when it is there (see "Home key bind"), and works without it. |
 
 ## Live TV setting
 
@@ -133,7 +133,7 @@ Tried and not working on the C8: writing key events into `/dev/input/event1` (th
 dropped), a key from a new `/dev/uinput` device (ignored), and the raw `/tmp/netinput.pointer.sock` socket (it closes at once).
 
 Not covered:
-- The bar still flashes for a moment, about 0.5 to 0.8 s.
+- The bar still flashes for a moment, about 0.5 to 0.8 s (1.0.9007; from 1.0.9008 the Home key itself no longer shows it, see below).
 - Overlays that are not LG's home (the volume and settings side panels, the Q-menu) are left alone.
 
 Off-TV tests: a simulation of the watcher with a fake `luna-send` covered Home in front, the bar over an app, a launcher listed all the
@@ -174,46 +174,42 @@ sent through networkinput:
 - **com.sammysco.avoverlay:** its watcher launches it after each app (card) launch. It did not launch after Lumen bar (an overlay), and it
   did not take the bar's keys. When Lumen bar opens YouTube, avoverlay comes up as usual for that launch.
 
-Known issues:
-- LG's bar flashes for about 0.5 s before it is closed. Once (over Moonfin) LG's bar only went 1.6 s after the Back, and Lumen bar came up
-  under it for a moment.
-- Within about 90 s of a boot, or of the watcher (re)starting, Home opens full Lumen, not the bar. That is the wake window.
+Known issues (1.0.9007):
+- LG's bar flashed for about 0.5 s before it was closed, in bar mode 1.5 to 1.75 s (surface-manager log, 23 Oct, 23:16-23:17 UTC: `visible`
+  true to false 1.64 s, 1.55 s, 1.75 s over YouTube). Fixed in 1.0.9008 by the Home key bind below.
+- Within about 90 s of a boot, or of the watcher (re)starting, Home opened full Lumen, not the bar (the wake window). With the key bind a
+  real Home press always opens the bar; power on still opens full Lumen.
 - Live TV and HDMI inputs underneath were not tested.
 
-## Control Center: Sound and Picture
+### Home key bind (1.0.9008): LG's bar never comes up
 
-The choices come from the TV. At the first Control Center opening in a session, `getSystemSettingDesc` (as root) is read for `pictureMode`
-and `soundMode`, and `getSystemSettings` for `pictureMode`, `soundMode` and `soundOutput` each time. Read from the C8 on 23 Oct 2026:
+The flash came from reacting after the fact: Home release, LG's bar animates in, the surface manager logs `NL_HOME_SHOWN`, the watcher
+sees it (0.25 s poll), sends Back (a Luna call on a TV with a load average of 11), waits for the bar to go, then launches Lumen bar.
+Now the Home key never reaches the surface manager.
 
-| | C8 reply | What Lumen offers |
-|---|---|---|
-| `pictureMode` | current `hdrEffect` (dimension `dynamicRange: sdr`). 28 values, all `active`. `visible` only for vivid, normal, eco, cinema, sports, game, hdrEffect, technicolor, expert1, expert2. `photo` and every hdr*/dolbyHdr*/technicolorHdr* mode are `visible: false` | SDR: exactly those 10 visible ones (no FILMMAKER, which the C8 does not have) |
-| HDR, Dolby Vision | the desc is not per signal: the HDR and Dolby Vision modes stay `visible: false` while such a picture plays | the menu of the current mode's group: HDR (Vivid, Standard, Cinema Home, Cinema, Game, Technicolor Expert), Dolby Vision (Vivid, Standard, Cinema Home, Cinema, Game), Technicolor HDR, filtered on `active`. They only appear while such content plays |
-| `soundMode` | current `movie`. Values standard, movie, news, sports, music, game (pagode, sertaWego, brazilianPunk inactive). `ui.active: false` | |
-| `soundOutput` | `external_arc` (Denon over HDMI ARC) | |
-
-The sound modes only apply to the TV's own speakers, and the C8 greys them out (`ui.active: false`) for HDMI ARC. So with the Denon,
-Sound shows "HDMI ARC" and opening it says "Sound modes are off: the sound goes to HDMI ARC. Set the sound mode on that device." With
-the speakers it offers the 6 modes. A mode the TV refuses (`returnValue: false`) is put back on screen, dropped from the list and
-remembered (`lumen-refused-modes-v1`). Lumen never sets sound output.
-
-Tested in Chromium 53 and current Chrome with a fake Luna that replays the C8's own desc replies. Scenario A (HDMI ARC, Cinema): the
-message shows and the 10 SDR modes appear. A refused mode is put back and gone at the next opening. Scenario B (Dolby Vision Cinema, TV
-speaker): 5 Dolby Vision modes and 6 sound modes.
-
-## How it was tested (off the TV)
-
-- `npm --prefix app run build` (type check and build) and `python3 tools/build_release.py` (the `.ipk`) run clean.
-- The bundle parses as ES2016 (acorn, `es-check es2016`). The CSS after PostCSS was checked with doiuse for `chrome 53`: what remains is
-  the grid (fallback in place), prefixed masks, and `backdrop-filter`/`clamp()` inside the live-blur rules only.
-- A real Chromium 53.0.2785.0 Linux build (Chromium snapshot 403380, the M53 branch point) under Xvfb loaded `app/dist` over HTTP and the
-  packaged app from `file://`, at 1920x1080 with a webOS user agent, driven over DevTools: home, glass bar, lower rows, Control Center and
-  its Sound list, Inputs, Settings and the Apps grid all draw with no script errors, side by side with current Chrome. The upstream build
-  (target chrome79) shows only a black screen there (`SyntaxError: Unexpected token {`), and a plain `chrome53` retarget without the
-  polyfills fails at start-up too (`TypeError: ... is not a function`).
-
-Not tested: the TV itself (its GPU, memory, Luna services and the Homebrew Channel install), Live TV, Immich, the screensaver and video
-wallpapers.
+- **Where Home is handled:** `/usr/lib/qt5/qml/KeyFilters/systemUi.js` (`Qt.Key_Super_L`: `global.goHome()` on release, recents on a 1 s
+  long press). It is read-only and loaded once by `surface-manager-starfish` 1.7 s into a boot, long before webosbrew's `init.d` runs, so
+  a bind-mounted copy would need a surface manager restart at every boot (black screen, and `lsm-ready` restarts WebAppMgr). Not used.
+- **What is used:** LG Input Hook 1.4.0, already installed and injected into `lginput2` (the remote's key path) at boot by
+  `init.d/inputhook`. Its `keybinds.json` maps uinput codes to actions; `exec` runs a command on key down and swallows the key (down and
+  up). Home is code 773 (`IR_KEY_HOME` = 781 in `/usr/share/X11/xkb/keycodes/lg`, minus 8). The watcher adds
+  `"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}` while `home-takeover` is set (checked every 5 s; Input Hook
+  reloads the file within 1 s). A 773 bind that is not this exact one is never touched, and other binds are kept.
+- **`/var/lib/homehook/home-key.sh`** (written by the watcher) runs `watch.sh` through the symlink `watch-key`, which only runs
+  `home_key`: one `getForegroundAppInfo`, then over another app it launches Lumen bar (`home-bar` on) or Lumen; over Lumen it does
+  nothing (as before: the bar was closed and Lumen left as it was). If `watch.sh` is gone, or takeover is off, it sends LG's own Home with
+  networkinput, which has its own uinput device (`UInputWriter` in `network-input-service`) and so is not seen by Input Hook. That is also
+  why Lumen's **LG Home** button still opens LG's bar, and from there LG's Settings and inputs, as before. The Settings and Inputs keys
+  are not bound.
+- **Fallbacks:** before Input Hook is injected after a boot, or if its binds stop (reported for 1.4.0 on some webOS 4 TVs), Home reaches LG
+  again and the `NL_HOME_SHOWN` path above answers it as in 1.0.9007. Power on and Back out of an app still use that path.
+- **Lost:** Home long press (LG's recents).
+- **Checked on the C8, 24 Oct 2026 00:28 BST:** the bind was added and Input Hook logged `Keybinds reloaded` in `lginput2` and `tvservice`.
+  `home-key.sh` over YouTube launched Lumen bar 0.11 s after it started, and the bar window was visible 0.38 s after it started
+  (`NL_VSC ... lumen.bar visible: true`), with no `_WEBOS_WINDOW_TYPE_HOME` line at all. A press on the real remote was not made from
+  here: on the TV, `/tmp/lginput-hook-lginput2.log` shows `773: execing...` and `/tmp/homehook.log` shows `Home key [...] over ...`.
+- **Undo:** `touch /var/lib/homehook/no-home-key` (the watcher takes its bind out within 5 s), or turn off Home opens Lumen, or run
+  `tools/tv/stop_watch.sh`, which also removes it.
 
 ## Risks
 
