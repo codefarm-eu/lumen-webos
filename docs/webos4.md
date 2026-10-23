@@ -98,7 +98,24 @@ Once a second the watcher checks for LG's home and opens Lumen in its place:
 - With Lumen's Live TV off (`livetv-to-lumen`): Live TV coming to the front straight after another app, which is where Back out of an
   app lands, or within 30 s of a wake. Live TV picked from Lumen is left alone.
 
-Lumen's own LG Home button still opens LG's home (`/tmp/allow_lg_home`).
+Lumen's own LG Home button sets `/tmp/allow_lg_home` so the watcher leaves LG's home alone. On this C8 it does not open LG's home,
+though: `launch {"id":"com.webos.app.home"}` answers `notexist` (see below).
+
+### What LG's home is on webOS 4 (checked on the C8, 4.4.3)
+
+1.0.9003 did nothing on the TV. The watcher was installed, running and polling, but LG's home never showed in `getForegroundAppInfo`.
+On webOS 4 the home/launcher bar is not an app. No `com.webos.app.home` is installed and launching it gives `notexist`. It is a surface
+manager window (`_WEBOS_WINDOW_TYPE_HOME`) drawn over the app in front. While it is up, `getForegroundAppInfo`, plain and with
+`extraInfo`, and the surface manager's own `getForegroundAppInfo` keep reporting that app (YouTube, Netflix or Lumen itself).
+`com.webos.surfacemanager/getCurrentState` says `none`. The one trace is in `/var/log/messages`, once per appearance:
+
+    LSM NL_VSC {"app_id": "com.webos.app.home", "visible": true, "window_type": "_WEBOS_WINDOW_TYPE_HOME"}
+    LSM NL_HOME_SHOWN {"CLOCK": 18773.395, "foregroundId": "com.ovsteenb.lumen", "params": ""}
+
+So the watcher now also reads the newest `NL_HOME_SHOWN` line each tick, and every new one counts as LG's home. Lines from before it
+started do not count. The file rotates about every 10 min (`messages.0.gz` and so on), and a new file simply has no line yet. Each answer
+is logged to `/tmp/homehook.log` (`LG Home shown …` and `LG Home -> <id>: <launch reply>`). Not yet checked on the TV: whether launching
+Lumen hides the home bar when Lumen is already the app under it.
 
 Not covered:
 - LG's home shows for up to about a second before Lumen replaces it, because the watcher polls. Only a key remap (LG Input Hook) could
