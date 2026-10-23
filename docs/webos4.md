@@ -211,6 +211,54 @@ Now the Home key never reaches the surface manager.
 - **Undo:** `touch /var/lib/homehook/no-home-key` (the watcher takes its bind out within 5 s), or turn off Home opens Lumen, or run
   `tools/tv/stop_watch.sh`, which also removes it.
 
+## Control Center: Sound and Picture
+
+The choices come from the TV. At the first Control Center opening in a session, `getSystemSettingDesc` (as root) is read for `pictureMode`
+and `soundMode`, and `getSystemSettings` for `pictureMode`, `soundMode` and `soundOutput` each time. Read from the C8 on 23 Oct 2026:
+
+| | C8 reply | What Lumen offers |
+|---|---|---|
+| `pictureMode` | current `hdrEffect` (dimension `dynamicRange: sdr`). 28 values, all `active`. `visible` only for vivid, normal, eco, cinema, sports, game, hdrEffect, technicolor, expert1, expert2. `photo` and every hdr*/dolbyHdr*/technicolorHdr* mode are `visible: false` | SDR: exactly those 10 visible ones (no FILMMAKER, which the C8 does not have) |
+| HDR, Dolby Vision | the desc is not per signal: the HDR and Dolby Vision modes stay `visible: false` while such a picture plays | the menu of the current mode's group: HDR (Vivid, Standard, Cinema Home, Cinema, Game, Technicolor Expert), Dolby Vision (Vivid, Standard, Cinema Home, Cinema, Game), Technicolor HDR, filtered on `active`. They only appear while such content plays |
+| `soundMode` | current `movie`. Values standard, movie, news, sports, music, game (pagode, sertaWego, brazilianPunk inactive). `ui.active: false` | |
+| `soundOutput` | `external_arc` (Denon over HDMI ARC) | |
+
+The sound modes only apply to the TV's own speakers, and the C8 greys them out (`ui.active: false`) for HDMI ARC. So with the Denon,
+Sound shows "HDMI ARC" and opening it says "Sound modes are off: the sound goes to HDMI ARC. Set the sound mode on that device." With
+the speakers it offers the 6 modes. A mode the TV refuses (`returnValue: false`) is put back on screen, dropped from the list and
+remembered (`lumen-refused-modes-v1`). Lumen never sets sound output.
+
+Tested in Chromium 53 and current Chrome with a fake Luna that replays the C8's own desc replies. Scenario A (HDMI ARC, Cinema): the
+message shows and the 10 SDR modes appear. A refused mode is put back and gone at the next opening. Scenario B (Dolby Vision Cinema, TV
+speaker): 5 Dolby Vision modes and 6 sound modes.
+
+## How it was tested (off the TV)
+
+- `npm --prefix app run build` (type check and build) and `python3 tools/build_release.py` (the `.ipk`) run clean.
+- The bundle parses as ES2016 (acorn, `es-check es2016`). The CSS after PostCSS was checked with doiuse for `chrome 53`: what remains is
+  the grid (fallback in place), prefixed masks, and `backdrop-filter`/`clamp()` inside the live-blur rules only.
+- A real Chromium 53.0.2785.0 Linux build (Chromium snapshot 403380, the M53 branch point) under Xvfb loaded `app/dist` over HTTP and the
+  packaged app from `file://`, at 1920x1080 with a webOS user agent, driven over DevTools: home, glass bar, lower rows, Control Center and
+  its Sound list, Inputs, Settings and the Apps grid all draw with no script errors, side by side with current Chrome. The upstream build
+  (target chrome79) shows only a black screen there (`SyntaxError: Unexpected token {`), and a plain `chrome53` retarget without the
+  polyfills fails at start-up too (`TypeError: ... is not a function`).
+
+Not tested: the TV itself (its GPU, memory, Luna services and the Homebrew Channel install), Live TV, Immich, the screensaver and video
+wallpapers.
+
+## Screensaver without Immich (1.0.9009)
+
+Screensaver in Control Center used to say "Set up Immich first" when no Immich server was set up. Now Lumen's screensaver
+(`components/Ambient.tsx`) has two sources (`lib/screensaver.ts`): your Immich photos only when Settings > Screensaver > **Use my photos**
+is on *and* an Immich server is set up; otherwise a slow crossfade of Lumen's bundled pictures (`LOCAL_WALLPAPERS`, `public/wallpapers/
+default-N.jpg`, or your own from `app/private/`), random order, never the same one twice running, with the clock and weather. They are in the
+app, so no network is used. Upstream (samrenfrew/lumen-webos) has only Immich or LG's screensaver here.
+- **Control Center > Screensaver:** always Lumen's screensaver (Immich or the bundled pictures). Never the Immich prompt.
+- **Use my photos / Use Lumen's screensaver** (the label depends on whether Immich is set up): on, the TV's screensaver and the home-screen
+  idle timer open Lumen's screensaver with the same rule; off, they open LG's, as before.
+- **Time on each photo, Brightness, Print look** now show without Immich too, since they apply to the bundled pictures.
+- Test: `npm test` (`tools/test/screensaver.test.mjs`, also run by the release workflow).
+
 ## Risks
 
 - **Speed**: `background-attachment: fixed` glass is not composited, so a glass shape that moves or scales (focus zoom, Control Center
