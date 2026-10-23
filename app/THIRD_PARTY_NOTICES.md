@@ -10,8 +10,10 @@ is **not** covered by that licence.
 |---|---|---|
 | [Preact](https://preactjs.com) | MIT, © Jason Miller | compiled into `assets/app.js`; licence text in [public/licenses/preact-MIT.txt](public/licenses/preact-MIT.txt) |
 | [Inter](https://rsms.me/inter/) typeface | SIL Open Font License 1.1, © The Inter Project Authors | `src/assets/inter-latin-wght.woff2`; licence text in [public/licenses/Inter-OFL.txt](public/licenses/Inter-OFL.txt) |
+| [Geist](https://github.com/vercel/geist-font) typeface, variable and static cuts | SIL Open Font License 1.1, © The Geist Project Authors | `src/assets/geist-*.woff2`; licence text in [public/licenses/Geist-OFL.txt](public/licenses/Geist-OFL.txt) |
+| [core-js](https://github.com/zloirock/core-js) polyfills | MIT, © Denis Pushkarev, CoreJS Company | compiled into `assets/app.js` for Chromium 53 (webOS 4); licence text in [public/licenses/core-js-MIT.txt](public/licenses/core-js-MIT.txt) |
 
-Both licence texts are included in the installed app under `licenses/`.
+The licence texts are included in the installed app under `licenses/`.
 
 ## App and input icons
 

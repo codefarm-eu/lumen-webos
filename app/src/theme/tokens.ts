@@ -1,3 +1,5 @@
+import {FONT_VARIATIONS} from '../lib/compat';
+
 // Design tokens: the single source of truth for colour, spacing, type and motion.
 // `applyTokens()` exposes them as CSS custom properties so the stylesheet and the
 // components read the same values.
@@ -79,7 +81,9 @@ export function applyTokens (root: HTMLElement = document.documentElement): void
 		for (const key in values) {
 			const value = values[key];
 			const unit = typeof value === 'number' && !/scale|opacity|columns/i.test(key) ? (key.endsWith('Ms') ? 'ms' : 'px') : '';
-			root.style.setProperty(`--${group}-${kebab(key)}`, `${value}${unit}`);
+			// no variable fonts (webOS 4): the static cuts of the same font, or every weight would draw as Regular (global.css)
+			const text = group === 'font' && key === 'family' && !FONT_VARIATIONS ? String(value).replace('"Geist Variable"', '"Geist Static"') : `${value}${unit}`;
+			root.style.setProperty(`--${group}-${kebab(key)}`, text);
 		}
 	}
 }

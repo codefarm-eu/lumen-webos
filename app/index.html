@@ -21,8 +21,11 @@
       (function () {
         try {
           var config = JSON.parse(localStorage.getItem('launcher-config-v2') || '{}');
-          // Live blur from the first frame, or the glass first shows the heavier blurred copy; Dock blur as lib/storage.ts reads it
-          document.documentElement.classList.add('liveblur');
+          // Live blur from the first frame, or the glass first shows the heavier blurred copy; Dock blur as lib/storage.ts reads it.
+          // No backdrop-filter (webOS 4, Chromium 53): fake glass, the pre-blurred wallpaper copy lined up behind each glass shape (lib/compat.ts)
+          var css = window.CSS && CSS.supports;
+          var live = !!css && (CSS.supports('backdrop-filter', 'blur(1px)') || CSS.supports('-webkit-backdrop-filter', 'blur(1px)'));
+          document.documentElement.classList.add(live ? 'liveblur' : 'fakeglass');
           if (config.dockBlur === true) document.documentElement.classList.add('dockblur');
           var boot = JSON.parse(localStorage.getItem('lumen-boot-wallpaper-v1') || 'null');
           if (!boot || !(boot.url || boot.bg)) return;

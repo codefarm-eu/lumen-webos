@@ -4,6 +4,7 @@ import {cachedServer, loadServer, nextAsset, picturePosition, previewUrls, type 
 import {setAmbientShowing} from '../lib/system';
 import {dimForScreensaver, restoreBacklight} from '../lib/tvcontrols';
 import type {Weather} from '../lib/weather';
+import {safeAnimate} from '../lib/compat';
 
 interface Layer { urls: string[]; pos: string }
 const NO_LAYER: Layer = {urls: [], pos: ''};
@@ -38,7 +39,7 @@ export function Ambient ({source, seconds = 30, backlight, weather, showPeriod, 
 		clock.style.transform = '';
 		// the date and weather sit on the other side here, so they fade in rather than slide
 		const row = status.current && status.current.querySelector<HTMLElement>('.status__row');
-		if (row && row.animate) row.animate([{opacity: 0}, {opacity: 1}], {duration: 600, delay: 300, easing: 'ease-out', fill: 'backwards'});
+		if (row) safeAnimate(row, [{opacity: 0}, {opacity: 1}], {duration: 600, delay: 300, easing: 'ease-out', fill: 'backwards'});
 	}, []);
 
 	// the TV's backlight goes down while the screensaver shows (Settings > Screensaver > Brightness) and back up when it ends

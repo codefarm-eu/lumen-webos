@@ -26,7 +26,7 @@ function build (): void {
 	const w = Math.round(row.offsetWidth - (parseFloat(glass.left) || 0) - (parseFloat(glass.right) || 0));
 	const h = Math.round(parseFloat(glass.height) || 0);
 	const r = Math.min(Math.round(parseFloat(glass.borderTopLeftRadius) || 0), Math.floor(h / 2));
-	if (!observer) { observer = new ResizeObserver(build); observer.observe(row); }
+	if (!observer && typeof ResizeObserver === 'function') { observer = new ResizeObserver(build); observer.observe(row); }
 	if (!w || !h || `${w}x${h}x${r}` === size || !svg) return;
 	size = `${w}x${h}x${r}`;
 	svg.innerHTML = `<filter id="lg-dock" x="0" y="0" width="${w}" height="${h}" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">`

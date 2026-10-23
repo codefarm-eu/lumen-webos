@@ -2,6 +2,12 @@
 
 Lumen is a tvOS-style home screen for a rooted LG webOS TV.
 
+> **This fork (ovsteenb/lumen-webos)** makes Lumen run on a 2018 LG OLED C8 (webOS 4.x, Chromium 53): a `chrome53` build with polyfills, and a
+> fake glass (the pre-blurred wallpaper copy lined up behind each glass shape) where the engine has no `backdrop-filter`. Newer TVs keep the
+> upstream look. App id `com.ovsteenb.lumen`, title **Lumen**. Homebrew Channel repository:
+> `https://ovsteenb.github.io/lumen-webos/dev/apps.json`. Details, test results and what is unknown on webOS 4: [docs/webos4.md](docs/webos4.md).
+> Forked from [samrenfrew/lumen-webos](https://github.com/samrenfrew/lumen-webos); nothing here is sent upstream.
+
 This repository is a personal fork of [ammar027/lumen-webos](https://github.com/ammar027/lumen-webos). That project is built on [partridgeworks/webos-launcher](https://github.com/partridgeworks/webos-launcher) (MIT). Changes in this fork are not sent back to either project.
 
 ## The target TV

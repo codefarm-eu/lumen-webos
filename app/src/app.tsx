@@ -20,6 +20,7 @@ import {appTile, inputTile, pickInOrder} from './lib/tiles';
 import {TIMING} from './config/constants';
 import {LOCAL_WALLPAPERS, WALLPAPERS, WALLPAPER_CATEGORIES, cloudUrl} from './config/wallpapers';
 import {setLiquidDock} from './lib/liquidGlass';
+import {LIVE_BLUR, RESIZE_OBSERVER} from './lib/compat';
 import {resized, setLiveBlur, setPicks, setWallpaper, shownWallpaper} from './lib/wallpaper';
 import {restoreLeftoverBacklight} from './lib/tvcontrols';
 import {albums as immichAlbums, cachedServer, IMMICH_SOURCES, loadServer} from './lib/immich';
@@ -267,10 +268,16 @@ export function App () {
 		return () => { window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisibility); root.remove('settled'); };
 	}, []);
 	useEffect(() => setFpsCounter(__LUMEN_DEV__ && config.fpsCounter), [config.fpsCounter]);
-	// the glass is always live blur now (index.html sets the class first); the old pre-blurred copy for the glass is no longer a choice
-	useEffect(() => { document.documentElement.classList.add('liveblur'); setLiveBlur(true); }, []);
+	// live blur where the engine has backdrop-filter (index.html sets the class first); without it (webOS 4) the glass is the pre-blurred
+	// wallpaper copy, the original lite glass (lib/compat.ts, docs/webos4.md)
+	useEffect(() => {
+		const root = document.documentElement.classList;
+		root.toggle('liveblur', LIVE_BLUR);
+		root.toggle('fakeglass', !LIVE_BLUR);
+		setLiveBlur(LIVE_BLUR);
+	}, []);
 	useEffect(() => { document.documentElement.classList.toggle('dockblur', config.dockBlur); }, [config.dockBlur]);
-	useEffect(() => setLiquidDock(config.liquidDock), [config.liquidDock]);
+	useEffect(() => setLiquidDock(LIVE_BLUR && RESIZE_OBSERVER && config.liquidDock), [config.liquidDock]);
 	useEffect(() => setVideoChoice(config.videoPlaces), [config.videoPlaces]);
 	// the video wallpaper plays only within its hours (checked each minute); the still wallpaper shows the rest of the time
 	const [videoTime, setVideoTime] = useState(() => inVideoHours(config.videoHours));
@@ -637,20 +644,23 @@ export function App () {
 			description: 'Focus, rows and panels change at once, without sliding, fading or zooming.',
 			value: config.reduceMotion
 		},
-		{
-			id: OPTION.dockBlur,
-			group: 'appearance' as const,
-			label: 'Dock blur',
-			description: 'The glass bar blurs whatever is behind it. Off: the same glass look with no blur, and moving left and right is smoother.',
-			value: config.dockBlur
-		},
-		{
-			id: OPTION.liquidDock,
-			group: 'appearance' as const,
-			label: 'Liquid glass dock',
-			description: 'The glass bar bends the picture at its edges, like Liquid Glass on Apple TV. Moving along the dock is slower with it on. Over a video wallpaper it only tints, as the TV draws video where the app cannot reach it.',
-			value: config.liquidDock
-		},
+		// both act on the live blur: an engine without backdrop-filter (webOS 4) has nothing for them to change
+		...(LIVE_BLUR ? [
+			{
+				id: OPTION.dockBlur,
+				group: 'appearance' as const,
+				label: 'Dock blur',
+				description: 'The glass bar blurs whatever is behind it. Off: the same glass look with no blur, and moving left and right is smoother.',
+				value: config.dockBlur
+			},
+			{
+				id: OPTION.liquidDock,
+				group: 'appearance' as const,
+				label: 'Liquid glass dock',
+				description: 'The glass bar bends the picture at its edges, like Liquid Glass on Apple TV. Moving along the dock is slower with it on. Over a video wallpaper it only tints, as the TV draws video where the app cannot reach it.',
+				value: config.liquidDock
+			}
+		] : []),
 		{
 			id: OPTION.showAmPm,
 			group: 'language' as const,

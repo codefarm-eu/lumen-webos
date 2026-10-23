@@ -234,7 +234,7 @@ export function immichStackIds (base: string, key: string): Promise<string> {
 }
 
 /** Lumen's own install folder: the only place the app may read files from, and the only one copyFontIn writes to. */
-const APP_DIR = /^\/media\/developer\/apps\/usr\/palm\/applications\/com\.samrenfrew\.lumen(\.dev)?$/;
+const APP_DIR = /^\/media\/developer\/apps\/usr\/palm\/applications\/com\.(ovsteenb|samrenfrew)\.lumen(\.dev)?$/;
 
 /** Copies the SF font that tools/push_sf_font.sh put on the TV into the app's folder (each Channel update replaces the folder). True when copied. */
 export function copyFontIn (appDir: string): Promise<boolean> {

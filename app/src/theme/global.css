@@ -1,5 +1,6 @@
 /* Global styles. Values come from tokens.ts via CSS custom properties (see applyTokens).
-   Written for Chrome 79: no flex `gap`, no `inset`, no `aspect-ratio`. */
+   Written for Chrome 79: no flex `gap`, no `inset`, no `aspect-ratio`. This fork also runs on Chromium 53 (webOS 4): the build's PostCSS step
+   adds the prefixes and font-weight fallbacks it needs, and the blocks at the end ("webOS 4") cover what has no fallback (docs/webos4.md). */
 
 @font-face {
 	font-family: 'Geist Variable';
@@ -8,6 +9,14 @@
 	font-display: block;
 	src: url('../assets/geist-wght.woff2') format('woff2');
 }
+
+/* the same font in five fixed weights, for an engine without variable fonts (webOS 4, Chromium 53): theme/tokens.ts names this family
+   instead, so it is only downloaded there. Made from geist-wght.woff2 with fontTools' instancer. */
+@font-face { font-family: 'Geist Static'; font-style: normal; font-weight: 300; src: url('../assets/geist-static-300.woff2') format('woff2'); }
+@font-face { font-family: 'Geist Static'; font-style: normal; font-weight: 400; src: url('../assets/geist-static-400.woff2') format('woff2'); }
+@font-face { font-family: 'Geist Static'; font-style: normal; font-weight: 500; src: url('../assets/geist-static-500.woff2') format('woff2'); }
+@font-face { font-family: 'Geist Static'; font-style: normal; font-weight: 600; src: url('../assets/geist-static-600.woff2') format('woff2'); }
+@font-face { font-family: 'Geist Static'; font-style: normal; font-weight: 700; src: url('../assets/geist-static-700.woff2') format('woff2'); }
 
 * { box-sizing: border-box; }
 
@@ -1495,3 +1504,28 @@ html.light .slist__chevron { stroke: rgba(20, 22, 32, 0.45); }
 html.light .slist__row--focused { background-image: none; background-color: #14151b; color: #fff; box-shadow: 0 8px 18px rgba(20, 24, 40, 0.30); }
 html.light .slist__row--focused .slist__value { color: rgba(255, 255, 255, 0.6); }
 html.light .slist__row--focused .slist__chevron { stroke: rgba(255, 255, 255, 0.6); }
+
+/* ---------- webOS 4 (Chromium 53): the fork's fallbacks (docs/webos4.md) ---------- */
+
+/* Fake glass: an engine without backdrop-filter gets html.fakeglass (index.html, lib/compat.ts) instead of html.liveblur, so every glass shape
+   shows the pre-blurred wallpaper copy (--wp-blur) lined up with the wallpaper: the lite glass above (background-attachment: fixed, 1920x1080,
+   the same cover crop as the picture). It is the original Lumen look, drawn once per wallpaper, with nothing blurred per frame.
+   On top of it, in the dark look, the Control Center and Inputs controls get the live glass's dark tint, so white text stays readable on a
+   bright picture. Three layers (sheen, tint, picture) need three entries in each background list. */
+html.fakeglass:not(.light):not(.wp-video) .cc__mod:not(.cc__mod--focused) {
+	background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.20) 0%, rgba(255, 255, 255, 0.05) 42%, rgba(255, 255, 255, 0.12) 100%),
+		linear-gradient(rgba(10, 12, 20, 0.30), rgba(10, 12, 20, 0.30)), var(--wp-blur, var(--glass-fallback));
+	background-size: auto, auto, 1920px 1080px;
+	background-attachment: scroll, scroll, fixed;
+	background-position: 0 0, 0 0, var(--dev-left, 0px) var(--dev-top, 0px);
+}
+
+/* No CSS grid before Chromium 57: the Settings picker grid (components/Grid.tsx) wraps as a flex row of the same columns and gaps instead */
+@supports not (display: grid) {
+	.grid__track {
+		display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: flex-start;
+		width: calc(var(--layout-grid-columns) * (var(--layout-tile-size) + var(--layout-tile-gap)));
+		margin: 0 auto;
+	}
+	.grid__track > .tile { flex: 0 0 auto; margin: 0 calc(var(--layout-tile-gap) / 2) 40px; }
+}

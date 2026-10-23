@@ -11,7 +11,7 @@ shutil.copy(f'{ROOT}/app/dist/largeIcon.png', f'{out}/icon.png')
 manifest = {
     'id': info['id'], 'version': info['version'], 'type': 'web', 'title': info['title'],
     'appDescription': info.get('appDescription', ''), 'iconUri': f'{base}/icon.png',
-    'sourceUrl': 'https://github.com/samrenfrew/lumen-webos', 'rootRequired': True,
+    'sourceUrl': 'https://github.com/' + os.environ.get('GITHUB_REPOSITORY', 'ovsteenb/lumen-webos'), 'rootRequired': True,
     'ipkUrl': ipk_url, 'ipkHash': {'sha256': hashlib.sha256(open(ipk, 'rb').read()).hexdigest()}, 'ipkSize': os.path.getsize(ipk),
 }
 name = f"{info['id']}.manifest.json"

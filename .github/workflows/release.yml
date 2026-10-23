@@ -1,12 +1,14 @@
 # Builds the public .ipk (no app/private/) and publishes it as a GitHub release.
 #  - a tag v* (v1.1.0): a release of that name; with a hyphen (v1.1.0-rc.1) a prerelease
-#  - a push to any branch other than main: adds a build of that commit to the rolling prerelease "dev", which keeps the last 5 builds (so a
+#  - a push to any branch (upstream: any but main): adds a build of that commit to the rolling prerelease "dev", which keeps the last 5 builds (so a
 #    Channel that still lists the previous build can install it)
 name: release
+# ovsteenb/lumen-webos (the webOS 4 fork): main publishes dev builds too, since the fork's work lands on main; Run workflow builds by hand.
 on:
   push:
     tags: ['v*']
-    branches-ignore: [main]
+    branches: ['**', '!hbc-repo']
+  workflow_dispatch:
 permissions:
   contents: write
 # one run at a time: two pushes close together must not race on the dev release or the hbc-repo branch
@@ -66,6 +68,8 @@ jobs:
         # The Channel reads the index with XHR, so it is served from raw.githubusercontent.com (CORS allowed) on the hbc-repo branch:
         #   dev builds:     https://raw.githubusercontent.com/<repo>/hbc-repo/dev/apps.json
         #   tagged release: https://raw.githubusercontent.com/<repo>/hbc-repo/stable/apps.json
+        # The fork also serves the hbc-repo branch with GitHub Pages (CORS allowed too), as ovsteenb/webos-av-overlay is served:
+        #   https://<owner>.github.io/<repo>/dev/apps.json and .../stable/apps.json
         run: |
           CHANNEL=stable; [ "$TAG" = dev ] && CHANNEL=dev
           case "$TAG" in *-*) CHANNEL=dev ;; esac

@@ -7,7 +7,7 @@ A tvOS-style launcher for a rooted LG webOS TV. `app/` is the Preact app (a fork
 The target TV is an LG 43UT91006LA on webOS 25 (Chromium 120). The repo was first written for a webOS 22 TV, so any rule tuned for that TV is an assumption until it is seen working on this one. `PLAN.md` holds the roadmap and the **Verify on the TV** list; read its "Where things stand" section before starting work.
 
 - Code that needs a TV answer is written defensively (harmless if the answer is no) and marked **(verify)** in `PLAN.md` until Sam has seen it work.
-- The build still targets `chrome79` and a classic script, not a module (`app/vite.config.ts`). Keep it that way unless Sam decides otherwise.
+- This fork (ovsteenb) targets `chrome53` (an LG C8 on webOS 4) and a classic script, with core-js polyfills and fake glass where `backdrop-filter` is missing: see `docs/webos4.md`. Feature-test, never sniff versions.
 - The TV's graphics chip is weak. Animate only `transform` and `opacity`; glass is a pre-blurred wallpaper copy, not live blur. The reasons are in `RESEARCH.md` section 4.
 - Every root command goes through `app/src/lib/root.ts`, one fixed command per export, with each value checked against a list or pattern. Add new root commands there, in the same shape.
 

@@ -3,6 +3,7 @@ import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'preact/
 import {Glyph, type GlyphName} from './Glyph';
 import {useKeys, clamp, type NavKey} from '../hooks/useKeys';
 import {PICTURE_LABEL, PICTURE_MODES, SOUND_LABEL, SOUND_MODES, setSoundMode, readBacklight, readControls, setBacklight, setEyeComfort, restartTv, screenOff, setPictureMode, type Controls} from '../lib/tvcontrols';
+import {safeAnimate} from '../lib/compat';
 
 export type CenterAction = 'lg-home' | 'art';
 
@@ -99,9 +100,9 @@ export function growFrom (panel: HTMLElement | null, key: string): void {
 	const p = panel.getBoundingClientRect();
 	panel.style.transformOrigin = `${b.left + b.width / 2 - p.left}px ${b.top + b.height / 2 - p.top}px`;
 	const opts = {duration: 260, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)'};
-	panel.animate([{transform: 'scale(0.6)'}, {transform: 'none'}], opts);
+	safeAnimate(panel, [{transform: 'scale(0.6)'}, {transform: 'none'}], opts);
 	// each control fades on its own: fading the panel would cut their live blur off from the wallpaper
-	Array.from(panel.querySelectorAll<HTMLElement>('.cc__mod, .cc__caption')).forEach((el) => el.animate([{opacity: 0}, {opacity: 1}], opts));
+	Array.from(panel.querySelectorAll<HTMLElement>('.cc__mod, .cc__caption')).forEach((el) => safeAnimate(el, [{opacity: 0}, {opacity: 1}], opts));
 }
 
 /** Control Center (opened from the round button top right): sound, picture mode, appearance, clock, the screensaver (your photos), LG Home, screen off,
@@ -289,7 +290,7 @@ export function ControlCenter ({onClose, onCloseDown, onError, onAction, darkMod
 		const each = (root: HTMLElement | null, sel: string, frames: Keyframe[]) => (root ? Array.from(root.querySelectorAll<HTMLElement>(sel)) : []).map((el): [HTMLElement, Keyframe[]] => [el, frames]);
 		const pairs: [HTMLElement | null, Keyframe[]][] = [[pillEl.current, k.pill], [glassEl.current, k.glass], [rimEl.current, k.rim], [textEl.current, k.text], [listEl.current, k.list], [gridEl.current, k.grid],
 			...each(listEl.current, '.cc__opt', k.listFade), ...each(gridEl.current, '.cc__mod:not(.cc__mod--gone), .cc__caption', k.gridFade)];
-		running.current = pairs.filter(([el]) => el && el.animate).map(([el, frames]) => (el as HTMLElement).animate(frames, opts));
+		running.current = pairs.map(([el, frames]) => el ? safeAnimate(el, frames, opts) : null).filter((a): a is Animation => !!a);
 		const grid = gridEl.current;
 		if (grid) grid.style.transformOrigin = `${morph.geo.x + morph.geo.w / 2}px ${morph.geo.y + morph.geo.h / 2}px`;
 		after(ms + 20, () => {

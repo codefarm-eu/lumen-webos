@@ -8,6 +8,8 @@
 import {readFile, immichRequest, immichStackIds} from './root';
 import {readCache, writeCache} from './boot';
 import {loadConfig} from './storage';
+import {canvasFilterWorks} from './compat';
+import {blurCanvasPixels} from './stackBlur';
 
 export interface ImmichServer { url: string; key: string }
 
@@ -330,7 +332,9 @@ function blur (imgs: HTMLImageElement[], w: number, h: number, radius: number, q
 	const canvas = document.createElement('canvas');
 	canvas.width = w; canvas.height = h;
 	const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
-	ctx.filter = `blur(${radius}px)`;
+	// webOS 4 (Chromium 53) may ignore a canvas filter: then the picture is drawn sharp and blurred by hand after (lib/stackBlur.ts)
+	const byFilter = canvasFilterWorks();
+	if (byFilter) ctx.filter = `blur(${radius}px)`;
 	const cw = w / imgs.length;
 	imgs.forEach((img, i) => {
 		// cover-crop each thumbnail to its column, drawn a little oversize so the blur does not pull in transparent edges
@@ -343,5 +347,6 @@ function blur (imgs: HTMLImageElement[], w: number, h: number, radius: number, q
 		ctx.drawImage(img, i * cw + (cw - dw) / 2, (h - dh) / 2, dw, dh);
 		ctx.restore();
 	});
+	if (!byFilter) blurCanvasPixels(ctx, w, h, radius);
 	return canvas.toDataURL('image/jpeg', quality);
 }
