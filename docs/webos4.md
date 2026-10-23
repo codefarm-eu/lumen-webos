@@ -72,4 +72,5 @@ wallpapers.
 
 `.github/workflows/release.yml` builds the public `.ipk` and updates the Channel index on the `hbc-repo` branch, which GitHub Pages serves.
 A push to `main` (or any branch) adds a dev build (`1.0.9xxx`) to the rolling `dev` release, which keeps the last five; Actions > release >
-Run workflow does the same by hand. A `v*` tag makes a stable release and `stable/apps.json`.
+Run workflow does the same by hand. On this fork GitHub has not yet run the workflow on a push (only by hand): until the Actions
+tab's "enable workflows" prompt is accepted, use Run workflow. A `v*` tag makes a stable release and `stable/apps.json`.
