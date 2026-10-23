@@ -42,26 +42,31 @@ jobs:
         env:
           LUMEN_DEV: ${{ (github.ref_type == 'tag' && !contains(github.ref_name, '-')) && '0' || '1' }}
         run: python3 tools/build_release.py
+      - name: Build Lumen bar
+        # the overlay app (bar/), same version as Lumen
+        run: LUMEN_BUILD_DIR=release sh tools/build_bar.sh
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           REF_TYPE: ${{ github.ref_type }}
           REF: ${{ github.ref_name }}
         run: |
-          IPK=$(ls release/*.ipk)
-          SUM=$(sha256sum "$IPK" | cut -d' ' -f1)
-          printf 'Built from %s.\n\nInstall: drop the .ipk onto Dev Manager, or `ares-install --device lgtv %s`.\n\nSHA-256: `%s`\n' \
-            "$GITHUB_SHA" "$(basename "$IPK")" "$SUM" > notes.md
+          IPKS=$(ls release/*.ipk)
+          { printf 'Built from %s.\n\nInstall: drop the .ipk onto Dev Manager, or `ares-install --device lgtv <file>`.\n\n' "$GITHUB_SHA"
+            for f in $IPKS; do printf -- '- `%s` SHA-256: `%s`\n' "$(basename "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"; done; } > notes.md
           if [ "$REF_TYPE" = tag ]; then
             TAG=$REF; PRE=; case "$TAG" in *-*) PRE=--prerelease ;; esac
-            gh release create "$TAG" "$IPK" --target "$GITHUB_SHA" --title "Lumen $TAG ($REF, ${GITHUB_SHA:0:7})" --notes-file notes.md $PRE
+            gh release create "$TAG" $IPKS --target "$GITHUB_SHA" --title "Lumen $TAG ($REF, ${GITHUB_SHA:0:7})" --notes-file notes.md $PRE
           else
             # add this build to "dev" instead of replacing the release, then drop all but the newest 5 builds
             TAG=dev
             gh release view dev >/dev/null 2>&1 || gh release create dev --target "$GITHUB_SHA" --title "Lumen dev" --notes-file notes.md --prerelease
-            gh release upload dev "$IPK" --clobber
+            gh release upload dev $IPKS --clobber
             gh release edit dev --title "Lumen dev ($REF, ${GITHUB_SHA:0:7})" --notes-file notes.md
-            gh release view dev --json assets -q '.assets[].name' | grep '\.ipk$' | sort -V | head -n -5 | while read -r old; do gh release delete-asset dev "$old" --yes; done
+            # the newest 5 builds of each app (Lumen, Lumen bar)
+            for app in com.ovsteenb.lumen_ com.ovsteenb.lumen.bar_; do
+              gh release view dev --json assets -q '.assets[].name' | grep "^${app}[0-9].*\.ipk$" | sort -V | head -n -5 | while read -r old; do gh release delete-asset dev "$old" --yes; done
+            done
           fi
           echo "TAG=$TAG" >> "$GITHUB_ENV"
       - name: Homebrew Channel repository
@@ -73,11 +78,13 @@ jobs:
         run: |
           CHANNEL=stable; [ "$TAG" = dev ] && CHANNEL=dev
           case "$TAG" in *-*) CHANNEL=dev ;; esac
-          IPK=$(ls release/*.ipk)
           BASE="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/hbc-repo/$CHANNEL"
-          URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$IPK")"
+          ARGS=""
+          for f in release/com.ovsteenb.lumen_*.ipk release/com.ovsteenb.lumen.bar_*.ipk; do
+            ARGS="$ARGS $f https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$f")"
+          done
           git config user.name github-actions; git config user.email github-actions@users.noreply.github.com
           git fetch origin hbc-repo && git worktree add hbc origin/hbc-repo || { git worktree add --detach hbc && git -C hbc checkout --orphan hbc-repo && git -C hbc rm -rfq .; }
           rm -rf "hbc/$CHANNEL"
-          python3 tools/gen_hbc_repo.py "$IPK" "$URL" "$BASE" "hbc/$CHANNEL"
+          python3 tools/gen_hbc_repo.py "hbc/$CHANNEL" "$BASE" $ARGS
           cd hbc && git add -A && git commit -qm "$CHANNEL: $TAG ${GITHUB_SHA:0:7}" && git push origin HEAD:hbc-repo

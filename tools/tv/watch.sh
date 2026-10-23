@@ -26,11 +26,16 @@
 #    another app, Lumen is launched, which usually takes the bar down. When it came up over Lumen itself (or is still up 1.5 s after the
 #    launch), a Back key is sent through LG's network input service (what the LG phone app's remote uses), which closes the bar. Back is only
 #    sent while the log says the bar is visible, so it never reaches an app.
+#  - With /var/lib/homehook/home-bar (Lumen: Settings > Home Screen > Home shows the bar) and Lumen bar (com.ovsteenb.lumen.bar) installed:
+#    LG's bar over another app is closed with Back and Lumen bar, an overlay window, comes up over the app instead. Over Lumen, and within
+#    the wake window, as above.
 # Never spins: reacts only when the app changes, and at most once every 3 s. Does nothing if the app is not installed.
 # ME lists every Lumen build (stable, dev). Home opens the one that was last in front, or the first installed one in this list. The flag files in
 # /var/lib/homehook/ are shared by all of them, which is fine while only one is in front at a time.
 ME="com.ovsteenb.lumen com.ovsteenb.lumen.dev com.samrenfrew.lumen com.samrenfrew.lumen.dev com.ammar027.lumen com.ammar027.lumen.dev"
 FRAME=com.ammar027.lumen.gallery
+BAR=com.ovsteenb.lumen.bar
+BAR_FLAG=/var/lib/homehook/home-bar
 LGHOME=com.webos.app.home
 LGHOMES="com.webos.app.home com.webos.app.launcher"
 LIVETV=com.webos.app.livetv
@@ -98,6 +103,16 @@ on_home_shown() {
     hide_home "over Lumen"
     return 0
   fi
+  # Home shows the bar (home-bar, and Lumen bar installed), not right after a wake: LG's bar is closed with Back first (Back would otherwise
+  # go to Lumen bar once it has the focus), then Lumen bar comes up over the app, which keeps playing
+  if [ -f "$BAR_FLAG" ] && [ -f "$TAKEOVER_FLAG" ] && [ -d "$APPS/$BAR" ] && { [ -z "$wu" ] || [ "$now" -ge "$wu" ] 2>/dev/null; }; then
+    hide_home "for Lumen bar"
+    i=0
+    while [ "$i" -lt 8 ] && home_visible; do usleep 100000 2>/dev/null || sleep 1; i=$((i + 1)); done
+    r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$BAR\"}" </dev/null 2>&1 | tr -d ' \n')
+    echo "$(date +%T) LG Home -> $BAR over ${fg:-?}: $r" >> /tmp/homehook.log
+    return 0
+  fi
   r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d ' \n')
   echo "$(date +%T) LG Home -> $target: $r" >> /tmp/homehook.log
   i=0
@@ -141,7 +156,7 @@ me_target() {
 
 # remembers an app that came to the front in $RECENT (plain app ids only; Lumen, Frame and LG Home are left out)
 note_recent() {
-  case "$1" in ''|$LGHOME|$FRAME) return ;; esac
+  case "$1" in ''|$LGHOME|$FRAME|$BAR) return ;; esac
   for id in $ME; do [ "$1" = "$id" ] && return; done
   printf '%s' "$1" | grep -qE '^[A-Za-z0-9._-]+$' || return
   { echo "$1"; [ -f "$RECENT" ] && grep -vxF "$1" "$RECENT"; } | head -n 8 > "$RECENT.tmp" && mv "$RECENT.tmp" "$RECENT"

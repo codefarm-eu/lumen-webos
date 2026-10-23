@@ -324,6 +324,44 @@ export function setHomeTakeover (appDir: string, on: boolean, livetv: boolean): 
 	});
 }
 
+/** Lumen bar (com.ovsteenb.lumen.bar) sits next to Lumen in the TV's app folder. */
+export const BAR_ID = 'com.ovsteenb.lumen.bar';
+export const barDir = (appDir: string): string => appDir.replace(/\/[^/]+$/, '/' + BAR_ID);
+
+/** Tells watch.sh to answer LG's home bar over an app with Lumen bar (home-bar). Prints "missing" when Lumen bar is not installed. */
+export function setHomeBar (appDir: string, on: boolean): Promise<'on' | 'off' | 'missing'> {
+	if (!APP_DIR.test(appDir)) return Promise.reject(new Error('refused: app folder'));
+	if (!on) return run(`rm -f ${HOMEHOOK}/home-bar; echo off`).then(() => 'off');
+	return run(`mkdir -p ${HOMEHOOK} && touch ${HOMEHOOK}/home-bar; [ -d ${barDir(appDir)} ] && echo on || echo missing`)
+		.then((out) => (out.indexOf('missing') !== -1 ? 'missing' : 'on'));
+}
+
+export interface BarApp { id: string; title: string; color?: string; plain?: boolean; file?: string }
+/** Fills Lumen bar's data/ folder: copies each app's icon file to data/icons/<id>.<ext> and writes data/bar.json (the dock, Lumen's recent
+ *  list, the apps, Lumen's id). Skipped when data/sig already holds `sig` (an app update wipes data/, and then it is written again). */
+export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string): Promise<'same' | 'written' | 'missing'> {
+	if (!APP_DIR.test(appDir) || !APP_ID.test(lumenId) || !/^[a-z0-9]+$/.test(sig)) return Promise.reject(new Error('refused'));
+	const dir = barDir(appDir);
+	const out: Record<string, {title: string; color?: string; plain?: boolean; icon?: string}> = {};
+	const copies: string[] = [];
+	apps.forEach((a) => {
+		if (!APP_ID.test(a.id)) return;
+		const entry: {title: string; color?: string; plain?: boolean; icon?: string} = {title: a.title, color: a.color, plain: a.plain};
+		if (a.file && SAFE_PATH.test(a.file)) {
+			const ext = (/\.(png|jpe?g|svg|webp|gif)$/i.exec(a.file) || ['', 'png'])[1].toLowerCase();
+			entry.icon = `data/icons/${a.id}.${ext}?${sig}`;
+			copies.push(`cp -f ${shellQuote(a.file)} ${dir}/data/icons/${a.id}.${ext} 2>/dev/null`);
+		}
+		out[a.id] = entry;
+	});
+	const json = JSON.stringify({v: 1, lumen: lumenId, dock: dock.filter((x) => APP_ID.test(x)), recent: recent.filter((x) => APP_ID.test(x)), apps: out});
+	const b64 = toBase64(json);
+	return run(`[ -d ${dir} ] || { echo missing; exit 0; }; [ "$(cat ${dir}/data/sig 2>/dev/null)" = ${sig} ] && { echo same; exit 0; }; `
+		+ `rm -rf ${dir}/data && mkdir -p ${dir}/data/icons; ${copies.join('; ') || 'true'}; `
+		+ `echo ${b64} | base64 -d > ${dir}/data/bar.json && echo ${sig} > ${dir}/data/sig && echo written`, 15000)
+		.then((r) => (r.indexOf('missing') !== -1 ? 'missing' : r.indexOf('same') !== -1 ? 'same' : 'written'));
+}
+
 /** Writes text to one of FILES. The text travels as base64, so nothing in it is ever read by the shell. */
 export function writeFile (name: HomehookFile, text: string): Promise<void> {
 	if (FILES.indexOf(name) === -1) return Promise.reject(new Error('unknown file ' + name));

@@ -140,6 +140,46 @@ Off-TV tests: a simulation of the watcher with a fake `luna-send` covered Home i
 time (no bounce), Back to Live TV with and without the flag, Live TV picked from Lumen, the LG Home button and takeover off. The
 captured install command, run as root on a Linux box, reported installed, then same, then updated, with one watcher running.
 
+## Lumen bar (Home shows the bar)
+
+A second app, **Lumen bar** (`com.ovsteenb.lumen.bar`, folder `bar/`, plain ES5 with no build step), shows Lumen's dock as an overlay window
+over the app that is playing, as LG's own launcher bar does. Its `appinfo.json` sets `"defaultWindowType": "overlay"`, `"transparent": true`,
+`"handlesRelaunch": true`, `"noSplashOnLaunch": true`, `"spinnerOnLaunch": false` and `"visible": false` (it is not in LG's app list).
+The same settings are used by `com.sammysco.avoverlay`.
+
+- **Turn on:** Lumen Settings > Home Screen > **Home shows the bar** (off by default). This turns on Home opens Lumen too, and sets
+  `/var/lib/homehook/home-bar`. Off, everything is as in 1.0.9005.
+- **The watcher:** when LG's home bar comes up over another app (not over Lumen, and not in the wake window after power on or after the
+  watcher starts, about 90 s), it closes LG's bar with Back (networkinput, only while it is visible) and launches Lumen bar.
+- **Keys:** Left and Right move. OK opens the app and closes the bar. Up, or the house tile at the left, opens full Lumen. Back or Esc closes
+  the bar, and the app underneath has the focus again. After 10 s without a key the bar closes by itself. A relaunch (Home pressed again)
+  starts it over.
+- **Data:** an app cannot read another app's storage, so Lumen fills `data/` in Lumen bar's folder, as root. `data/bar.json` holds the dock
+  (the glass bar's apps), Lumen's recent list, every app's title and colour, and Lumen's id. `data/icons/<id>.png` are copied from the TV
+  icon paths or from Lumen's bundled icons. It is written again only when a signature in `data/sig` changes, so an update of Lumen bar,
+  which empties its folder, is refilled at Lumen's next start. Lumen bar also reads `/var/lib/homehook/recent` and shows up to 4 recent
+  apps that are not in the dock, after a divider.
+- **Look:** tinted glass. A dark translucent fill with a light rim and a shadow, and no blur: an overlay cannot see the video, so the
+  blurred-wallpaper glass cannot be used.
+- **No preload:** the bar is about 10 KB with no framework. It is drawn about 0.4 s after the launch from cold, so it is not preloaded.
+
+Checked on the C8 (webOS 4.4.3), 24 Oct 2026, 00:07-00:12 BST, with a dev build of Lumen bar and data written as Lumen would. The keys were
+sent through networkinput:
+- **Over YouTube:** LG's bar came up, Back closed it 0.46 s later, and Lumen bar was visible 0.93 s after the Home press. The app list
+  stayed `youtube.leanback.v4` (card) + `com.ovsteenb.lumen.bar` (overlay). Back reached the bar and closed it, and YouTube was alone in front again.
+  The dock showed the real icons from Olivier's dock (YouTube, Moonfin, Prime Video, Amazon Music, ..., Netflix), plus Live TV as recent.
+- **Over Moonfin:** the same, and Back closed it.
+- **Over Netflix:** the same. After Back, a Down key changed Netflix's screen, so the remote works in the app again. OK on the YouTube tile
+  opened YouTube and closed the bar.
+- **com.sammysco.avoverlay:** its watcher launches it after each app (card) launch. It did not launch after Lumen bar (an overlay), and it
+  did not take the bar's keys. When Lumen bar opens YouTube, avoverlay comes up as usual for that launch.
+
+Known issues:
+- LG's bar flashes for about 0.5 s before it is closed. Once (over Moonfin) LG's bar only went 1.6 s after the Back, and Lumen bar came up
+  under it for a moment.
+- Within about 90 s of a boot, or of the watcher (re)starting, Home opens full Lumen, not the bar. That is the wake window.
+- Live TV and HDMI inputs underneath were not tested.
+
 ## Control Center: Sound and Picture
 
 The choices come from the TV. At the first Control Center opening in a session, `getSystemSettingDesc` (as root) is read for `pictureMode`
@@ -186,6 +226,10 @@ wallpapers.
   dependencies beyond Preact.
 
 ## Publishing
+
+Each build publishes two packages to the same Homebrew Channel index: `com.ovsteenb.lumen` and `com.ovsteenb.lumen.bar` (`tools/build_bar.sh`, same
+version). `tools/gen_hbc_repo.py` takes several .ipk files and reads each one's id, version and icon from the .ipk itself.
+
 
 `.github/workflows/release.yml` builds the public `.ipk` and updates the Channel index on the `hbc-repo` branch, which GitHub Pages serves.
 A push to `main` (or any branch) adds a dev build (`1.0.9xxx`) to the rolling `dev` release, which keeps the last five; Actions > release >

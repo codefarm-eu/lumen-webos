@@ -64,6 +64,8 @@ export interface UserConfig {
 	weatherPlace: WeatherPlace | null;
 	/** Settings > Home Screen > Home opens Lumen: the Home watcher installed from the app and its takeover on (lib/root.ts setHomeTakeover) */
 	homeTakeover: boolean;
+	/** Home over an app shows Lumen bar (com.ovsteenb.lumen.bar) instead of opening Lumen */
+	homeBar: boolean;
 	/** app folders: apps listed here are shown inside the folder, not on the rows */
 	folders: {name: string; appIds: string[]}[];
 	/** no transitions or animations */
@@ -138,6 +140,7 @@ export const DEFAULT_CONFIG: UserConfig = {
 	weatherCity: '',
 	weatherPlace: null,
 	homeTakeover: false,
+	homeBar: false,
 	folders: [],
 	reduceMotion: false,
 	hideNames: false,
@@ -222,6 +225,7 @@ export function parseConfig (raw: string): UserConfig {
 		weatherCity: typeof parsed.weatherCity === 'string' ? parsed.weatherCity : '',
 		weatherPlace: parsePlace(parsed.weatherPlace),
 		homeTakeover: parsed.homeTakeover === true,
+		homeBar: parsed.homeBar === true,
 		folders: Array.isArray(parsed.folders) ? parsed.folders : [],
 		reduceMotion: parsed.reduceMotion === true,
 		hideNames: parsed.hideNames === true,

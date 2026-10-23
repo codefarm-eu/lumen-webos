@@ -333,3 +333,14 @@ export function seedAppIds (apps: AppEntry[], preferred: string[]): string[] {
 	const first = preferred.filter((id) => apps.some((a) => a.id === id));
 	return first.concat(rest).slice(0, 24);
 }
+
+/** Where an app's icon is as a file on the TV, for Lumen bar (it copies the files): a TV icon read through the Homebrew Channel → its TV path;
+ *  a bundled icon (relative) → that path in Lumen's folder (`dir`); a file:// URL → its path. A data: URI with no known path, or no icon → undefined. */
+export function iconFile (a: AppEntry, dir: string): string | undefined {
+	const u = a.iconUrl;
+	if (!u) return undefined;
+	if (u.indexOf('data:') === 0) return iconPaths[a.id];
+	if (u.indexOf('file://') === 0) return decodeURIComponent(u.slice(7));
+	if (/^[a-z]+:/i.test(u)) return undefined;
+	return dir + '/' + u.replace(/^\.?\//, '');
+}

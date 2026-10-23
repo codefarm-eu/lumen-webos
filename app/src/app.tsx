@@ -7,7 +7,7 @@ import type {OptionItem} from './components/SettingsList';
 import {Toast, type ToastMessage} from './components/Toast';
 import type {TileModel} from './components/Tile';
 import {BUILTIN, BUILTIN_APPS, withBuiltins} from './config/builtinApps';
-import {cachedApps, listApps, sameApps, saveAppsCache, seedAppIds, type AppEntry} from './lib/apps';
+import {cachedApps, iconFile, listApps, sameApps, saveAppsCache, seedAppIds, type AppEntry} from './lib/apps';
 import {afterFirstFrame, readCache, writeCache} from './lib/boot';
 import {listInputs, MOCK_INPUTS, type InputSource} from './lib/inputs';
 import {launchApp, launchLgHome} from './lib/launch';
@@ -34,7 +34,7 @@ import {AUTO_PLACE, POSTCODE_PLACE, findPlace, peekWeather, readWeather, type We
 import {TextPrompt} from './components/TextPrompt';
 import {useLiveTv} from './hooks/useLiveTv';
 import {channelColor, nowNextAt, rowChannels, type Channel} from './lib/livetv';
-import {openChannel, runningApps, setHomeTakeover} from './lib/root';
+import {openChannel, runningApps, setHomeBar, setHomeTakeover, syncBar} from './lib/root';
 
 import {bootMark, navMark} from './lib/log';
 import {isDark, LANGS, setClockMode, setLang} from './lib/i18n';
@@ -52,7 +52,7 @@ const LIVE_INFO_W = 660;
 /** how much higher the Live TV row sits when focused, so its now/next block fits on screen */
 const LIVE_BELOW = 150;
 const MISC = {lgHome: 'lg-home', settings: 'settings'} as const;
-const OPTION = {liveTv: 'live-tv-row', ambient: 'ambient', ambientOn: 'ambient-on', ambientSeconds: 'ambient-seconds', ambientBrightness: 'ambient-brightness', ambientPrint: 'ambient-print', fps: 'fps-counter', restore: 'restore-backup', focus: 'focus-strength', firstRow: 'first-row', videoHours: 'video-hours', dockBlur: 'dock-blur', liquidDock: 'liquid-dock', reduceMotion: 'reduce-motion', hideNames: 'hide-names', showRecents: 'show-recents', useHomebrew: 'use-homebrew', videoWallpaper: 'video-wallpaper', videoClip: 'video-clip', dockHide: 'dock-hide', showAmPm: 'show-ampm', showAll: 'show-all-apps', weather: 'show-weather', city: 'weather-city', postcode: 'weather-postcode', homeTakeover: 'home-takeover', country: 'weather-country', idle: 'idle-screensaver', wpAuto: 'wp-auto', immichDays: 'immich-recent-days', wpType: 'wp-type', wpNew: 'wp-new', nightDim: 'night-dim', darkMode: 'dark-mode', language: 'language', clock: 'clock-format'} as const;
+const OPTION = {liveTv: 'live-tv-row', ambient: 'ambient', ambientOn: 'ambient-on', ambientSeconds: 'ambient-seconds', ambientBrightness: 'ambient-brightness', ambientPrint: 'ambient-print', fps: 'fps-counter', restore: 'restore-backup', focus: 'focus-strength', firstRow: 'first-row', videoHours: 'video-hours', dockBlur: 'dock-blur', liquidDock: 'liquid-dock', reduceMotion: 'reduce-motion', hideNames: 'hide-names', showRecents: 'show-recents', useHomebrew: 'use-homebrew', videoWallpaper: 'video-wallpaper', videoClip: 'video-clip', dockHide: 'dock-hide', showAmPm: 'show-ampm', showAll: 'show-all-apps', weather: 'show-weather', city: 'weather-city', postcode: 'weather-postcode', homeTakeover: 'home-takeover', homeBar: 'home-bar', country: 'weather-country', idle: 'idle-screensaver', wpAuto: 'wp-auto', immichDays: 'immich-recent-days', wpType: 'wp-type', wpNew: 'wp-new', nightDim: 'night-dim', darkMode: 'dark-mode', language: 'language', clock: 'clock-format'} as const;
 const WP_AUTO_CHOICES = [0, 0.5, 1, 5, 15, 30, 60];   // minutes
 /** when the video wallpaper plays (Settings > Wallpaper > Video wallpaper hours): [first hour, hour it stops]; always = no limit */
 const VIDEO_HOURS: Record<string, [number, number]> = {day: [7, 19], evening: [17, 23], night: [19, 7]};
@@ -376,6 +376,25 @@ export function App () {
 			.concat(folderTiles.map((f): TileModel => ({key: 'folder:' + f.name, label: f.name, color: '#3b4256', children: f.items.map((t) => t.imageUrl), running: f.items.some((t) => open(t.key))})));
 	}, [shownApps, folderTiles, config.folders, running]);
 
+	// Lumen bar (Home shows the bar): its data/ folder gets the dock (the glass bar's apps), Lumen's recent list and every app with its icon
+	// file, written again only when that changes (a signature in data/sig)
+	useEffect(() => {
+		if (!config.homeBar || !isWebOS() || !allApps.length) return;
+		const dir = appDir();
+		const real = allApps.filter((a) => !a.glyph && /^[A-Za-z0-9._-]+$/.test(a.id));
+		const dock = homeTiles.slice(0, config.firstRow).map((t) => t.key).filter((k) => real.some((a) => a.id === k));
+		const list = real.map((a) => ({id: a.id, title: a.title, color: a.color, plain: a.plain, file: iconFile(a, dir)}));
+		const text = JSON.stringify([dock, config.recentIds, list]);
+		let h = 5381;
+		for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+		const id = window.setTimeout(() => {
+			syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, h.toString(36))
+				.then((r) => { if (r === 'written') bootMark('bar: data written'); })
+				.catch(() => undefined);
+		}, 3000);
+		return () => window.clearTimeout(id);
+	}, [config.homeBar, allApps, homeTiles, config.firstRow, config.recentIds]);
+
 	// the first row (in the glass bar) holds config.firstRow apps; the rest make a grid of rows as wide below it, like the tvOS home screen
 	// (the grid rows are 'dock', 'dock:1', 'dock:2'...)
 	const firstRow = config.firstRow;
@@ -470,6 +489,13 @@ export function App () {
 				+ (config.liveTv ? '' : ' With Live TV off, Live TV coming up after an app (where Back out of an app lands) opens Lumen too.')
 				+ ' LG\'s home shows for about a second first. On installs a small watcher (/var/lib/homehook/watch.sh, started at boot by the Homebrew Channel); Off leaves LG\'s home alone again. Lumen\'s LG Home button still opens it. Needs the Homebrew Channel.',
 			value: config.homeTakeover
+		},
+		{
+			id: OPTION.homeBar,
+			group: 'home' as const,
+			label: 'Home shows the bar',
+			description: 'With Home opens Lumen on: Home pressed in an app shows Lumen\'s app bar over it, and the app keeps playing. OK opens an app, Up or the house opens Lumen, Back closes the bar. Needs the Lumen bar app from the same Homebrew Channel repository. Home in Lumen itself, and turning the TV on, still open Lumen.',
+			value: config.homeBar
 		},
 		{
 			id: OPTION.useHomebrew,
@@ -862,10 +888,23 @@ export function App () {
 		else if (optionId === OPTION.liveTv) updateConfig({...config, liveTv: !config.liveTv});
 		else if (optionId === OPTION.homeTakeover) {
 			const on = !config.homeTakeover;
-			updateConfig({...config, homeTakeover: on});
+			updateConfig({...config, homeTakeover: on, homeBar: on && config.homeBar});
+			if (!on && config.homeBar && isWebOS()) setHomeBar(appDir(), false).catch(() => undefined);
 			if (isWebOS()) setHomeTakeover(appDir(), on, !config.liveTv)
 				.then((r) => showToast(on ? (r === 'same' ? 'Home opens Lumen' : 'Home watcher ' + r + ': Home opens Lumen') : 'Home opens LG\'s home again'))
 				.catch((e: Error) => showToast('Could not set up the Home watcher: ' + e.message, 'error'));
+		}
+		else if (optionId === OPTION.homeBar) {
+			const on = !config.homeBar;
+			// the bar needs the watcher: turning it on turns Home opens Lumen on too
+			const takeover = on || config.homeTakeover;
+			updateConfig({...config, homeBar: on, homeTakeover: takeover});
+			if (isWebOS()) {
+				const watcher = on && !config.homeTakeover ? setHomeTakeover(appDir(), true, !config.liveTv) : Promise.resolve('same');
+				watcher.then(() => setHomeBar(appDir(), on))
+					.then((r) => showToast(r === 'missing' ? 'Install Lumen bar from the Homebrew Channel first' : on ? 'Home shows the bar' : 'Home opens Lumen', r === 'missing' ? 'error' : undefined))
+					.catch((e: Error) => showToast('Could not set up the bar: ' + e.message, 'error'));
+			}
 		}
 		else if (optionId === OPTION.videoWallpaper) updateConfig({...config, videoWallpaper: !config.videoWallpaper});
 		else if (optionId === OPTION.videoClip) {

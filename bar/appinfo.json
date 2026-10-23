@@ -1,0 +1,21 @@
+{
+  "id": "com.ovsteenb.lumen.bar",
+  "version": "1.0.9",
+  "vendor": "ovsteenb",
+  "type": "web",
+  "main": "index.html",
+  "title": "Lumen bar",
+  "appDescription": "Lumen's app bar over what is playing (webOS 4 fork). Needs Lumen; turn on Settings > Home Screen > Home shows the bar.",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "iconColor": "#050505",
+  "resolution": "1920x1080",
+  "transparent": true,
+  "defaultWindowType": "overlay",
+  "handlesRelaunch": true,
+  "noSplashOnLaunch": true,
+  "spinnerOnLaunch": false,
+  "disableBackHistoryAPI": true,
+  "supportTouchMode": "none",
+  "visible": false
+}
