@@ -192,7 +192,7 @@ export function useLiveTv (enabled: boolean, guideOpen: boolean, rowIds: string[
 	}, [enabled]);
 
 	useEffect(() => { if (started) bootMark('live-drawn'); }, [started]);
-	useEffect(() => { if (guideOpen && started) { refresh(false); readGuide(); } }, [guideOpen]);
+	useEffect(() => { if (enabled && guideOpen && started) { refresh(false); readGuide(); } }, [guideOpen]);
 
 	useEffect(() => {
 		if (!enabled || !started) return undefined;

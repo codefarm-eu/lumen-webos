@@ -39,10 +39,19 @@ All of these already fail quietly in upstream's code (a rejected Luna call shows
 | Volume, mute, network chip | `com.webos.audio`, `connectionmanager` | expected to work |
 | Picture, sound, backlight, Eye Comfort | `settingsservice` through root | expected to work; the C8 has no "FILMMAKER" mode (2020+), so that choice may show an error toast |
 | Screen off, restart, LG screensaver | `tvpower` through root | expected to work |
-| Live TV row and guide | `iepg`, `epgdb`, `apiadapter/tv/openChannel` | **unknown**: if the calls fail, the row is empty and hidden |
+| Live TV row and guide | `iepg`, `epgdb`, `apiadapter/tv/openChannel` | **off by default** (see below); if turned on and the calls fail, the row is empty and hidden |
 | Sleep timer chip | `tvReservationAgent` through root | **unknown**: if it fails there is simply no chip |
 | Home button takeover, wake launch, Recent row from other apps | `tools/tv/watch.sh`, installed over SSH only (not by the Channel) | not set up by the `.ipk`. `watch.sh` now lists `com.ovsteenb.lumen`. |
 | LG Input Hook | — | **uncertain on webOS 4**: its issue tracker has reports of key binds stopping after minutes (v1.4.0, webOS 4.x) and of v1.5.0 freezing `tvservice` on webOS 4.10 and losing the picture after standby on webOS 4.5. Not needed by Lumen. |
+
+## Live TV setting
+
+Settings > Home Screen > **Live TV**, off by default. Off, Lumen renders no channel row, opens no Guide (the Guide button and the
+`{"view":"guide"}` relaunch do nothing in Lumen), hides the Channels settings page, and makes no `iepg`/`epgdb` calls and reads no cached
+channel list at start. The code is still in the bundle: the build is a single classic script (iife, `inlineDynamicImports`), so it cannot be
+lazy-loaded, and `lib/livetv.ts` has no top-level side effects, so gating the hook is enough. Turned on, it starts at once (no relaunch).
+It is stored as `liveTv` in `launcher-config-v2`. Upstream's `liveTvRow` key is not read, so a config saved by an older build starts off.
+Tested with a fake `PalmServiceBridge` that logs every Luna call: off makes 0 Live TV calls; on asks `iepg/getChannelList` as expected.
 
 ## How it was tested (off the TV)
 
@@ -72,5 +81,4 @@ wallpapers.
 
 `.github/workflows/release.yml` builds the public `.ipk` and updates the Channel index on the `hbc-repo` branch, which GitHub Pages serves.
 A push to `main` (or any branch) adds a dev build (`1.0.9xxx`) to the rolling `dev` release, which keeps the last five; Actions > release >
-Run workflow does the same by hand. On this fork GitHub has not yet run the workflow on a push (only by hand): until the Actions
-tab's "enable workflows" prompt is accepted, use Run workflow. A `v*` tag makes a stable release and `stable/apps.json`.
+Run workflow does the same by hand. A `v*` tag makes a stable release and `stable/apps.json`.

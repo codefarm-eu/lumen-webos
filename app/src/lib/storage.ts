@@ -96,8 +96,10 @@ export interface UserConfig {
 	seeded: boolean;
 	/** the built-in tiles (Settings, TV Settings, Inputs) have been put on the home screen once; taken off, they stay off */
 	builtinTiles: boolean;
-	/** a row of aerial channels under the apps, with what is on now (needs the Homebrew Channel) */
-	liveTvRow: boolean;
+	/** Settings > Home Screen > Live TV: the row of aerial channels under the apps, the Guide and the Guide button (needs the Homebrew Channel).
+	 *  Off by default in this fork: off, no Live TV call is made. Stored as `liveTv`; upstream's `liveTvRow` (default on) is not read, so a
+	 *  config saved by an older build starts with it off too. */
+	liveTv: boolean;
 	/** the Live TV row's channels (channel ids), in order, picked in Settings > Channels; null = the first five by number */
 	liveChannels: string[] | null;
 	/** the Guide opens on the Full guide (the time grid) rather than Now and Next; the switcher at its top right sets it */
@@ -148,7 +150,7 @@ export const DEFAULT_CONFIG: UserConfig = {
 	fpsCounter: false,
 	seeded: false,
 	builtinTiles: false,
-	liveTvRow: true,
+	liveTv: false,
 	liveChannels: null,
 	guideFull: false
 };
@@ -214,7 +216,7 @@ export function parseConfig (raw: string): UserConfig {
 		fpsCounter: parsed.fpsCounter === true,
 		seeded: parsed.seeded !== false,
 		builtinTiles: parsed.builtinTiles === true,
-		liveTvRow: parsed.liveTvRow !== false,
+		liveTv: parsed.liveTv === true,
 		liveChannels: Array.isArray(parsed.liveChannels) ? parsed.liveChannels.filter((x) => typeof x === 'string') : null,
 		guideFull: parsed.guideFull === true
 	});

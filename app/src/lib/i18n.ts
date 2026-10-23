@@ -19,6 +19,7 @@ const TABLE: Record<string, string[]> = {
 	"Language and Clock": ["Sprache und Uhr", "Idioma y reloj", "Langue et horloge", "Lingua e orologio", "Idioma e relógio", "Taal en klok", "Dil ve saat", "भाषा और घड़ी"],
 	"System": ["System", "Sistema", "Système", "Sistema", "Sistema", "Systeem", "Sistem", "सिस्टम"],
 	"Choose wallpaper": ["Hintergrund wählen", "Elegir fondo", "Choisir le fond d'écran", "Scegli sfondo", "Escolher fundo", "Achtergrond kiezen", "Duvar kağıdı seç", "वॉलपेपर चुनें"],
+	"Live TV": ["Live-TV", "TV en directo", "TV en direct", "TV in diretta", "TV em direto", "Live tv", "Canlı TV", "लाइव टीवी"],
 	"Channels": ["Sender", "Canales", "Chaînes", "Canali", "Canais", "Zenders", "Kanallar", "चैनल"],
 	"Appearance": ["Darstellung", "Apariencia", "Apparence", "Aspetto", "Aspeto", "Weergave", "Görünüm", "दिखावट"],
 	"Light": ["Hell", "Claro", "Clair", "Chiaro", "Claro", "Licht", "Açık", "लाइट"],
