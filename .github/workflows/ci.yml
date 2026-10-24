@@ -1,0 +1,32 @@
+# Checks a pull request the way release.yml builds main (same Node, same build, same tests), but publishes nothing: no release, no
+# Homebrew Channel index. Merge only when this is green; the merge's push to main then publishes the dev build.
+name: ci
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22   # keep equal to release.yml
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Build the .ipk
+        env:
+          LUMEN_DEV: '1'
+        run: python3 tools/build_release.py
+      - name: Test
+        # the same command as release.yml and `npm test`; Node 22 needs the files, not the folder
+        run: node --test tools/test/*.test.mjs
+      - name: Build Lumen bar
+        run: LUMEN_BUILD_DIR=release sh tools/build_bar.sh
+      - name: Packages
+        run: ls -l release/*.ipk
