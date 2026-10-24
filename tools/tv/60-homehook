@@ -8,7 +8,14 @@ start() {
   for p in /proc/[0-9]*; do
     case "$({ tr "\0" " " < $p/cmdline; } 2>/dev/null)" in "/bin/sh $1"*|"sh $1"*) return 0 ;; esac
   done
-  setsid nohup "$1" </dev/null >/dev/null 2>&1 &
+  # Close every inherited descriptor above 2 first. When Lumen restarts the watcher through the Homebrew Channel's exec, the
+  # Channel's node service passes on its Luna hub socket. The watcher then held it for good, so once node quit the hub kept the
+  # service name registered with nobody answering: every Channel call (Lumen bar's data, Lumen's root commands) hung until a
+  # reboot, and the reboot only helped until the next restart through exec. Written for busybox ash (the TV's sh), which takes fds over 9;
+  # no 2>/dev/null on the eval: in ash that makes the close fail and the subshell quit. /proc/self (the ls, which has the same fds), not
+  # /proc/$$: $$ is this script, which has often exited by then, and an empty list closed nothing.
+  ( for fd in $(ls /proc/self/fd 2>/dev/null); do case $fd in 0|1|2) ;; *) eval "exec $fd>&-" || : ;; esac; done
+    exec setsid nohup "$1" </dev/null >/dev/null 2>&1 ) &
 }
 start /var/lib/homehook/watch.sh
 start /var/lib/homehook/stadia.sh
