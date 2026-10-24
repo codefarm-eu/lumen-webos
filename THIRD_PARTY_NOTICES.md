@@ -1,6 +1,6 @@
 # Third-party notices
 
-This is [ovsteenb/lumen-webos](https://github.com/ovsteenb/lumen-webos), a fork of [samrenfrew/lumen-webos](https://github.com/samrenfrew/lumen-webos), itself a fork of [ammar027/lumen-webos](https://github.com/ammar027/lumen-webos). [LICENSE](LICENSE) (MIT) is kept as it came.
+This is [codefarm-eu/lumen-webos](https://github.com/codefarm-eu/lumen-webos), a fork of [samrenfrew/lumen-webos](https://github.com/samrenfrew/lumen-webos), itself a fork of [ammar027/lumen-webos](https://github.com/ammar027/lumen-webos). [LICENSE](LICENSE) (MIT) is kept as it came.
 
 This repository holds the launcher's source (`app/`), build tools, notes and TV-side scripts. The material below belongs to others.
 

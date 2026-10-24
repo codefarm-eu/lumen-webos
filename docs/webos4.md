@@ -1,6 +1,6 @@
 # Lumen on webOS 4 (LG OLED55C8PLA, Chromium 53)
 
-This fork ([ovsteenb/lumen-webos](https://github.com/ovsteenb/lumen-webos)) makes Lumen run on a 2018 LG C8: webOS 4.x, whose web engine
+This fork ([codefarm-eu/lumen-webos](https://github.com/codefarm-eu/lumen-webos)) makes Lumen run on a 2018 LG C8: webOS 4.x, whose web engine
 is Chromium 53, rooted with the Homebrew Channel. Upstream ([samrenfrew/lumen-webos](https://github.com/samrenfrew/lumen-webos)) targets
 webOS 6 (Chrome 79) and is tested on webOS 25 (Chromium 120). Every change below is a feature test, never a version or user-agent test, so the
 same build still gets the upstream look on a newer TV.
@@ -9,9 +9,9 @@ same build still gets the upstream look on a newer TV.
 
 Add this repository URL in the Homebrew Channel's settings, then install **Lumen** from its list:
 
-    https://ovsteenb.github.io/lumen-webos/dev/apps.json
+    https://codefarm-eu.github.io/lumen-webos/dev/apps.json
 
-The same index is also at `https://raw.githubusercontent.com/ovsteenb/lumen-webos/hbc-repo/dev/apps.json`. A `v*` tag publishes
+The same index is also at `https://raw.githubusercontent.com/codefarm-eu/lumen-webos/hbc-repo/dev/apps.json`. A `v*` tag publishes
 `.../stable/apps.json`. The app id is `com.ovsteenb.lumen` and the tile is called **Lumen**, so it installs beside any other Lumen build.
 
 ## What changed for Chromium 53

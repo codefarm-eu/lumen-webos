@@ -15,11 +15,14 @@ and tested on a 2018 **LG OLED C8** (webOS 4.4) rooted with the [Homebrew Channe
 1. Root the TV and install the Homebrew Channel.
 2. In the Homebrew Channel's settings, add this repository:
 
-       https://ovsteenb.github.io/lumen-webos/dev/apps.json
+       https://codefarm-eu.github.io/lumen-webos/dev/apps.json
+
+   The repository moved from `ovsteenb` to `codefarm-eu` on 24 Oct 2026. The old address, `https://ovsteenb.github.io/lumen-webos/dev/apps.json`,
+   no longer works: in the Channel, remove it and add the one above.
 
 3. Install **Lumen**. To use Home over apps, also install **Lumen bar**.
 
-Both apps update from the Channel. Each build is also on the [`dev` release](https://github.com/ovsteenb/lumen-webos/releases/tag/dev)
+Both apps update from the Channel. Each build is also on the [`dev` release](https://github.com/codefarm-eu/lumen-webos/releases/tag/dev)
 as an `.ipk`, for Dev Manager or `ares-install`. The public build does not include third-party app logos or the SF font. Lumen uses the
 TV's own app icons and the Geist font instead.
 
