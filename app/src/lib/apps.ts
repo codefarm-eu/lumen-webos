@@ -163,7 +163,7 @@ function iconFields (info: {folderPath?: string; icon?: string; largeIcon?: stri
 }
 
 /** Apps LG lists but that make no sense on a launcher (ourselves, promos). */
-const HIDDEN_IDS = [APP_ID, 'google.assistant.promo', 'com.webos.app.discovery'];
+const HIDDEN_IDS = [APP_ID, 'google.assistant.promo'];
 
 const ICON_CACHE_KEY = 'launcher-icon-cache-v1';
 
