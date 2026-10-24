@@ -321,5 +321,5 @@ version). `tools/gen_hbc_repo.py` takes several .ipk files and reads each one's 
 
 
 `.github/workflows/release.yml` builds the public `.ipk` and updates the Channel index on the `hbc-repo` branch, which GitHub Pages serves.
-A push to `main` (or any branch) adds a dev build (`1.0.9xxx`) to the rolling `dev` release, which keeps the last five; Actions > release >
+A push to `main` (pull requests are checked by `ci.yml` and publish nothing) adds a dev build (`1.0.9xxx`) to the rolling `dev` release, which keeps the last five; Actions > release >
 Run workflow does the same by hand. A `v*` tag makes a stable release and `stable/apps.json`.
