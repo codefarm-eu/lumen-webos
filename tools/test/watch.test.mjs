@@ -26,7 +26,7 @@ function ticks (steps, {nowake = false, wakeuntil = 1090} = {}) {
 
 test('the boot wake window only follows a real boot (uptime under 5 minutes), not a watcher restart', () => {
 	const src = readFileSync(SCRIPT, 'utf8');
-	assert.match(src, /booted=\$\(cut -d\. -f1 \/proc\/uptime/);
+	assert.match(src, /booted=\$\(cut -d\. -f1 "\$\{WATCH_UPTIME:-\/proc\/uptime\}"/);
 	assert.match(src, /"\$booted" -gt 300 \] 2>\/dev\/null && wakeuntil=0/);
 });
 
@@ -164,23 +164,34 @@ test('LG Home shown with no Home key from Input Hook before it is logged as a wa
 
 /** sources watch.sh with a Lumen build in a temp app folder (packaged homehook/) and installed copies next to it, then runs self_update at
  *  each of `nows`; `between` (optional) is shell run after the check of that index. su_reexec is a stub that prints REEXEC and stops. */
-function selfUpdate (nows, {pkgWatch, pkgHook, instWatch = WATCH_OK('old'), instHook = HOOK_OK('old'), state = '', between = {}, hook = true, link = false} = {}) {
+function selfUpdate (nows, {pkgWatch, pkgHook, instWatch = WATCH_OK('old'), instHook = HOOK_OK('old'), state = '', between = {}, hook = true, link = false, md5fail = false, stateLink = false, fifo = false} = {}) {
 	const dir = mkdtempSync(join(tmpdir(), 'selfupdate-'));
 	const app = join(dir, 'apps', LUMEN, 'homehook');
 	execFileSync('sh', ['-c', `mkdir -p '${app}' '${dir}/hh' '${dir}/init.d'`]);
 	writeFileSync(join(app, '60-homehook'), pkgHook ?? HOOK_OK('new'));
 	if (link) execFileSync('sh', ['-c', `printf '%s' '${WATCH_OK('new')}' > '${dir}/elsewhere' && ln -s '${dir}/elsewhere' '${app}/watch.sh'`]);
 	else writeFileSync(join(app, 'watch.sh'), pkgWatch ?? WATCH_OK('new'));
+	if (fifo) execFileSync('sh', ['-c', `rm -f '${join(app, 'watch.sh')}' && mkfifo '${join(app, 'watch.sh')}'`]);
 	writeFileSync(join(dir, 'hh', 'watch.sh'), instWatch);
 	if (hook) writeFileSync(join(dir, 'init.d', '60-homehook'), instHook);
-	if (state) writeFileSync(join(dir, 'state'), state);
-	const sh = [`WATCH_SH_LIB=1 SELF='${dir}/hh/watch.sh' INIT_HOOK='${dir}/init.d/60-homehook' SU_STATE='${dir}/state' IH_LOG='${dir}/log' . '${SCRIPT}'`,
+	if (stateLink) {
+		writeFileSync(join(dir, 'victim'), 'victim\n');
+		execFileSync('sh', ['-c', `ln -s '${dir}/victim' '${dir}/state'`]);
+	} else if (state) writeFileSync(join(dir, 'state'), state);
+	let path = '';
+	if (md5fail) {
+		execFileSync('sh', ['-c', `mkdir -p '${dir}/bin' && printf '%s\n' '#!/bin/sh' 'exit 1' > '${dir}/bin/md5sum' && chmod +x '${dir}/bin/md5sum'`]);
+		path = `PATH='${dir}/bin':"$PATH"; `;
+	}
+	const sh = [`${path}WATCH_SH_LIB=1 SELF='${dir}/hh/watch.sh' INIT_HOOK='${dir}/init.d/60-homehook' SU_STATE='${dir}/state' IH_LOG='${dir}/log' . '${SCRIPT}'`,
 		`APPS='${dir}/apps'; ME='${LUMEN}'`, 'su_reexec () { echo REEXEC; exit 0; }',
 		...nows.flatMap((n, i) => [`self_update ${n}`, between[i] || ':'])].join('\n');
-	const out = execFileSync('sh', ['-c', sh], {encoding: 'utf8'}).trim();
+	const out = execFileSync('sh', ['-c', sh], {encoding: 'utf8', timeout: 15000}).trim();
 	const read = (f) => { try { return readFileSync(join(dir, f), 'utf8'); } catch { return null; } };
 	const left = execFileSync('sh', ['-c', `ls -A '${dir}/hh'`], {encoding: 'utf8'}).trim().split('\n');
-	return {out, watch: read('hh/watch.sh'), hook: read('init.d/60-homehook'), log: read('log') || '', state: (read('state') || '').trim(), left, app};
+	const kind = execFileSync('sh', ['-c', `if [ -h '${dir}/state' ]; then echo link; elif [ -f '${dir}/state' ]; then echo file; else echo none; fi`], {encoding: 'utf8'}).trim();
+	const exe = (rel) => execFileSync('sh', ['-c', `if [ -x '${join(dir, rel)}' ]; then echo yes; else echo no; fi`], {encoding: 'utf8'}).trim();
+	return {out, watch: read('hh/watch.sh'), hook: read('init.d/60-homehook'), log: read('log') || '', state: (read('state') || '').trim(), left, app, victim: read('victim'), stateKind: kind, execWatch: exe('hh/watch.sh'), execHook: exe('init.d/60-homehook')};
 }
 const WATCH_OK = (v) => `#!/bin/sh\n# ${v}\nsingle_instance() { :; }\nhome_key() { :; }\n`;
 const HOOK_OK = (v) => `#!/bin/sh\n# ${v}\nstart /var/lib/homehook/watch.sh\n`;
@@ -192,6 +203,9 @@ test('self-refresh: a packaged watcher that differs is installed on the second c
 	assert.equal(r.hook, HOOK_OK('new'));
 	assert.match(r.log, /watcher refresh: updated from .*homehook \(Lumen was updated\), restarting/);
 	assert.equal(r.state, '1030');
+	assert.equal(r.stateKind, 'file');
+	assert.equal(r.execWatch, 'yes');   // the boot hook starts it only when it is executable
+	assert.equal(r.execHook, 'yes');
 	assert.deepEqual(r.left, ['watch.sh']);   // no temporary copies left behind
 });
 
@@ -259,4 +273,84 @@ test('self-refresh: the real watch.sh and 60-homehook pass the shape check (a re
 
 test('a watcher started after the first 5 minutes (re-exec, restart) does not preload Lumen', () => {
 	assert.match(readFileSync(SCRIPT, 'utf8'), /\[ "\$wakeuntil" -eq 0 \] && preloadat=0/);
+});
+
+test('self-refresh: a re-exec in the first 5 minutes is not a boot (no wake window, no hidden preload)', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'reexec-boot-'));
+	const lock = join(dir, 'lock');
+	const up = join(dir, 'uptime');
+	const run = (setup, uptime) => execFileSync('sh', ['-c', `${setup}\nprintf '%s\\n' '${uptime}' > '${up}'\nWATCH_LOCK='${lock}' WATCH_UPTIME='${up}' WATCH_SH_LIB=1 . '${SCRIPT}'\necho "$wakeuntil $preloadat"`], {encoding: 'utf8'}).trim();
+	const fresh = run(`rm -rf '${lock}'`, '10.00 1.00').split(' ');
+	assert.notEqual(fresh[0], '0');
+	assert.notEqual(fresh[1], '0');
+	assert.equal(run(`mkdir -p '${lock}' && echo $$ > '${lock}/pid'`, '10.00 1.00'), '0 0');
+	assert.equal(run(`rm -rf '${lock}'`, '400.00 1.00'), '0 0');
+});
+
+test('self-refresh: re-exec keeps its own single_instance lock instead of dropping it', () => {
+	const lock = join(mkdtempSync(join(tmpdir(), 'ownlock-')), 'lock');
+	const out = execFileSync('sh', ['-c', `
+WATCH_SH_LIB=1 WATCH_LOCK='${lock}' . '${SCRIPT}'
+mkdir -p '${lock}'
+echo $$ > '${lock}/pid'
+ino=$(stat -c %i '${lock}')
+if single_instance; then echo ok; else echo busy; fi
+echo "$ino $(stat -c %i '${lock}')"
+echo "$(cat '${lock}/pid') $$"
+`], {encoding: 'utf8'}).trim().split('\n');
+	assert.equal(out[0], 'ok');
+	assert.equal(out[1].split(' ')[0], out[1].split(' ')[1]);
+	assert.equal(out[2].split(' ')[0], out[2].split(' ')[1]);
+});
+
+test('self-refresh: re-exec stops the reader that shares its command line, and leaves an unrelated pid alone', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'reader-'));
+	const watch = join(dir, 'watch.sh');
+	const fifo = join(dir, 'fifo');
+	execFileSync('sh', ['-c', `mkfifo '${fifo}'`]);
+	// blocked on a fifo, so the process stays /bin/sh <this file> (exec sleep would replace that command line)
+	writeFileSync(watch, `#!/bin/sh\nread x < '${fifo}'\n`);
+	execFileSync('sh', ['-c', `chmod +x '${watch}'`]);
+	const out = execFileSync('sh', ['-c', `
+WATCH_SH_LIB=1 SELF='${watch}' . '${SCRIPT}'
+/bin/sh '${watch}' >/dev/null 2>&1 &
+hrpid=$!
+i=0
+while [ "$i" -lt 50 ] && ! cat /proc/$hrpid/cmdline >/dev/null 2>&1; do sleep 0.05; i=$((i + 1)); done
+reader=$hrpid
+su_stop_reader
+if kill -0 "$reader" 2>/dev/null; then echo READER_ALIVE; kill -9 "$reader" 2>/dev/null || true; else echo READER_DEAD; fi
+sleep 30 >/dev/null 2>&1 &
+other=$!
+hrpid=$other
+su_stop_reader
+if kill -0 "$other" 2>/dev/null; then echo OTHER_ALIVE; else echo OTHER_DEAD; fi
+kill "$other" 2>/dev/null || true
+wait "$other" 2>/dev/null || true
+wait "$reader" 2>/dev/null || true
+`], {encoding: 'utf8', timeout: 8000}).trim();
+	assert.equal(out, 'READER_DEAD\nOTHER_ALIVE');
+});
+
+test('self-refresh: a failed checksum is not "the same twice", a non-numeric time does not kill the watcher, and a fifo is not read', () => {
+	assert.equal(selfUpdate([1000], {md5fail: true}).out, '');
+	assert.equal(selfUpdate([1000, 1030], {md5fail: true}).watch, WATCH_OK('old'));
+	assert.equal(selfUpdate([1000, '1x']).out, '');
+	assert.equal(selfUpdate([1000, '1x']).watch, WATCH_OK('old'));
+	const fifo = selfUpdate([1000, 1030], {fifo: true});
+	assert.equal(fifo.out, '');
+	assert.equal(fifo.watch, WATCH_OK('old'));
+});
+
+test('self-refresh: a packaged watcher over 256 KB is refused; a rate-limit symlink is not followed', () => {
+	const big = `#!/bin/sh\n# ${'x'.repeat(262144)}\nsingle_instance() { :; }\nhome_key() { :; }\n`;
+	const over = selfUpdate([1000, 1030], {pkgWatch: big});
+	assert.equal(over.out, '');
+	assert.equal(over.watch, WATCH_OK('old'));
+	const linked = selfUpdate([1000, 1030], {stateLink: true});
+	assert.equal(linked.out, 'REEXEC');
+	assert.equal(linked.victim, 'victim\n');
+	assert.equal(linked.stateKind, 'file');
+	assert.equal(linked.state, '1030');
+	assert.equal(linked.watch, WATCH_OK('new'));
 });
