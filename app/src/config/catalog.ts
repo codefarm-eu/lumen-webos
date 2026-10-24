@@ -37,6 +37,8 @@ const BASE_CATALOG: CatalogApp[] = [
 	// PlxNative, the native Plex client from the Homebrew Channel (repo.webosbrew.org/apps/com.beb.plxnative)
 	{id: 'com.beb.plxnative', title: 'Plex', icon: 'cdp-30.png'},
 	{id: 'com.webos.app.browser', title: 'Browser', icon: 'com.webos.app.browser.png'},
+	// LG's own title is "Apps", which reads like a folder
+	{id: 'com.webos.app.discovery', title: 'App Store', color: '#a50034'},
 	{id: 'com.webos.app.mediadiscovery', title: 'Media Player', icon: 'com.webos.app.mediadiscovery.png'},
 	{id: 'org.webosbrew.hbchannel', title: 'Homebrew', icon: 'org.webosbrew.hbchannel.png'}
 ];
