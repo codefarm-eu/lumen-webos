@@ -332,6 +332,19 @@ Test: `tools/test/dim.test.mjs`.
 - **Settings lists:** the end of a long list shows its last row whole. Settings > Apps keeps this fork's grid, which already shows whole rows
   only (see "Settings > Apps grid"), so upstream's `Grid.tsx` change was not taken.
 
+## Lumen on any wake (port of upstream 3f26515)
+
+Wake-on-LAN resumes the TV into Live TV and skips LG's home, so "replace LG's home during a wake" did nothing for it. Now, from the moment
+the watcher sees a wake (the power state back to Active, or a gap in its ticks) and for the first 90 s after a boot, it opens Lumen over
+whatever is in front (`wake_open`, in the background so a slow launch right after a wake does not stall the loop). It ticks every 0.5 s
+(`usleep`, because webOS 4's busybox `sleep` takes whole seconds) and opens Lumen again each tick until Lumen has stayed in front for 3 s
+(`WAKE_SETTLE`). Then the wake ends, and `WAKEFILE` is set to 0 so the `NL_HOME_SHOWN` path and Home shows the bar end their wake handling as well.
+That makes the old "about 90 s after a boot, Home opens full Lumen" window much shorter.
+Added in this fork: an app other than LG's home or Live TV that comes up straight after Lumen was in front was opened from Lumen, so the
+wake ends there and that app is not covered by Lumen again. The LG Home branch no longer takes over during a wake on its own, because
+`wake_tick` does that. Undo: `touch /var/lib/homehook/no-wake-launch` (as before), or `stop_watch.sh`. The Home key bind and Home shows the
+bar are unchanged. Test: `tools/test/watch.test.mjs` sources `watch.sh` with `WATCH_SH_LIB=1` and runs `wake_tick` with a stub launcher.
+
 ## Risks
 
 - **Speed**: `background-attachment: fixed` glass is not composited, so a glass shape that moves or scales (focus zoom, Control Center

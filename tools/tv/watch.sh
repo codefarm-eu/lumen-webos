@@ -3,9 +3,11 @@
 #  - Only with /var/lib/homehook/home-takeover present (off by default: LG Input Hook owns the Home button on this TV): when LG's own Home has just
 #    come up, opens the launcher instead (polling, because luna-send buffers a subscription's output when it is piped). The launcher's own
 #    "LG Home" button touches /tmp/allow_lg_home first, so LG Home can still be opened on purpose (it then stays until you leave it).
-#  - After the TV wakes (power state back to Active, or a gap in this loop's once-a-second ticks, which means it was suspended) and after a boot:
-#    for WAKE_SECS, LG Home coming up is replaced by Lumen even without home-takeover, because the power button opens LG Home. Switch off with
-#    /var/lib/homehook/no-wake-launch.
+#  - After the TV wakes (power state back to Active, or a gap in this loop's once-a-second ticks, which means it was suspended) and after a boot
+#    (from upstream 3f26515): opens Lumen as soon as the screen is on, whatever the TV opened itself (LG Home after the remote's power button,
+#    Live TV after Wake-on-LAN), even without home-takeover. During a wake the loop ticks every 0.5 s and opens Lumen again each tick until it
+#    has stayed in front for WAKE_SETTLE seconds, or WAKE_SECS (90 s after a boot) have passed; then the wake ends (also for the NL_HOME_SHOWN
+#    path and Home shows the bar, through WAKEFILE) and apps are left alone. Switch off with /var/lib/homehook/no-wake-launch.
 #  - About a minute after a boot, if no Lumen build is open, starts Lumen hidden (a preload launch), so the first Home press after a boot into
 #    Live TV is warm, not a cold start. Switch off with /var/lib/homehook/no-boot-preload.
 #  - Keeps /var/lib/homehook/recent: the last eight apps that were in front (not Lumen, not LG Home), newest first, one id per line. Lumen reads
@@ -58,6 +60,7 @@ EXTRA=/var/lib/homehook/hosts-extra
 TAKEOVER_FLAG=/var/lib/homehook/home-takeover
 NOWAKE_FLAG=/var/lib/homehook/no-wake-launch
 WAKE_SECS=30
+WAKE_SETTLE=3
 NOPRELOAD_FLAG=/var/lib/homehook/no-boot-preload
 RECENT=/var/lib/homehook/recent
 KEYBINDS=/home/root/.config/lginputhook/keybinds.json
@@ -77,6 +80,8 @@ saverlast=0
 pwprev=""
 lastme=""
 pwlast=""
+mesince=0
+launchpid=0
 tick=$(date +%s)
 wakeuntil=$((tick + 90))   # a boot counts as a wake; LG Home may take a while to come up
 preloadat=$((tick + 60))   # once, after the boot rush; 0 when done
@@ -207,6 +212,38 @@ home_key() {
   r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$id\"}" </dev/null 2>&1 | tr -d ' \n')
   echo "$(date +%T) Home key [$t0] over ${fg:-?} -> $id [$(up)]: $r" >> /tmp/homehook.log
 }
+# opens Lumen without waiting (a launch can take seconds right after a wake), unless the last one is still in flight; $1 is the app in front
+wake_open() {
+  [ "$launchpid" -gt 0 ] && [ -d "/proc/$launchpid" ] && return 0
+  target=$(me_target) || return 0
+  ( r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d '\n')
+    echo "$(date +%T) wake: open $target over ${1:-nothing}: $r" >> /tmp/homehook.log ) &
+  launchpid=$!
+}
+# one tick of a wake (uses front, app, now, pwstate): Lumen in front as soon as the screen is on, whatever the TV opened; the TV can still put
+# its own app over Lumen in the first seconds, so the wake ends only once Lumen has stayed up WAKE_SETTLE seconds
+# (this fork) An app other than LG Home or Live TV straight after Lumen was in front was picked in Lumen: the wake ends there too, so an app
+# opened in the first seconds is not covered by Lumen again.
+wake_tick() {
+  wasme=$mesince
+  if [ -n "$front" ]; then [ "$mesince" -eq 0 ] && mesince=$now; else mesince=0; fi
+  [ ! -f "$NOWAKE_FLAG" ] && [ "$now" -lt "$wakeuntil" ] && [ "$pwstate" = Active ] || return 0
+  if [ -z "$front" ] && [ "$wasme" -gt 0 ] && [ -n "$app" ] && [ "$app" != "$LIVETV" ] && ! lg_home_in "\"appId\":\"$app\""; then
+    wakeuntil=0
+    echo 0 > "$WAKEFILE"
+    echo "$(date +%T) wake ended: $app opened from Lumen" >> /tmp/homehook.log
+    return 0
+  fi
+  if [ -n "$front" ]; then
+    if [ $((now - mesince)) -ge "$WAKE_SETTLE" ]; then
+      wakeuntil=0
+      echo 0 > "$WAKEFILE"
+      echo "$(date +%T) wake settled: $front in front" >> /tmp/homehook.log
+    fi
+  else
+    wake_open "$app"
+  fi
+}
 # adds or removes the Home key bind in LG Input Hook's keybinds.json (only ours: a 773 bind someone else made is left alone)
 sync_home_key() {
   [ -f "$KEYBINDS" ] || return 0
@@ -241,6 +278,8 @@ sync_home_key() {
 }
 
 case "$0" in */watch-key) home_key; exit 0 ;; esac
+# tools/test/watch.test.mjs sources this file for its functions only
+[ -n "$WATCH_SH_LIB" ] && return 0
 
 echo "$wakeuntil" > "$WAKEFILE"
 home_reader &
@@ -260,6 +299,8 @@ while true; do
     wakeuntil=$((now + WAKE_SECS)); last=0
     echo "$wakeuntil" > "$WAKEFILE"
     echo "$(date +%T) wake (gap ${gap}s, power $pwstate)" >> /tmp/homehook.log
+    # before the foreground query: right after a wake each query can take seconds
+    [ ! -f "$NOWAKE_FLAG" ] && [ "$pwstate" = Active ] && wake_open ""
   fi
   # the foreground app ("appId"), and with extraInfo every foreground window (webOS 4 lists the launcher bar there while it overlays an app);
   # spaces after the colons dropped, as luna-send prints them on some firmware and not on others
@@ -284,6 +325,7 @@ while true; do
     if [ ! -f "$NOWAKE_FLAG" ] && [ "$now" -lt "$wakeuntil" ]; then homeup=1; fi
   fi
   if [ -n "$app" ] && [ "$app" != "$prevapp" ]; then prevapp=$app; note_recent "$app"; fi
+  wake_tick
   [ "$homeup" -eq 1 ] && out="\"appId\":\"$LGHOME\""
   case "$out" in
     *'"appId":"'$LGHOME'"'*)
@@ -299,7 +341,6 @@ while true; do
       fi
       takeover=0
       [ -f "$TAKEOVER_FLAG" ] && takeover=1
-      [ ! -f "$NOWAKE_FLAG" ] && [ "$now" -lt "$wakeuntil" ] && takeover=1
       if [ "$takeover" -eq 1 ] && [ "$okhome" -eq 0 ] && target=$(me_target) && { [ $((now - last)) -ge 3 ] || [ $((now - last)) -lt 0 ]; }; then
         last=$now
         r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d '\n')
@@ -376,5 +417,6 @@ while true; do
       ! grep -qF "$l" /etc/hosts 2>/dev/null && echo "$l" >> /etc/hosts
     done
   fi
-  sleep 1
+  # faster ticks while a wake is open, so Lumen goes up as soon as the TV lets it (webOS 4's busybox sleep takes whole seconds: usleep)
+  if [ "$now" -lt "$wakeuntil" ]; then usleep 500000 2>/dev/null || sleep 1; else sleep 1; fi
 done
