@@ -1281,6 +1281,9 @@ html.night .ambient__night { opacity: 0.45; }
 .ambient .screen > .pill.status { right: var(--layout-rows-edge); flex-direction: row; align-items: flex-end; justify-content: space-between; }
 .ambient .screen > .pill.status .status__row { flex-direction: column-reverse; align-items: flex-end; text-align: right; margin: 0 0 12px; }
 .ambient .screen > .pill.status .status__weather { margin: 0 0 6px; }
+/* burn-in protection (lib/burnin.ts): the clock and the date/weather wander anywhere, so the shade covers the whole picture, darker at the bottom */
+.ambient--move .ambient__shade { top: 0; height: auto; background: linear-gradient(rgba(0, 0, 0, 0.26), rgba(0, 0, 0, 0.14) 35%, rgba(0, 0, 0, 0.14) 60%, rgba(0, 0, 0, 0.42)); }
+.ambient--move .screen > .pill.status .clock, .ambient--move .screen > .pill.status .status__row { will-change: transform, opacity; }
 /* opened over the home screen on its own wallpaper: fading in is the home screen fading away */
 .ambient--warm { animation: ambient-in 600ms ease-out both; }
 @keyframes ambient-in { from { opacity: 0; } to { opacity: 1; } }

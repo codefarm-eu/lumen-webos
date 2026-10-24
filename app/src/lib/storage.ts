@@ -88,6 +88,8 @@ export interface UserConfig {
 	ambientBrightness: string;
 	/** screensaver photos look like a print on the wall: lifted blacks, paper whites, light falling off from the top left */
 	ambientPrint: boolean;
+	/** Settings > Screensaver > Move clock to prevent burn-in: the clock and the date/weather move every minute (lib/burnin.ts) */
+	ambientMove: boolean;
 	/** how far back the Immich Recent sources reach, in days: 30 | 90 | 180 | 365 */
 	immichRecentDays: number;
 	/** how strongly the focused tile stands out: subtle | normal | strong */
@@ -152,6 +154,7 @@ export const DEFAULT_CONFIG: UserConfig = {
 	ambientSeconds: 30,
 	ambientBrightness: 'dim',
 	ambientPrint: false,
+	ambientMove: true,
 	immichRecentDays: 180,
 	focusStrength: 'normal',
 	firstRow: 6,
@@ -235,6 +238,7 @@ export function parseConfig (raw: string): UserConfig {
 		ambientSeconds: [10, 20, 30, 60, 120, 300].indexOf(Number(parsed.ambientSeconds)) !== -1 ? Number(parsed.ambientSeconds) : 30,
 		ambientBrightness: parsed.ambientBrightness === 'tv' || parsed.ambientBrightness === 'low' ? parsed.ambientBrightness : 'dim',
 		ambientPrint: parsed.ambientPrint === true,
+		ambientMove: parsed.ambientMove !== false,
 		immichRecentDays: [30, 90, 180, 365].indexOf(Number(parsed.immichRecentDays)) !== -1 ? Number(parsed.immichRecentDays) : 180,
 		ambient: typeof parsed.ambient === 'string' && parsed.ambient.indexOf('immich:') === 0 ? parsed.ambient : 'immich:recent',
 		// before ambientOn, an empty source meant LG's screensaver

@@ -6,6 +6,7 @@ import {dimForScreensaver, restoreBacklight} from '../lib/tvcontrols';
 import type {Weather} from '../lib/weather';
 import {safeAnimate} from '../lib/compat';
 import {nextBuiltin} from '../lib/screensaver';
+import {MOVE_EVERY_MS, MOVE_FADE_MS, nextOffset, safeHalves, type Offset} from '../lib/burnin';
 
 interface Layer { urls: string[]; pos: string }
 const NO_LAYER: Layer = {urls: [], pos: ''};
@@ -18,7 +19,7 @@ const WARM_DELAY_MS = 3000;
  *  zooms in very slowly (transform only). The clock sits bottom left, the weather and date bottom right. Any key or a click goes back to the home screen.
  *  Started from the home screen (Control Center, or the idle timer), it opens on the wallpaper already there (`opening`): the home screen fades away, the clock
  *  slides from its place top left to bottom left, and the first new photo loads only after that, so nothing heavy runs while the screen changes. */
-export function Ambient ({source, builtin, seconds = 30, backlight, weather, showPeriod, print, opening, onExit}: {source: string; builtin?: string[]; seconds?: number; backlight?: number; weather?: Weather | null; showPeriod?: boolean; print?: boolean; opening?: {urls: string[]; id: string} | null; onExit: () => void}) {
+export function Ambient ({source, builtin, seconds = 30, backlight, weather, showPeriod, print, move = true, opening, onExit}: {source: string; builtin?: string[]; seconds?: number; move?: boolean; backlight?: number; weather?: Weather | null; showPeriod?: boolean; print?: boolean; opening?: {urls: string[]; id: string} | null; onExit: () => void}) {
 	// each layer holds one photo's URL, or two for a portrait pair shown side by side, and where they sit (placed on their faces)
 	const [layers, setLayers] = useState<[Layer, Layer]>([opening ? {urls: opening.urls, pos: opening.id ? picturePosition(opening.id) : ''} : NO_LAYER, NO_LAYER]);
 	const [front, setFront] = useState(0);
@@ -42,6 +43,44 @@ export function Ambient ({source, builtin, seconds = 30, backlight, weather, sho
 		const row = status.current && status.current.querySelector<HTMLElement>('.status__row');
 		if (row) safeAnimate(row, [{opacity: 0}, {opacity: 1}], {duration: 600, delay: 300, easing: 'ease-out', fill: 'backwards'});
 	}, []);
+
+	// burn-in protection (Settings > Screensaver > Move clock to prevent burn-in): every minute the clock and the date/weather block fade out,
+	// move to a new random place inside their own half of the safe area (lib/burnin.ts), and fade back in. Opacity and transform only.
+	useEffect(() => {
+		if (!move) return;
+		const root = status.current;
+		if (!root) return;
+		const offsets: Offset[] = [{x: 0, y: 0}, {x: 0, y: 0}];
+		let timer = 0, alive = true;
+		const step = () => {
+			if (!alive) return;
+			const els = [root.querySelector<HTMLElement>('.pill.status .clock'), root.querySelector<HTMLElement>('.pill.status .status__row')];
+			els.forEach((el) => { if (el) { el.style.transition = `opacity ${MOVE_FADE_MS}ms ease-in-out`; el.style.opacity = '0'; } });
+			timer = window.setTimeout(() => {
+				if (!alive) return;
+				const frame = root.getBoundingClientRect();
+				const scale = frame.width > 0 ? frame.width / root.offsetWidth : 1;
+				const halves = safeHalves(root.offsetWidth, root.offsetHeight);
+				els.forEach((el, i) => {
+					if (!el) return;
+					const b = el.getBoundingClientRect();
+					// where it would be with no offset, in the layer's own pixels
+					const rest = {left: (b.left - frame.left) / scale - offsets[i].x, top: (b.top - frame.top) / scale - offsets[i].y, width: b.width / scale, height: b.height / scale};
+					const o = nextOffset(rest, i === 0 ? halves.left : halves.right, offsets[i]);
+					offsets[i] = o;
+					el.style.transition = 'none';
+					el.style.transformOrigin = '0 0';
+					el.style.transform = `translate(${o.x}px, ${o.y}px)`;
+					void el.offsetWidth;
+					el.style.transition = `opacity ${MOVE_FADE_MS}ms ease-in-out`;
+					el.style.opacity = '1';
+				});
+				timer = window.setTimeout(step, MOVE_EVERY_MS - MOVE_FADE_MS);
+			}, MOVE_FADE_MS + 50);
+		};
+		timer = window.setTimeout(step, MOVE_EVERY_MS);
+		return () => { alive = false; window.clearTimeout(timer); };
+	}, [move]);
 
 	// the TV's backlight goes down while the screensaver shows (Settings > Screensaver > Brightness) and back up when it ends
 	useEffect(() => {
@@ -101,7 +140,7 @@ export function Ambient ({source, builtin, seconds = 30, backlight, weather, sho
 	}, [source, seconds, builtin ? builtin.join('|') : '']);
 
 	return (
-		<div class={warm ? 'ambient ambient--warm' : 'ambient'}>
+		<div class={`ambient${warm ? ' ambient--warm' : ''}${move ? ' ambient--move' : ''}`}>
 			{layers.map(({urls, pos}, i) => (
 				// keyed by URL, so a new photo restarts the slow zoom
 				<div key={i + urls.join(' ')} class={`ambient__photo${i === front ? ' ambient__photo--on' : ''}${i === 1 ? ' ambient__photo--alt' : ''}${urls.length > 1 ? ' ambient__photo--pair' : ''}`} style={urls.length > 0 ? {backgroundImage: urls.map((u) => `url("${u}")`).join(', '), backgroundPosition: pos || undefined, animationDuration: `${seconds + 6}s`} : undefined} />

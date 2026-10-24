@@ -259,6 +259,22 @@ app, so no network is used. Upstream (samrenfrew/lumen-webos) has only Immich or
 - **Time on each photo, Brightness, Print look** now show without Immich too, since they apply to the bundled pictures.
 - Test: `npm test` (`tools/test/screensaver.test.mjs`, also run by the release workflow).
 
+## Screensaver burn-in protection
+
+Settings > Screensaver > **Move clock to prevent burn-in**, on by default (`ambientMove`). The screensaver's clock and its date/weather block
+are the only things that stay still (the pictures crossfade and zoom), so on an OLED they would mark the panel over the hours. Every 60 s
+both fade out (1.5 s), move to a new random place and fade back in (`lib/burnin.ts`, used by `components/Ambient.tsx`, Immich and
+built-in pictures alike):
+- The clock stays in the left half and the date/weather in the right half of the safe area (5 % of the width and 6 % of the height kept
+  clear at 1920x1080, a 2 % gap in the middle), so they never overlap or leave the screen. A new place is at least a third of the free
+  range away from the last one. Offsets are whole pixels, so the text stays sharp.
+- Only `opacity` and `transform` change (one transition per block per minute), which Chromium 53 composites without repainting the photos.
+- While it is on, the shade under the text covers the whole picture (darker at the bottom), so the clock is readable at the top too. The
+  Print look and Brightness layers sit under the text as before.
+- Off, the clock sits bottom left and the date/weather bottom right, as before.
+- Test: `tools/test/burnin.test.mjs`. Checked in headless Chrome at 1920x1080: after the first minute the clock moved from (119, 894) to
+  (152, 334) and the weather from (1509, 917) to (1397, 468), both inside their halves, and the built-in pictures kept changing.
+
 ## Risks
 
 - **Speed**: `background-attachment: fixed` glass is not composited, so a glass shape that moves or scales (focus zoom, Control Center
