@@ -3,6 +3,9 @@
  * Data: data/bar.json in this app's own folder, written by Lumen (Settings > Home Screen > Home shows the bar) with the dock, the icons
  * (copied into data/icons/) and Lumen's app id; /var/lib/homehook/recent (the Home watcher's list of apps that were in front).
  * Keys: Left/Right move, OK opens, Up or the Home tile opens full Lumen, Back/Esc closes (focus goes back to the app underneath).
+ * Magic Remote pointer: pointing at a tile focuses it, a click opens it, the wheel moves along; a click off the glass closes the bar. With the
+ * pointer showing, OK can come as a click, as keydown 13, or as both: whichever comes first opens the tile and closes the bar, so the
+ * other is ignored (closing), and a keydown 13 with the pointer off every tile does nothing (its click closes the bar).
  * Closes by itself after IDLE_MS without a key.
  * Look: Lumen's home bar (bar.css). The tile size, gap, focus scale and tiles per row come from data/bar.json "style" (Lumen's first row);
  * the tiles are placed here, and past perRow tiles the row scrolls to keep the focused one in view. */
@@ -31,6 +34,9 @@
 	var lumenId = 'com.ovsteenb.lumen';
 	var idleTimer = 0;
 	var closing = false;
+	var pointer = false;   // the Magic Remote's pointer is showing (cursorStateChange, or a pointer move)
+	var hover = -1;        // the tile under the pointer
+	var told = {};         // pointer events already written to the log once (to see on the TV which ones reach this overlay window)
 
 	function call (uri, params, cb) {
 		if (typeof window.PalmServiceBridge !== 'function') { if (cb) cb(null); return; }
@@ -94,6 +100,7 @@
 			}
 			var t = document.createElement('div');
 			it.x = x;
+			t.barIndex = i;
 			t.style.left = x + 'px';
 			x += style.size + style.gap;
 			t.className = 'tile' + (it.home ? ' tile--home' : '') + (it.plain ? ' tile--plain' : '');
@@ -130,10 +137,11 @@
 	}
 	var layout = {view: 0, width: 0};
 	/** the focused tile in view (its whole width, as the row scrolls a tile at a time), and its name under it */
-	function place () {
+	function place (byPointer) {
 		var it = items[focus];
 		if (!it || it.x === undefined) return;
-		if (layout.width > layout.view) {
+		// a tile the pointer is on is already in view; scrolling under the pointer would move another tile under it
+		if (byPointer) { /* keep the scroll */ } else if (layout.width > layout.view) {
 			if (it.x < scroll) scroll = it.x;
 			if (it.x + style.size > scroll + layout.view) scroll = it.x + style.size - layout.view;
 			scroll = Math.max(0, Math.min(scroll, layout.width - layout.view));
@@ -141,10 +149,10 @@
 		if (trackEl) trackEl.style.transform = 'translateX(' + (-scroll) + 'px)';
 		labelEl.style.left = (it.x + style.size / 2) + 'px';
 	}
-	function show () {
+	function show (byPointer) {
 		for (var i = 0; i < items.length; i++) items[i].el.className = items[i].el.className.replace(/ tile--focus/g, '') + (i === focus ? ' tile--focus' : '');
 		labelEl.textContent = items[focus] ? items[focus].title : '';
-		place();
+		place(byPointer);
 	}
 
 	function parse (out) {
@@ -213,21 +221,77 @@
 		poke();
 	}
 
+	/** opens item i (the Home tile is Lumen itself) and closes the bar; once closing, a second OK or click is ignored */
+	function activate (i, how) {
+		var it = items[i];
+		if (!it || closing) return;
+		launch(it.id);
+		close('open ' + it.id + ' (' + how + ')');
+	}
+	function move (by) {
+		if (!items.length) return;
+		focus = Math.max(0, Math.min(items.length - 1, focus + by));
+		show();
+	}
+	/** the tile an event happened on (its img, letter or svg count), or -1 */
+	function tileAt (node) {
+		for (var n = node; n && n !== barEl && n !== document; n = n.parentNode) if (typeof n.barIndex === 'number') return n.barIndex;
+		return -1;
+	}
+	function onBar (node) {
+		for (var n = node; n; n = n.parentNode) if (n === barEl) return true;
+		return false;
+	}
+	function once (what) { if (!told[what]) { told[what] = true; log('pointer: ' + what); } }
+
+	function pointed (e) {
+		if (closing) return;
+		once(e.type);
+		pointer = true;
+		poke();
+		hover = tileAt(e.target);
+		if (hover >= 0 && hover !== focus && items[hover]) { focus = hover; show(true); }
+	}
+	document.addEventListener('mousemove', pointed, true);
+	document.addEventListener('mouseover', pointed, true);
+	document.addEventListener('click', function (e) {
+		if (closing) return;
+		once('click');
+		if (e.preventDefault) e.preventDefault();
+		var i = tileAt(e.target);
+		if (i >= 0) activate(i, 'click');
+		else if (!onBar(e.target)) close('pointer outside');   // off the glass: the app underneath gets the remote back
+	}, true);
+	document.addEventListener('wheel', function (e) {
+		if (closing) return;
+		once('wheel');
+		if (e.preventDefault) e.preventDefault();
+		poke();
+		if (e.deltaY) move(e.deltaY > 0 ? 1 : -1);
+	}, true);
+	document.addEventListener('cursorStateChange', function (e) {
+		var on = !!(e.detail && e.detail.visibility);
+		log('pointer: cursor ' + (on ? 'shown' : 'hidden'));
+		pointer = on;
+		if (!on) hover = -1;
+		if (!closing) poke();
+	}, false);
+	document.addEventListener('webOSMouse', function (e) { log('pointer: webOSMouse ' + (e.detail && e.detail.inRange ? 'in' : 'out')); }, false);
+
 	document.addEventListener('keydown', function (e) {
 		var k = e.keyCode;
 		if (closing) return;
 		poke();
 		if (k === KEY.left || k === KEY.right) {
 			e.preventDefault();
-			if (!items.length) return;
-			focus = k === KEY.left ? Math.max(0, focus - 1) : Math.min(items.length - 1, focus + 1);
-			show();
+			pointer = false;   // an arrow puts the remote back in 5-way mode, and the system hides the pointer
+			hover = -1;
+			move(k === KEY.left ? -1 : 1);
 		} else if (k === KEY.ok) {
 			e.preventDefault();
-			var it = items[focus];
-			if (!it) return;
-			launch(it.id);
-			close('open ' + it.id);
+			// with the pointer showing, OK on a tile opens that tile (hover focused it); off every tile it waits for its click
+			if (pointer && hover < 0) return;
+			activate(pointer ? hover : focus, pointer ? 'ok, pointer' : 'ok');
 		} else if (k === KEY.up) {
 			e.preventDefault();
 			launch(lumenId);

@@ -187,6 +187,18 @@ sent through networkinput:
   focus scale for subtle/normal/strong) into `data/bar.json`, so the bar follows Settings; without it the bar uses the 7-a-row values. Past
   that many tiles the row scrolls to keep the focused one in view. Fonts are Lumen's own (`../com.ovsteenb.lumen/fonts/sf.woff2`, then Geist).
   Checked headless against the TV's data: glass at x 85 to 1835, y 806 to 1010, the same box as Lumen's home bar.
+- **Magic Remote pointer (1.0.9015):** 1.0.9014 and earlier only listened for keys, so pointing and clicking did nothing. Now pointing
+  at a tile (`mousemove`/`mouseover`, the target can be the tile's img) focuses it and names it, without scrolling the row under the pointer.
+  A click opens the tile, and the house opens full Lumen. The wheel moves along the bar. A click on the glass between tiles does nothing,
+  and a click off the glass closes the bar, so the app underneath gets the remote back. Each pointer move restarts the 10 s auto close.
+  `cursorStateChange` tracks whether the pointer is showing, and an arrow key counts as 5-way mode again. With the pointer showing, OK may arrive as
+  a click, as keydown 13, or as both: the first one opens the tile and closes the bar (`closing`), so the other is ignored. A keydown 13
+  with the pointer on no tile does nothing, because its click decides. There is no appinfo setting for the pointer (`supportTouchMode` is only for
+  StanbyME touch screens). Whether webOS 4 sends pointer events to an `overlay` window could not be checked remotely: the bar writes the
+  first `mousemove`, `mouseover`, `click` and `wheel` it gets, the cursor shown/hidden changes and `webOSMouse` to `/tmp/lumen-bar.log`
+  as `pointer: ...`. Lumen's home screen already handled the pointer (Tile `onMouseEnter`/`onClick`). It could act twice on one OK (the
+  click and the Enter key-up; on a folder, the second one opened the folder's first app), so `lib/okClick.ts` now lets only the first of
+  the two act within 400 ms. Tests: `tools/test/bar.test.mjs` (pointer cases) and `tools/test/okclick.test.mjs`.
 - **Screenshots from the TV:** `luna://com.webos.service.tv.capture/executeOneShot {"path":"/tmp/x.jpg","method":"DISPLAY","format":"JPEG",
   "width":1920,"height":1080}` writes video plus graphics (YouTube was not blank); `"method":"GRAPHIC"` gives the overlays only, on black.
   `com.webos.service.capture` does not exist on webOS 4.

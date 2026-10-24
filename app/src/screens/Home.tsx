@@ -10,6 +10,7 @@ import {Row} from '../components/Row';
 import {Tile, type TileModel} from '../components/Tile';
 import {useKeys, clamp, type NavKey} from '../hooks/useKeys';
 import {useOkPress} from '../hooks/useOkPress';
+import {okClickGuard} from '../lib/okClick';
 import {Status} from '../components/Status';
 import {BUILTIN} from '../config/builtinApps';
 import {bootMark} from '../lib/log';
@@ -234,11 +235,13 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 		latest.current.onActivate(rowId, item);
 	};
 
+	const okGuard = useRef(okClickGuard());
 	/** a short OK press: open / activate whatever is focused */
 	const press = () => {
 		const n = nav.current;
 		if (n.swallowOk) { n.swallowOk = false; return; }
 		if (!n.engaged) return;
+		if (!okGuard.current.key()) return;   // the pointer's click already acted for this OK
 		const {rows: allRows, topItems: tops, onActivate: act} = latest.current;
 		if (n.zone === 'panel') activatePanel(n.panelIndex);
 		else if (n.zone === 'menu') activateMenu(n.menuIndex);
@@ -268,6 +271,13 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 		n.ctxFrom = 'rows'; n.ctxIndex = 0; n.zone = 'ctx'; render();
 	};
 	useOkPress({onPress: press, onLongPress: longPress}, active);
+	// a click that comes right after an OK key-up that acted is the same press: stop it before it reaches the tile (capture, on window)
+	useEffect(() => {
+		if (!active) return;
+		const onClick = (e: MouseEvent) => { if (!okGuard.current.click()) { e.stopPropagation(); e.preventDefault(); } };
+		window.addEventListener('click', onClick, true);
+		return () => window.removeEventListener('click', onClick, true);
+	}, [active]);
 
 	const holdTimer = useRef(0);
 	const holdStart = () => {
