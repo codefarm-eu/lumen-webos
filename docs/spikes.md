@@ -74,6 +74,11 @@ The accepted reasons are in `/etc/configd/layers/base/com.webos.service.tvpower.
 `rebootByFault`, `rebootByOnRegular`, `rebootByTimeout`, `quickStart`. `lib/root.ts` now sends `rebootByOnRegular`. Over SSH it returned `returnValue:true` and the TV rebooted, but about a minute after it came
 back the TV was off and off the network (verify: whether this reason ends in standby, or `rebootByARRegular` is the right one).
 
+Retest 2026-10-24: every `tvpower` reboot comes back in Active Standby. The log line is `NL_POWER_STATE {"old":"Init","new":"Active
+Standby","PowerOnReason":"rebootByOnRegular"}`, the same from a TV that was on and one in standby. `rebootByARRegular` does the same (it is the
+scheduled overnight reboot). `turnOnScreen` does not wake it ("The current sub state must be 'screen off'"). The shell's `reboot` comes back on
+(see Keeping apps alive, below), so `lib/root.ts` now runs that, detached so the exec call returns before the TV goes down (verify).
+
 ## Stadia controller over Bluetooth (2026-10-21)
 Stadia controller in Bluetooth mode, as `StadiaXR77-xxxx` (vid 18d1, pid 9400). Watched `/proc/bus/input/devices`, `/dev/input/js*`,
 `/dev/hidraw0`, the GATT layer (`bluetooth2/gatt/monitorCharacteristic` on service 1812, characteristic 2a4d) and the page's gamepad events.
