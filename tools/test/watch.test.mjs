@@ -161,3 +161,91 @@ test('LG Home shown with no Home key from Input Hook before it is logged as a wa
 	// a stray value in the Home key file is a warning, not an arithmetic error that ends the reader (busybox ash)
 	assert.match(run('1x'), /warning/);
 });
+
+/** sources watch.sh with a Lumen build in a temp app folder (packaged homehook/) and installed copies next to it, then runs self_update at
+ *  each of `nows`; `between` (optional) is shell run after the check of that index. su_reexec is a stub that prints REEXEC and stops. */
+function selfUpdate (nows, {pkgWatch, pkgHook, instWatch = WATCH_OK('old'), instHook = HOOK_OK('old'), state = '', between = {}, hook = true, link = false} = {}) {
+	const dir = mkdtempSync(join(tmpdir(), 'selfupdate-'));
+	const app = join(dir, 'apps', LUMEN, 'homehook');
+	execFileSync('sh', ['-c', `mkdir -p '${app}' '${dir}/hh' '${dir}/init.d'`]);
+	writeFileSync(join(app, '60-homehook'), pkgHook ?? HOOK_OK('new'));
+	if (link) execFileSync('sh', ['-c', `printf '%s' '${WATCH_OK('new')}' > '${dir}/elsewhere' && ln -s '${dir}/elsewhere' '${app}/watch.sh'`]);
+	else writeFileSync(join(app, 'watch.sh'), pkgWatch ?? WATCH_OK('new'));
+	writeFileSync(join(dir, 'hh', 'watch.sh'), instWatch);
+	if (hook) writeFileSync(join(dir, 'init.d', '60-homehook'), instHook);
+	if (state) writeFileSync(join(dir, 'state'), state);
+	const sh = [`WATCH_SH_LIB=1 SELF='${dir}/hh/watch.sh' INIT_HOOK='${dir}/init.d/60-homehook' SU_STATE='${dir}/state' IH_LOG='${dir}/log' . '${SCRIPT}'`,
+		`APPS='${dir}/apps'; ME='${LUMEN}'`, 'su_reexec () { echo REEXEC; exit 0; }',
+		...nows.flatMap((n, i) => [`self_update ${n}`, between[i] || ':'])].join('\n');
+	const out = execFileSync('sh', ['-c', sh], {encoding: 'utf8'}).trim();
+	const read = (f) => { try { return readFileSync(join(dir, f), 'utf8'); } catch { return null; } };
+	const left = execFileSync('sh', ['-c', `ls -A '${dir}/hh'`], {encoding: 'utf8'}).trim().split('\n');
+	return {out, watch: read('hh/watch.sh'), hook: read('init.d/60-homehook'), log: read('log') || '', state: (read('state') || '').trim(), left, app};
+}
+const WATCH_OK = (v) => `#!/bin/sh\n# ${v}\nsingle_instance() { :; }\nhome_key() { :; }\n`;
+const HOOK_OK = (v) => `#!/bin/sh\n# ${v}\nstart /var/lib/homehook/watch.sh\n`;
+
+test('self-refresh: a packaged watcher that differs is installed on the second check (install finished), with its hook, then re-execs', () => {
+	const r = selfUpdate([1000, 1030]);
+	assert.equal(r.out, 'REEXEC');
+	assert.equal(r.watch, WATCH_OK('new'));
+	assert.equal(r.hook, HOOK_OK('new'));
+	assert.match(r.log, /watcher refresh: updated from .*homehook \(Lumen was updated\), restarting/);
+	assert.equal(r.state, '1030');
+	assert.deepEqual(r.left, ['watch.sh']);   // no temporary copies left behind
+});
+
+test('self-refresh: one check alone changes nothing, and the same pair already installed is left alone', () => {
+	const one = selfUpdate([1000]);
+	assert.equal(one.out, '');
+	assert.equal(one.watch, WATCH_OK('old'));
+	const same = selfUpdate([1000, 1030, 1060], {instWatch: WATCH_OK('new'), instHook: HOOK_OK('new')});
+	assert.equal(same.out, '');
+	assert.equal(same.log, '');
+	assert.deepEqual(same.left, ['watch.sh']);
+});
+
+test('self-refresh: a packaged file still changing between checks (install under way) is not taken', () => {
+	const r = selfUpdate([1000, 1030], {between: {0: `printf '%s' '${WATCH_OK('newer')}' > "$APPS/${LUMEN}/homehook/watch.sh"`}});
+	assert.equal(r.out, '');
+	assert.equal(r.watch, WATCH_OK('old'));
+});
+
+test('self-refresh: only the hook changed: the hook is updated, no re-exec', () => {
+	const r = selfUpdate([1000, 1030], {instWatch: WATCH_OK('new')});
+	assert.equal(r.out, '');
+	assert.equal(r.hook, HOOK_OK('new'));
+	assert.match(r.log, /boot hook updated/);
+});
+
+test('self-refresh: a packaged watcher that does not parse or is not watch.sh is refused, logged once', () => {
+	const bad = selfUpdate([1000, 1030, 1060, 1090], {pkgWatch: '#!/bin/sh\nif then\n'});
+	assert.equal(bad.out, '');
+	assert.equal(bad.watch, WATCH_OK('old'));
+	assert.equal(bad.log.match(/does not look right/g).length, 1);
+	assert.equal(selfUpdate([1000, 1030], {pkgWatch: '#!/bin/sh\necho hi\n'}).watch, WATCH_OK('old'));
+	assert.equal(selfUpdate([1000, 1030], {pkgHook: '#!/bin/sh\necho hi\n'}).watch, WATCH_OK('old'));
+});
+
+test('self-refresh: a packaged watch.sh that is a symlink is refused; a missing boot hook is not recreated', () => {
+	const l = selfUpdate([1000, 1030], {link: true});
+	assert.equal(l.out, '');
+	assert.equal(l.watch, WATCH_OK('old'));
+	const h = selfUpdate([1000, 1030], {hook: false});
+	assert.equal(h.out, 'REEXEC');
+	assert.equal(h.hook, null);
+});
+
+test('self-refresh: at most once a minute and 5 times a boot (the count survives the re-exec)', () => {
+	assert.equal(selfUpdate([1000, 1030], {state: '1000\n'}).out, '');
+	const max = selfUpdate([5000, 5030, 5060], {state: '1\n2\n3\n4\n5\n'});
+	assert.equal(max.out, '');
+	assert.equal(max.log.match(/5 refreshes this boot already/g).length, 1);
+});
+
+test('self-refresh: the watcher checks about every 30 s and keeps home_reader\'s pid for the re-exec', () => {
+	const src = readFileSync(SCRIPT, 'utf8');
+	assert.match(src, /\[ \$\(\(ticks % 30\)\) -eq 15 \] && self_update "\$now"/);
+	assert.match(src, /home_reader &\nhrpid=\$!/);
+	assert.match(src, /exec \/bin\/sh "\$SELF"/);
+});
