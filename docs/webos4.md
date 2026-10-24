@@ -313,6 +313,25 @@ the hours only (`html.night-hours`), also with Always, so that a screensaver low
 all day as well. Settings' unpicked wallpaper tiles are grey instead of faded, with their names in full white, and the Re-order button is a glass pill.
 Test: `tools/test/dim.test.mjs`.
 
+## Home edit mode and more (port of upstream bb94320)
+
+- **Edit mode:** hold OK on an app and it lifts and wobbles. Left and Right move it one place, Up and Down a row, and OK puts it down.
+  Hold OK again while it is lifted for a menu: Uninstall App (only apps the TV lets go; it asks for a second OK), Remove from Home Screen,
+  and Add to Folder. `uninstallApp` in `lib/root.ts` tries the developer-mode remover, then the store's. It checks `getAppInfo` before and after.
+  Here it matches `"returnValue": *true`, since luna-send prints the space on some firmware. Never offered: `KEEP_INSTALLED`, which here
+  covers every `com.ovsteenb.lumen*` build (Lumen bar and the dev copy included), the upstream Lumen ids, LG's system apps and the Homebrew Channel.
+- **Number keys:** 1 to 6 open the glass bar's apps at those places, on the home screen and (added here) in Lumen bar, where the Home tile and
+  recent apps are not counted.
+- **Resting pointer:** a mouse-over that comes only because the rows slid under a pointer that did not move no longer takes the focus.
+  It works with this fork's one-OK guard (`lib/okClick.ts`), which is unchanged.
+- **Screensaver started by the TV:** Lumen's first frame is the screensaver (`view: ambient` and Use Lumen's screensaver on), on the last
+  picture it showed. That picture is only reused by its own source: a bundled picture for the built-in slideshow, an Immich UUID for Immich
+  (`lastPictureFits`). Any key fades it out while the clock slides back to the home screen's clock. The slide starts from where burn-in
+  protection last moved the clock.
+- **Wallpaper with nothing picked** shows the default picture.
+- **Settings lists:** the end of a long list shows its last row whole. Settings > Apps keeps this fork's grid, which already shows whole rows
+  only (see "Settings > Apps grid"), so upstream's `Grid.tsx` change was not taken.
+
 ## Risks
 
 - **Speed**: `background-attachment: fixed` glass is not composited, so a glass shape that moves or scales (focus zoom, Control Center

@@ -157,9 +157,10 @@ function prepareNext (sel: string): void {
 	if (sel.indexOf('immich:') === 0) { prepareTimer = window.setTimeout(() => prepareImmich(sel), PREPARE_DELAY_MS); return; }
 	if (sel !== 'pick') return;
 	prepareTimer = window.setTimeout(() => {
-		if (sel !== currentSel || !shownKey) return;
+		if (sel !== currentSel || (!shownKey && picks.length > 0)) return;
 		const others = picks.filter((k) => k !== shownKey);
-		const next = newOnLaunch && others.length > 0 ? randomOf(others) : shownKey;
+		// nothing picked: the next launch opens on the default picture, as this one does
+		const next = picks.length === 0 ? 'local:0' : newOnLaunch && others.length > 0 ? randomOf(others) : shownKey;
 		if (next.indexOf('local:') === 0) {
 			// a bundled picture: index.html paints it sharp, with its blurred copies beside it
 			const item = LOCAL_WALLPAPERS[Number(next.slice(6))];

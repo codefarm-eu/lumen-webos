@@ -4,7 +4,8 @@ import {VideoCaption} from '../components/VideoCaption';
 import {LowerVeil} from '../components/LowerVeil';
 import {useCallback, useEffect, useLayoutEffect, useRef, useState} from 'preact/hooks';
 import {Clock} from '../components/Clock';
-import {Glyph} from '../components/Glyph';
+import {Glyph, type GlyphName} from '../components/Glyph';
+import {canUninstall} from '../lib/root';
 import {growFrom, DOUBLE_DOWN_MS} from '../components/ControlCenter';
 import {Row} from '../components/Row';
 import {Tile, type TileModel} from '../components/Tile';
@@ -43,8 +44,8 @@ interface Props {
 	onActivate: (rowId: string, item: TileModel) => void;
 	/** show AM/PM beside the time (12-hour clocks) */
 	showPeriod?: boolean;
-	/** hold OK on an app: move it one place along its row, or take it off the home screen */
-	onEdit?: (action: 'move' | 'remove' | 'folder-add' | 'folder-out', rowId: string, key: string, arg?: number | string) => void;
+	/** hold OK on an app: move it along the rows, or into or out of a folder */
+	onEdit?: (action: 'move' | 'remove' | 'uninstall' | 'folder-add' | 'folder-out', rowId: string, key: string, arg?: number | string) => void;
 	/** the apps inside each folder, by folder name */
 	folders?: Record<string, TileModel[]>;
 	/** shown beside the date under the clock, top left */
@@ -68,9 +69,27 @@ const GRID_TOP = 76;
 /** the lowest a focused grid row may sit before the grid scrolls on (its tiles 40px lower) */
 const GRID_BOTTOM = 780;   // 40px less than it looks: the grid rows sit 40px lower while the remote is in them (global.css)
 const FOLDER_PRESETS = ['Games', 'Tools', 'Media'];
-const CTX_ITEMS = ['Move', 'Remove from Home'].concat(FOLDER_PRESETS.map((f) => 'Add to ' + f));
-const CTX_FOLDER_ITEMS = ['Take out of Folder'];
 const FOLDER_PREFIX = 'folder:';
+/** the remote's 1 to 6 open the glass bar's apps at those places (keyCodes for the digit row and the number pad) */
+const dockDigit = (e: KeyboardEvent) => (e.keyCode >= 49 && e.keyCode <= 54 ? e.keyCode - 48 : e.keyCode >= 97 && e.keyCode <= 102 ? e.keyCode - 96 : 0);
+
+/** one choice in the hold-OK menu */
+interface CtxItem { id: string; label: string; glyph: GlyphName }
+/** the menu's pills: wider than the Inputs list's, for "Press OK again to uninstall"; 72px tall with 12px between (.cc__opt) */
+const CTX_W = 400;
+const CTX_ITEM_H = 84;
+const CTX_GAP = 24;
+const CTX_EDGE = 60;
+
+/** the menu rises from the app (drops, when under it): the panel moves and each pill fades on its own, as growFrom does for Inputs, since fading
+ *  the panel would cut the pills' live blur off from the wallpaper; nothing is left applied afterwards */
+function riseFrom (panel: HTMLElement, below: boolean): void {
+	if (!panel.animate || document.documentElement.classList.contains('reduce-motion')) return;
+	const opts = {duration: 200, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)'};
+	panel.style.transformOrigin = below ? '50% 0' : '50% 100%';
+	panel.animate([{transform: `translateY(${below ? -14 : 14}px) scale(0.96)`}, {transform: 'none'}], opts);
+	Array.from(panel.querySelectorAll<HTMLElement>('.cc__mod')).forEach((el) => el.animate([{opacity: 0}, {opacity: 1}], opts));
+}
 
 /** Where the remote's focus is: a row of apps, the top bar, or one of the two open panels. */
 type Zone = 'rows' | 'top' | 'panel' | 'menu' | 'ctx' | 'folder';
@@ -96,6 +115,12 @@ interface Nav {
 	folderIndex: number;
 	/** where the hold-OK menu was opened from, and where it returns to */
 	ctxFrom: 'rows' | 'folder';
+	/** the menu's first list, or its list of folders */
+	ctxLevel: 'main' | 'folder';
+	/** Uninstall was picked once: the next OK uninstalls */
+	ctxConfirm: boolean;
+	/** the lifted tile's place on screen when the menu opened, so the menu sits over it; null for a menu inside a folder */
+	ctxAnchor: {x: number; top: number; bottom: number} | null;
 	/** who moved the focus last: leaving the dock with the pointer rests the icons, with the keys the focus stays */
 	mode: 'key' | 'pointer';
 	/** the dock is slid away; any key brings it back */
@@ -114,11 +139,20 @@ const MENU_KEY = 'menu';
  *  - OK on Inputs opens the inputs panel, OK on the time pill opens the menu; Back closes either.
  *  - The second row stays hidden until the remote goes down to it. */
 export function Home ({rows, topItems, menuItems, inputs, active, onActivate, showPeriod, onEdit, folders, weather, dockHide, dockDim, focusRow, tiles, perRow = 6}: Props) {
-	const nav = useRef<Nav>({engaged: false, zone: 'rows', rowIndex: 0, columns: {}, topIndex: 0, panelIndex: 0, menuIndex: 0, ctxIndex: 0, moving: null, swallowOk: false, suppressClick: false, folder: '', folderIndex: 0, ctxFrom: 'rows', mode: 'key', dockHidden: false, panelFrom: 'top'});
+	const nav = useRef<Nav>({engaged: false, zone: 'rows', rowIndex: 0, columns: {}, topIndex: 0, panelIndex: 0, menuIndex: 0, ctxIndex: 0, moving: null, swallowOk: false, suppressClick: false, folder: '', folderIndex: 0, ctxFrom: 'rows', ctxLevel: 'main', ctxConfirm: false, ctxAnchor: null, mode: 'key', dockHidden: false, panelFrom: 'top'});
 	// when Down was last pressed at the last input, with nowhere lower to go
 	const bottomDown = useRef(0);
-	const latest = useRef({rows, topItems, menuItems, inputs, onActivate, onEdit, folders, dockHide});
-	latest.current = {rows, topItems, menuItems, inputs, onActivate, onEdit, folders, dockHide};
+	const latest = useRef({rows, topItems, menuItems, inputs, onActivate, onEdit, folders, dockHide, perRow});
+	latest.current = {rows, topItems, menuItems, inputs, onActivate, onEdit, folders, dockHide, perRow};
+	// false while the browser only reports a mouse-enter because the rows slid under a resting pointer (webOS 25: Down bounced back to the bar)
+	const realPointer = useRef(true);
+	useEffect(() => {
+		let lastX = -1, lastY = -1;
+		const track = (e: MouseEvent) => { realPointer.current = e.clientX !== lastX || e.clientY !== lastY; lastX = e.clientX; lastY = e.clientY; };
+		window.addEventListener('mouseover', track, true);
+		window.addEventListener('mousemove', track, true);
+		return () => { window.removeEventListener('mouseover', track, true); window.removeEventListener('mousemove', track, true); };
+	}, []);
 	const [late, setLate] = useState(false);   // the rows below the first are drawn a moment after launch
 	useEffect(() => { if (late) bootMark('grid'); }, [late]);
 	useEffect(() => { const id = window.setTimeout(() => { bootMark('grid-start'); setLate(true); }, 3500); return () => window.clearTimeout(id); }, []);
@@ -151,7 +185,7 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 			if (document.hidden) return;
 			if (focusWanted()) return;
 			const n = nav.current;
-			n.engaged = false; n.zone = 'rows'; n.rowIndex = 0; n.dockHidden = false;
+			n.engaged = false; n.zone = 'rows'; n.rowIndex = 0; n.dockHidden = false; n.moving = null;
 			render();
 		};
 		document.addEventListener('visibilitychange', rest);
@@ -208,6 +242,15 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 		render();
 		latest.current.onActivate('menu', item);
 	};
+	/** what the hold-OK menu offers now: inside a folder, only taking the app out; on a lifted app, Uninstall (apps the TV lets go only), Remove and Add to Folder */
+	const ctxItems = (): CtxItem[] => {
+		const n = nav.current;
+		if (n.ctxFrom === 'folder') return [{id: 'out', label: 'Take out of Folder', glyph: 'folder'}];
+		if (n.ctxLevel === 'folder') return FOLDER_PRESETS.map((f): CtxItem => ({id: FOLDER_PREFIX + f, label: f, glyph: 'folder'}));
+		const list: CtxItem[] = [];
+		if (n.moving && canUninstall(n.moving)) list.push({id: 'uninstall', label: n.ctxConfirm ? 'Press OK again to uninstall' : 'Uninstall App', glyph: 'trash'});
+		return list.concat([{id: 'remove', label: 'Remove from Home Screen', glyph: 'minus'}, {id: 'folder', label: 'Add to Folder', glyph: 'folder'}]);
+	};
 	const activateCtx = (i: number) => {
 		const n = nav.current;
 		setLate(true);
@@ -219,13 +262,29 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 			render();
 			return;
 		}
+		const pick = ctxItems()[i];
+		const key = n.moving;
 		const row = allRows[clamp(n.rowIndex, 0, allRows.length - 1)];
-		const item = row && row.items[columnOf(row)];
+		if (!pick || !key || !row) return;
+		if (pick.id === 'folder') { n.ctxLevel = 'folder'; n.ctxIndex = 0; render(); return; }
+		// uninstalling cannot be undone, so it takes a second OK
+		if (pick.id === 'uninstall' && !n.ctxConfirm) { n.ctxConfirm = true; render(); return; }
 		n.zone = 'rows';
-		if (!item) { render(); return; }
-		if (i === 0) n.moving = item.key;
-		else if (i === 1 && edit) { edit('remove', row.id, item.key); n.columns[row.id] = clamp(columnOf(row), 0, Math.max(0, row.items.length - 2)); }
-		else if (edit) edit('folder-add', row.id, item.key, FOLDER_PRESETS[i - 2]);
+		n.moving = null;
+		if (edit) {
+			if (pick.id === 'uninstall') edit('uninstall', row.id, key);
+			else if (pick.id === 'remove') { edit('remove', row.id, key); n.columns[row.id] = clamp(columnOf(row), 0, Math.max(0, row.items.length - 2)); }
+			else edit('folder-add', row.id, key, pick.id.slice(FOLDER_PREFIX.length));
+		}
+		render();
+	};
+	/** opens the hold-OK menu over the lifted app (or in the middle, inside a folder) */
+	const openCtx = (from: 'rows' | 'folder') => {
+		const n = nav.current;
+		const tile = from === 'rows' && rowsRef.current ? rowsRef.current.querySelector('.tile--focused') : null;
+		const r = tile && tile.getBoundingClientRect();
+		n.ctxAnchor = r ? {x: r.left + r.width / 2, top: r.top, bottom: r.bottom} : null;
+		n.ctxFrom = from; n.ctxLevel = 'main'; n.ctxConfirm = false; n.ctxIndex = 0; n.zone = 'ctx';
 		render();
 	};
 
@@ -261,16 +320,17 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 		}
 	};
 
-	/** holding OK on an app opens its menu */
+	/** holding OK on an app lifts it to move, as on tvOS; holding OK again while it is lifted opens its menu (uninstall, remove, folder) */
 	const longPress = () => {
 		const n = nav.current;
-		if (n.engaged && n.zone === 'folder') { n.ctxFrom = 'folder'; n.ctxIndex = 0; n.zone = 'ctx'; render(); return; }
-		if (!n.engaged || n.zone !== 'rows' || n.moving) return;
+		if (n.engaged && n.zone === 'folder') { openCtx('folder'); return; }
+		if (!n.engaged || n.zone !== 'rows') return;
+		if (n.moving) { openCtx('rows'); return; }
 		const {rows: allRows} = latest.current;
 		const row = allRows[clamp(n.rowIndex, 0, allRows.length - 1)];
 		const held = row && row.items[columnOf(row)];
 		if (!row || !editable(row.id) || !held || held.key.indexOf(FOLDER_PREFIX) === 0) return;
-		n.ctxFrom = 'rows'; n.ctxIndex = 0; n.zone = 'ctx'; render();
+		n.moving = held.key; setLate(true); render();
 	};
 	useOkPress({onPress: press, onLongPress: longPress}, active);
 	// a click that comes right after an OK key-up that acted is the same press: stop it before it reaches the tile (capture, on window)
@@ -353,11 +413,12 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 			return true;
 		}
 		if (n.zone === 'ctx') {
-			const count = (n.ctxFrom === 'folder' ? CTX_FOLDER_ITEMS : CTX_ITEMS).length;
+			const count = ctxItems().length;
 			switch (key) {
-				case 'up': n.ctxIndex = clamp(n.ctxIndex - 1, 0, count - 1); break;
-				case 'down': n.ctxIndex = clamp(n.ctxIndex + 1, 0, count - 1); break;
-				case 'back': n.zone = n.ctxFrom; break;
+				case 'up': n.ctxIndex = clamp(n.ctxIndex - 1, 0, count - 1); n.ctxConfirm = false; break;
+				case 'down': n.ctxIndex = clamp(n.ctxIndex + 1, 0, count - 1); n.ctxConfirm = false; break;
+				// Back from the folders returns to the first list, on Add to Folder; from the first list the app stays lifted
+				case 'back': if (n.ctxLevel === 'folder') { n.ctxLevel = 'main'; n.ctxIndex = ctxItems().length - 1; } else n.zone = n.ctxFrom; break;
 			}
 			render();
 			return true;
@@ -384,6 +445,8 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 		};
 		if (n.moving) {
 			if (key === 'left' || key === 'right') { if (edit) edit('move', row.id, n.moving, key === 'left' ? -1 : 1); return true; }
+			// a whole row up or down: the rows are one list cut every perRow apps
+			if (key === 'up' || key === 'down') { if (edit) edit('move', row.id, n.moving, (key === 'up' ? -1 : 1) * latest.current.perRow); return true; }
 			if (key === 'back') n.moving = null;
 			render();
 			return true;
@@ -405,9 +468,29 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 
 	useKeys(handleKey, active);
 
+	// number keys open the glass bar's apps; 7 to 9 are left alone, since the grid's places cannot be seen from the bar
+	useEffect(() => {
+		if (!active) return;
+		const onDigit = (e: KeyboardEvent) => {
+			const d = dockDigit(e);
+			const n = nav.current;
+			if (!d || n.moving || (n.zone !== 'rows' && n.zone !== 'top')) return;
+			const bar = latest.current.rows[0];
+			const item = bar && bar.items[d - 1];
+			if (!item) return;
+			e.preventDefault();
+			n.engaged = true; n.mode = 'key'; n.zone = 'rows'; n.rowIndex = 0; n.columns[bar.id] = d - 1; n.dockHidden = false;
+			render();
+			activateRowItem(bar.id, item);
+		};
+		window.addEventListener('keydown', onDigit);
+		return () => window.removeEventListener('keydown', onDigit);
+	}, [active]);
+
 	const n = nav.current;
 	const rowIndex = clamp(n.rowIndex, 0, Math.max(0, rows.length - 1));
-	const lower = n.zone === 'rows' && rowIndex >= 1;
+	// the grid stays open under the hold-OK menu of an app in it
+	const lower = (n.zone === 'rows' || (n.zone === 'ctx' && n.ctxFrom === 'rows')) && rowIndex >= 1;
 	// the glass stays a plain tint until the rows have slid back (see .screen--plainglass in global.css); Live blur has no picture to swap, so it skips the class and its full restyle
 	const [settling, setSettling] = useState(false);
 	const wasLower = useRef(false);
@@ -435,7 +518,7 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 		el.style.setProperty('--lower-shift', shift + 'px');
 	});
 	const overlay = n.zone === 'panel' || n.zone === 'menu' || n.zone === 'ctx' || n.zone === 'folder';
-	const topPointer = (i: number) => () => { if (!overlay) { n.mode = 'pointer'; n.engaged = true; n.zone = 'top'; n.topIndex = i; render(); } };
+	const topPointer = (i: number) => () => { if (!overlay && realPointer.current) { n.mode = 'pointer'; n.engaged = true; n.zone = 'top'; n.topIndex = i; render(); } };
 	const focusedTop = (i: number) => n.engaged && n.zone === 'top' && i === n.topIndex;
 	return (
 		<div class={`screen${active ? '' : ' screen--inactive'}${lower ? ' screen--lower' : ''}${(lower || settling) && !document.documentElement.classList.contains('liveblur') ? ' screen--plainglass' : ''}${n.moving ? ' screen--moving' : ''}${n.dockHidden ? ' screen--dockhidden' : ''}${dockDim ? ' screen--dockdim' : ''}`}>
@@ -486,7 +569,7 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 						rest={!n.engaged}
 						onLeave={pointerLeft}
 						selected={columnOf(row)}
-						onSelect={(col) => { if (overlay) return; n.mode = 'pointer'; n.engaged = true; n.zone = 'rows'; n.rowIndex = i; n.columns[row.id] = col; render(); }}
+						onSelect={(col) => { if (overlay || !realPointer.current) return; n.mode = 'pointer'; n.engaged = true; n.zone = 'rows'; n.rowIndex = i; n.columns[row.id] = col; render(); }}
 						onActivate={(col) => { holdCancel(); if (n.suppressClick) { n.suppressClick = false; return; } activateRowItem(row.id, row.items[col]); }}
 					/>
 				))}
@@ -512,7 +595,7 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 					</div>
 				</>
 			)}
-			{n.moving && <div class="movehint">{tr('Move with the arrows · OK to drop')}</div>}
+			{n.moving && <div class="movehint">{tr('Move with the arrows · OK to drop · Hold OK for more')}</div>}
 			{n.zone === 'folder' && (
 				<>
 					<div class="panel-backdrop" onClick={() => { n.zone = 'rows'; render(); }} />
@@ -532,23 +615,33 @@ export function Home ({rows, topItems, menuItems, inputs, active, onActivate, sh
 					</div>
 				</>
 			)}
-			{n.zone === 'ctx' && (
-				<>
-					<div class="panel-backdrop" onClick={() => { n.zone = n.ctxFrom; render(); }} />
-					<div class="panel panel--menu panel--ctx">
-						{(n.ctxFrom === 'folder' ? CTX_FOLDER_ITEMS : CTX_ITEMS).map((label, i) => (
-							<div
-								key={label}
-								class={`menu__row${i === n.ctxIndex ? ' menu__row--focused' : ''}`}
-								onMouseEnter={() => { n.ctxIndex = i; render(); }}
-								onClick={() => activateCtx(i)}
-							>
-								<span>{tr(label)}</span>
-							</div>
-						))}
-					</div>
-				</>
-			)}
+			{n.zone === 'ctx' && (() => {
+				// the menu sits over the lifted app, inside the screen's edges; under it when the app is too near the top for the menu to fit above
+				const items = ctxItems();
+				const h = items.length * CTX_ITEM_H;
+				const a = n.ctxAnchor;
+				const left = a ? clamp(a.x - CTX_W / 2, CTX_EDGE, 1920 - CTX_EDGE - CTX_W) : (1920 - CTX_W) / 2;
+				const above = !a || a.top - CTX_GAP - h >= CTX_EDGE;
+				const top = !a ? 300 : above ? a.top - CTX_GAP - h : a.bottom + CTX_GAP;
+				return (
+					<>
+						<div class="panel-backdrop panel-backdrop--clear" onClick={() => { n.zone = n.ctxFrom; render(); }} />
+						<div key={n.ctxLevel} class="panel panel--cc panel--inputs panel--tilemenu" ref={(el) => { if (el && !el.dataset.risen) { el.dataset.risen = '1'; riseFrom(el, !above); } }} style={{left: left + 'px', top: top + 'px', width: CTX_W + 'px'}}>
+							{items.map((item, i) => (
+								<div
+									key={item.id}
+									class={`cc__mod cc__tile cc__opt${i === n.ctxIndex ? ' cc__mod--focused' : ''}${item.id === 'uninstall' && n.ctxConfirm ? ' cc__opt--warn' : ''}`}
+									onMouseEnter={() => { n.ctxIndex = i; render(); }}
+									onClick={() => activateCtx(i)}
+								>
+									<div class="cc__icon"><Glyph name={item.glyph} /></div>
+									<div class="cc__text"><div class="cc__name">{tr(item.label)}</div></div>
+								</div>
+							))}
+						</div>
+					</>
+				);
+			})()}
 			{n.zone === 'menu' && (
 				<>
 					<div class="panel-backdrop" onClick={() => { n.zone = 'top'; render(); }} />

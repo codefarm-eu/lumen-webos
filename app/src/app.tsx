@@ -36,7 +36,7 @@ import {AUTO_PLACE, POSTCODE_PLACE, findPlace, peekWeather, readWeather, type We
 import {TextPrompt} from './components/TextPrompt';
 import {useLiveTv} from './hooks/useLiveTv';
 import {channelColor, nowNextAt, rowChannels, type Channel} from './lib/livetv';
-import {openChannel, runningApps, setHomeBar, setHomeTakeover, syncBar} from './lib/root';
+import {openChannel, runningApps, setHomeBar, setHomeTakeover, syncBar, uninstallApp} from './lib/root';
 
 import {bootMark, navMark} from './lib/log';
 import {isDark, LANGS, setClockMode, setLang} from './lib/i18n';
@@ -92,7 +92,8 @@ const MENU_ITEMS: TileModel[] = [
 export function App () {
 	/** the Postcode or place text field is open over Settings */
 	const [prompt, setPrompt] = useState(false);
-	const [screen, setScreen] = useState<Screen>(import.meta.env.DEV && /[?&]settings/.test(location.search) ? 'settings' : 'home');
+	// opened by watch.sh for the TV's screensaver: the first frame is the screensaver, so the home screen never shows first
+	const [screen, setScreen] = useState<Screen>(() => import.meta.env.DEV && /[?&]settings/.test(location.search) ? 'settings' : startParams().view === 'ambient' && loadConfig().ambientOn ? 'ambient' : 'home');
 	// Immich (Settings > Wallpaper > Photos): whether a server is set up on the TV, and its albums; read again each time Settings opens
 	const [immich, setImmich] = useState<{ready: boolean; albums: {id: string; title: string}[]}>({ready: !!cachedServer(), albums: []});
 	useEffect(() => {
@@ -827,18 +828,16 @@ export function App () {
 		return {
 			categories,
 			entries,
-			summary: `${picked.length} ${picked.length === 1 ? 'picture' : 'pictures'} picked.`,
+			// with nothing picked, the default picture shows (lib/wallpaper.ts falls back to it); it is not one of the choices
+			summary: picked.length === 0 ? 'Nothing picked: the default picture shows.' : `${picked.length} ${picked.length === 1 ? 'picture' : 'pictures'} picked.`,
 			onPick: (key: string) => {
 				if (key.indexOf('all:') === 0) {
 					const keys = keysIn[key.slice(4)] || [];
 					const all = keys.every((k) => picked.indexOf(k) >= 0);
-					const next = all ? picked.filter((k) => keys.indexOf(k) === -1) : picked.concat(keys.filter((k) => picked.indexOf(k) === -1));
-					if (next.length === 0) { showToast('Keep at least one picture'); return; }
-					updateConfig({...config, wallpaperPicks: next});
+					updateConfig({...config, wallpaperPicks: all ? picked.filter((k) => keys.indexOf(k) === -1) : picked.concat(keys.filter((k) => picked.indexOf(k) === -1))});
 					return;
 				}
 				const has = picked.indexOf(key) >= 0;
-				if (has && picked.length === 1) { showToast('Keep at least one picture'); return; }
 				updateConfig({...config, wallpaperPicks: has ? picked.filter((k) => k !== key) : picked.concat(key)});
 			}
 		};
@@ -868,9 +867,21 @@ export function App () {
 	}, [showToast]);
 
 	/** hold OK on an app: move it one place along the home rows, or take it off the home screen */
-	const onEdit = useCallback((action: 'move' | 'remove' | 'folder-add' | 'folder-out', _rowId: string, key: string, arg: number | string = 0) => {
+	const onEdit = useCallback((action: 'move' | 'remove' | 'uninstall' | 'folder-add' | 'folder-out', _rowId: string, key: string, arg: number | string = 0) => {
 		const c = configRef.current;
 		const strip = (folders: UserConfig['folders']) => folders.map((f) => ({...f, appIds: f.appIds.filter((id) => id !== key)}));
+		if (action === 'uninstall') {
+			const title = (allApps.filter((a) => a.id === key)[0] || {title: 'The app'}).title;
+			showToast(`Uninstalling ${title}…`);
+			uninstallApp(key).then((gone) => {
+				if (!gone) { showToast(`${title} is still installed`, 'error'); return; }
+				const now = configRef.current;
+				updateConfig({...now, appIds: now.appIds.filter((id) => id !== key), folders: strip(now.folders).filter((f) => f.appIds.length > 0)});
+				setApps((list) => list.filter((a) => a.id !== key));
+				showToast(`${title} uninstalled`);
+			}, () => showToast(`Couldn't uninstall ${title}`, 'error'));
+			return;
+		}
 		if (action === 'folder-add') {
 			const folders = strip(c.folders);
 			const target = folders.filter((f) => f.name === String(arg))[0];
@@ -885,8 +896,9 @@ export function App () {
 		const at = ids.indexOf(key);
 		if (at < 0) return;
 		if (action === 'remove') { updateConfig({...c, appIds: ids.filter((id) => id !== key).concat(kept)}); return; }
-		const to = at + Number(arg);
-		if (to < 0 || to >= ids.length) return;
+		// a row up or down past either end stops at the first or last place
+		const to = Math.max(0, Math.min(ids.length - 1, at + Number(arg)));
+		if (to === at) return;
 		const next = ids.slice();
 		next.splice(at, 1);
 		next.splice(to, 0, key);

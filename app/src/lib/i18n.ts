@@ -197,36 +197,20 @@ const TABLE: Record<string, string[]> = {
 		"Ana ekranda henüz bir şey yok.",
 		"होम स्क्रीन पर अभी कुछ नहीं है।"
 	],
-	"Move with the arrows · OK to drop": [
-		"Mit Pfeilen verschieben · OK zum Ablegen",
-		"Mueve con las flechas · OK para soltar",
-		"Déplacez avec les flèches · OK pour déposer",
-		"Sposta con le frecce · OK per rilasciare",
-		"Mova com as setas · OK para soltar",
-		"Verplaats met de pijlen · OK om neer te zetten",
-		"Oklarla taşı · Bırakmak için OK",
-		"तीरों से खिसकाएं · छोड़ने के लिए OK"
+	"Move with the arrows · OK to drop · Hold OK for more": [
+		"Mit Pfeilen verschieben · OK zum Ablegen · OK halten für mehr",
+		"Mueve con las flechas · OK para soltar · Mantén OK para más",
+		"Déplacez avec les flèches · OK pour déposer · Maintenez OK pour plus",
+		"Sposta con le frecce · OK per rilasciare · Tieni premuto OK per altro",
+		"Mova com as setas · OK para soltar · Mantenha OK para mais",
+		"Verplaats met de pijlen · OK om neer te zetten · Houd OK vast voor meer",
+		"Oklarla taşı · Bırakmak için OK · Daha fazlası için OK'a basılı tut",
+		"तीरों से खिसकाएं · छोड़ने के लिए OK · और विकल्पों के लिए OK दबाए रखें"
 	],
-	"Move": [
-		"Verschieben",
-		"Mover",
-		"Déplacer",
-		"Sposta",
-		"Mover",
-		"Verplaatsen",
-		"Taşı",
-		"खिसकाएं"
-	],
-	"Remove from Home": [
-		"Vom Start entfernen",
-		"Quitar del inicio",
-		"Retirer de l'accueil",
-		"Rimuovi dalla Home",
-		"Remover do início",
-		"Van start verwijderen",
-		"Ana ekrandan kaldır",
-		"होम से हटाएं"
-	],
+	"Uninstall App": ["App deinstallieren", "Desinstalar app", "Désinstaller l'app", "Disinstalla app", "Desinstalar app", "App verwijderen", "Uygulamayı kaldır", "ऐप अनइंस्टॉल करें"],
+	"Press OK again to uninstall": ["Zum Deinstallieren erneut OK", "Pulsa OK otra vez para desinstalar", "Appuyez à nouveau sur OK pour désinstaller", "Premi di nuovo OK per disinstallare", "Prima OK de novo para desinstalar", "Druk nogmaals op OK om te verwijderen", "Kaldırmak için tekrar OK'a bas", "अनइंस्टॉल करने के लिए फिर OK दबाएं"],
+	"Remove from Home Screen": ["Vom Startbildschirm entfernen", "Quitar de la pantalla de inicio", "Retirer de l'écran d'accueil", "Rimuovi dalla schermata Home", "Remover do ecrã inicial", "Van startscherm verwijderen", "Ana ekrandan kaldır", "होम स्क्रीन से हटाएं"],
+	"Add to Folder": ["Zu Ordner hinzufügen", "Añadir a carpeta", "Ajouter à un dossier", "Aggiungi a cartella", "Adicionar a pasta", "Aan map toevoegen", "Klasöre ekle", "फ़ोल्डर में जोड़ें"],
 	"Add to Games": [
 		"Zu Spiele hinzufügen",
 		"Añadir a Juegos",

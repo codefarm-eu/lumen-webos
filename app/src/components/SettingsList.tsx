@@ -45,13 +45,16 @@ interface Props {
 const ROW_H = 84;           // .slist__row height + margin (global.css)
 const VIEW_H = 840;         // .slist__view height
 const SPARE = 6;            // rows drawn above and below the window, so a quick scroll never shows a gap
+const SHADOW_ROOM = 48;     // under the last row: its focus shadow (0 14px 28px) and the 1.03 grow, so the window's edge never cuts it
 
 /** A tvOS-style Settings page: a big glyph on the left, single-line rows on the right.
  *  Only the rows near the window are drawn (the city list can hold every city). */
 export function SettingsList ({title, glyph, description, rows, ticks, selected, onSelect, onActivate}: Props) {
 	const n = rows.length;
-	const visible = Math.floor(VIEW_H / ROW_H);
+	const visible = Math.floor((VIEW_H - SHADOW_ROOM) / ROW_H);
 	const offset = Math.max(0, Math.min(selected - Math.floor((visible - 1) / 2), n - visible)) * ROW_H;
+	// the bottom fade only while more rows wait below; at the end of a long list the last row shows whole
+	const more = n > visible && offset < (n - visible) * ROW_H;
 	const first = Math.max(0, Math.floor(offset / ROW_H) - SPARE);
 	const last = Math.min(n, first + visible + 2 * SPARE);
 
@@ -62,7 +65,7 @@ export function SettingsList ({title, glyph, description, rows, ticks, selected,
 				<div class="slist__icon"><Glyph name={glyph} /></div>
 				<p class="slist__description">{description || ''}</p>
 			</div>
-			<div class={`slist__view${n > visible ? ' slist__view--long' : ''}`}>
+			<div class={`slist__view${more ? ' slist__view--long' : ''}`}>
 				<div class="slist__track" style={`height:${n * ROW_H}px;transform:translateY(${-offset}px)`}>
 					{rows.slice(first, last).map((r, k) => { const i = first + k; return (
 						<div
