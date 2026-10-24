@@ -28,7 +28,7 @@ import {albums as immichAlbums, cachedServer, IMMICH_SOURCES, loadServer} from '
 import {Ambient} from './components/Ambient';
 import {screensaverSource} from './lib/screensaver';
 import {setVideoChoice, setVideoPaused, setVideoWallpaper, VIDEO_PLACES} from './lib/wallpaperVideo';
-import {setAmbientFlag, setVideoFlag, startScreensaver} from './lib/system';
+import {resyncFlags, setAmbientFlag, setVideoFlag, startScreensaver} from './lib/system';
 import {setFpsCounter} from './lib/fps';
 import {ControlCenter, prefetchControls, type CenterAction} from './components/ControlCenter';
 import {CITIES, COUNTRIES} from './config/cities';
@@ -318,6 +318,12 @@ export function App () {
 		root.toggle('focus-strong', config.focusStrength === 'strong');
 	}, [config.focusStrength]);
 	useEffect(() => { setAmbientFlag(config.ambientOn); }, [config.ambientOn]);
+	// the watcher's flag files again each time Lumen comes to the front, in case a write was lost (lib/flagSync.ts)
+	useEffect(() => {
+		const onVisibility = () => { if (!document.hidden) resyncFlags(); };
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => document.removeEventListener('visibilitychange', onVisibility);
+	}, []);
 	// Home opens Lumen: at start, and when Live TV is switched, bring the watcher up to the one in this build and its flags up to date (never
 	// run while off: a watcher set up by hand over SSH is left as it is)
 	useEffect(() => { if (config.homeTakeover && isWebOS()) setHomeTakeover(appDir(), true, !config.liveTv).catch(() => undefined); }, [config.liveTv]);
