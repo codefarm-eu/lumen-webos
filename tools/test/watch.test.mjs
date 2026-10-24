@@ -80,3 +80,66 @@ test('only one watcher runs: a second copy exits while the first is alive, and t
 	// the lock is left behind with a dead pid: the next copy takes it over
 	assert.equal(execFileSync('sh', ['-c', claim(lock)], {encoding: 'utf8'}).trim(), 'ok');
 });
+
+/** sources watch.sh with Input Hook's paths in a temp folder: lginput2 is pid 4242, hooked or not per check (`hooked`, one entry per
+ *  inputhook_check call), and ezinject is a stub that records its arguments. Runs inputhook_check at each of `nows`. */
+function reinject (nows, {hooked = [], bind = true, mark = true, state = ''} = {}) {
+	const dir = mkdtempSync(join(tmpdir(), 'inputhook-'));
+	const ih = join(dir, 'ih');
+	execFileSync('sh', ['-c', `mkdir -p '${ih}' && printf '#!/bin/sh\\necho "$@" >> "${dir}/calls"\\n' > '${ih}/ezinject' && chmod +x '${ih}/ezinject'`]);
+	if (mark) writeFileSync(join(dir, 'mark'), '');
+	if (state) writeFileSync(join(dir, 'state'), state);
+	writeFileSync(join(dir, 'keybinds.json'), bind ? '{"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}}\n' : '{}\n');
+	const h = nows.map((_, i) => (hooked[i] ? 1 : 0)).join(' ');
+	const sh = [`WATCH_SH_LIB=1 IH_DIR='${ih}' IH_MARK='${join(dir, 'mark')}' IH_STATE='${join(dir, 'state')}' IH_LOG='${join(dir, 'log')}' . '${SCRIPT}'`,
+		`KEYBINDS='${join(dir, 'keybinds.json')}'`, 'lginput_pid () { echo 4242; }', 'sleep () { :; }',
+		`set -- ${h}; HOOK="$*"`, 'lginput_hooked () { set -- $HOOK; [ "$1" = 1 ]; }',
+		...nows.map((n) => `inputhook_check ${n}; set -- $HOOK; shift; HOOK="$*"`)].join('\n');
+	execFileSync('sh', ['-c', sh], {encoding: 'utf8'});
+	const read = (f) => { try { return readFileSync(join(dir, f), 'utf8').trim(); } catch { return ''; } };
+	return {calls: read('calls').split('\n').filter(Boolean), log: read('log'), state: read('state')};
+}
+
+test('Input Hook: a hooked lginput2 is left alone', () => {
+	assert.deepEqual(reinject([1000, 1005], {hooked: [true, true]}).calls, []);
+});
+
+test('Input Hook: lginput2 without the hook on two checks in a row is re-injected once, lginput2 only, and logged', () => {
+	const r = reinject([1000, 1005, 1010], {hooked: [false, false, false]});
+	assert.equal(r.calls.length, 1);
+	assert.match(r.calls[0], /^4242 .*\/libcrypt[12]\/libphp\.so .*\/lginput-hook\.php lginput2$/);
+	assert.match(r.log, /Input Hook re-injected into lginput2 \(pid 4242\)/);
+	assert.equal(r.state, '1005');
+});
+
+test('Input Hook: at most one re-injection a minute', () => {
+	const r = reinject([1000, 1005, 1010, 1015, 1060, 1065, 1070], {hooked: Array(7).fill(false)});
+	assert.equal(r.calls.length, 2);
+	assert.equal(r.state, '1005\n1065');
+});
+
+test('Input Hook: after 5 re-injections in a boot it gives up and says so once', () => {
+	const r = reinject([5000, 5005, 5010], {hooked: [false, false, false], state: '1\n2\n3\n4\n5\n'});
+	assert.deepEqual(r.calls, []);
+	assert.equal(r.log.match(/not re-injected/g).length, 1);
+});
+
+test('Input Hook: nothing without our Home bind, or before its own boot injection (/tmp/inputhook)', () => {
+	assert.deepEqual(reinject([1000, 1005], {bind: false}).calls, []);
+	assert.deepEqual(reinject([1000, 1005], {mark: false}).calls, []);
+});
+
+test('LG Home shown with no Home key from Input Hook before it is logged as a warning; right after a Home key it is not', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'homekey-'));
+	writeFileSync(join(dir, 'keybinds.json'), '{"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}}\n');
+	const run = (at) => {
+		if (at) writeFileSync(join(dir, 'at'), String(at)); else writeFileSync(join(dir, 'at'), '');
+		writeFileSync(join(dir, 'log'), '');
+		execFileSync('sh', ['-c', [`WATCH_SH_LIB=1 IH_LOG='${join(dir, 'log')}' HOMEKEY_AT='${join(dir, 'at')}' . '${SCRIPT}'`,
+			`KEYBINDS='${join(dir, 'keybinds.json')}'`, 'lginput_pid () { echo 4242; }', 'lginput_hooked () { false; }', 'home_key_missed 1000'].join('\n')]);
+		return readFileSync(join(dir, 'log'), 'utf8');
+	};
+	assert.match(run(0), /warning: LG Home shown with no Home key .*lginput2 hooked: no/);
+	assert.equal(run(998), '');
+	assert.match(run(990), /warning/);
+});

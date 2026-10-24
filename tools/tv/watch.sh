@@ -38,6 +38,9 @@
 #    (networkinput, which Input Hook does not see). The bind is removed again when home-takeover goes, with /var/lib/homehook/no-home-key, or
 #    by stop_watch.sh. A bind on 773 that is not ours is never touched. If Input Hook stops working, Home reaches LG again and the log
 #    path (NL_HOME_SHOWN) below takes over as before.
+#  - Input Hook injects itself into lginput2 once per boot; if lginput2 restarts, the hook is gone. Every 5 s the watcher checks lginput2 for
+#    the hook (libphp in its maps) and re-injects it (inputhook_check: at most once a minute, 5 times a boot), logging "Input Hook
+#    re-injected". LG's bar shown with no Home key before it is logged as a warning, with lginput2's hook state.
 # Never spins: reacts only when the app changes, and at most once every 3 s. Does nothing if the app is not installed.
 # ME lists every Lumen build (stable, dev). Home opens the one that was last in front, or the first installed one in this list. The flag files in
 # /var/lib/homehook/ are shared by all of them, which is fine while only one is in front at a time.
@@ -70,6 +73,17 @@ HOMEKEY_RUN=/var/lib/homehook/watch-key
 # the bind, exactly as written (and looked for) in keybinds.json
 HOMEKEY_BIND='"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}'
 LASTME=/tmp/lumen-lastme
+# LG Input Hook re-injection (inputhook_check): its service injects lginput2 once per boot only (/tmp/inputhook marks it done), so when
+# lginput2 restarts (seen on the C8 on 24 Oct 2026, 41 min after a boot) the new process has no hook and Home reaches LG's bar again
+IH_DIR=${IH_DIR:-/media/developer/apps/usr/palm/services/org.webosbrew.inputhook.service/inputhook}
+IH_MARK=${IH_MARK:-/tmp/inputhook}
+IH_STATE=${IH_STATE:-/tmp/homehook-reinject}   # one line per re-injection (epoch seconds), so a restarted watcher keeps the limits
+IH_GAP=60          # at most one re-injection a minute
+IH_MAX=5           # and at most 5 per boot, so a lginput2 crash loop is not fed
+IH_LOG=${IH_LOG:-/tmp/homehook.log}
+HOMEKEY_AT=${HOMEKEY_AT:-/tmp/lumen-homekey-at}   # epoch of the last Home key from Input Hook (home_key)
+ihpid=""          # lginput2 pid seen without the hook at the last check (it is re-injected only when seen so twice in a row)
+ihgaveup=0
 prev=""
 prevapp=""
 prevxhome=1   # no launch for a launcher window already listed when the watcher starts
@@ -109,6 +123,7 @@ on_home_shown() {
   now=$(date +%s)
   fg=$(printf '%s' "$1" | sed -n 's/.*"foregroundId": *"\([^"]*\)".*/\1/p')
   echo "$(date +%T) LG Home shown (over ${fg:-?})" >> /tmp/homehook.log
+  home_key_missed "$now"
   t=0
   [ -f "$TAKEOVER_FLAG" ] && t=1
   wu=$(cat "$WAKEFILE" 2>/dev/null)
@@ -191,6 +206,7 @@ home_key() {
   export PATH="/bin:/sbin:/usr/bin:/usr/sbin:$PATH"
   t0=$(up)
   now=$(date +%s)
+  echo "$now" > "$HOMEKEY_AT"
   wu=$(cat "$WAKEFILE" 2>/dev/null)
   lastme=$(cat "$LASTME" 2>/dev/null)
   t=0
@@ -278,6 +294,61 @@ sync_home_key() {
       while ((i = index($0, b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b)); print }')
     printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind removed" >> /tmp/homehook.log
   fi
+}
+
+# true when our Home bind is in Input Hook's keybinds.json (takeover on, so a Home press should come through home_key)
+home_bind_on() {
+  [ -f "$KEYBINDS" ] && grep -qF "$HOMEKEY_BIND" "$KEYBINDS" 2>/dev/null
+}
+# LG's bar came up ($1: now) with our Home bind in place but no Home key from Input Hook in the 3 s before: either Back out of an app, a long
+# press or power on (which never go through the bind), or Input Hook no longer hooked into lginput2. Logged with lginput2's hook state.
+home_key_missed() {
+  home_bind_on || return 0
+  k=$(cat "$HOMEKEY_AT" 2>/dev/null)
+  [ -n "$k" ] && [ $(($1 - k)) -ge 0 ] 2>/dev/null && [ $(($1 - k)) -le 3 ] && return 0
+  h=unknown
+  p=$(lginput_pid) && { if lginput_hooked "$p"; then h=yes; else h=no; fi; }
+  echo "$(date +%T) warning: LG Home shown with no Home key from Input Hook before it (Back, long press or power on; or Input Hook lost: lginput2 hooked: $h)" >> "$IH_LOG"
+}
+# prints lginput2's pid (the remote's key path, where Input Hook hooks in)
+lginput_pid() {
+  for p in /proc/[0-9]*; do
+    [ "$(cat "$p/comm" 2>/dev/null)" = lginput2 ] && { echo "${p#/proc/}"; return 0; }
+  done
+  return 1
+}
+# true when Input Hook (its libphp.so) is loaded in process $1
+lginput_hooked() {
+  grep -q libphp "/proc/$1/maps" 2>/dev/null
+}
+# Re-injects LG Input Hook into lginput2 when it lost the hook (lginput2 restarted), as the service does once at boot. Only with our Home bind
+# on, Input Hook installed and its boot injection done (/tmp/inputhook), only when the same unhooked pid is seen on two checks in a row (so
+# the service's own boot injection, still running, is never doubled), at most once every IH_GAP s and IH_MAX times a boot. $1: now.
+inputhook_check() {
+  [ "$ihgaveup" -eq 1 ] && return 0
+  home_bind_on || return 0
+  [ -x "$IH_DIR/ezinject" ] && [ -f "$IH_MARK" ] || return 0
+  p=$(lginput_pid) || { ihpid=""; return 0; }
+  if lginput_hooked "$p"; then ihpid=""; return 0; fi
+  [ "$ihpid" = "$p" ] || { ihpid=$p; return 0; }
+  n=0; lastinj=0
+  [ -f "$IH_STATE" ] && { n=$(grep -c . "$IH_STATE"); lastinj=$(tail -n 1 "$IH_STATE"); }
+  case "$lastinj" in ''|*[!0-9]*) lastinj=0 ;; esac
+  if [ "$n" -ge "$IH_MAX" ]; then
+    ihgaveup=1
+    echo "$(date +%T) Input Hook: lginput2 (pid $p) unhooked again, not re-injected ($n re-injections this boot already)" >> "$IH_LOG"
+    return 0
+  fi
+  [ $(($1 - lastinj)) -ge "$IH_GAP" ] 2>/dev/null || [ $(($1 - lastinj)) -lt 0 ] 2>/dev/null || return 0
+  echo "$1" >> "$IH_STATE"
+  # the same libphp.so the service picks (libcrypt.so.2 or .1 on this firmware)
+  c=1; [ -e /usr/lib/libcrypt.so.2 ] && c=2
+  "$IH_DIR/ezinject" "$p" "$IH_DIR/libcrypt$c/libphp.so" "$IH_DIR/lginput-hook.php" lginput2 > /tmp/ezinject-lginput2.log 2>&1 </dev/null
+  rc=$?
+  sleep 1
+  if lginput_hooked "$p"; then r=ok; else r="failed (ezinject $rc, see /tmp/ezinject-lginput2.log)"; fi
+  echo "$(date +%T) Input Hook re-injected into lginput2 (pid $p): $r" >> "$IH_LOG"
+  ihpid=""
 }
 
 # One watcher at a time. Two Lumen starts close together can each refresh the watcher; each kills the running copy, then starts one through
@@ -431,7 +502,7 @@ while true; do
   fi
   # keep the extra blocked names in /etc/hosts (about every 30 s; the dashboard rewrites the table at boot)
   ticks=$((ticks + 1))
-  [ $((ticks % 5)) -eq 1 ] && sync_home_key
+  [ $((ticks % 5)) -eq 1 ] && { sync_home_key; inputhook_check "$now"; }
   if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
     # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real
     grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | while IFS= read -r l; do
