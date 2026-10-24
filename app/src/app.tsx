@@ -64,6 +64,8 @@ function inVideoHours (mode: string, now = new Date()): boolean {
 	return span[0] < span[1] ? h >= span[0] && h < span[1] : h >= span[0] || h < span[1];
 }
 /** tile sizes for 5, 6 or 7 apps a row: always about 1670px wide, with 40px of glass round them (the bar about 91% of the screen), still 5:3 */
+/** the glass bar's focused tile grows this much (theme/global.css, .rows > .row:first-child --motion-focus-scale); Lumen bar gets it too */
+const BAR_FOCUS_SCALE: Record<string, number> = {subtle: 1.06, normal: 1.12, strong: 1.16};
 const TILES_FOR: Record<number, {size: number; height: number; gap: number}> = {5: {size: 288, height: 173, gap: 58}, 6: {size: 240, height: 144, gap: 46}, 7: {size: 206, height: 124, gap: 38}};
 /** the backlight the screensaver lowers the TV to, by Settings > Screensaver > Brightness */
 const AMBIENT_BACKLIGHT: Record<string, number> = {dim: 30, low: 10};
@@ -389,16 +391,18 @@ export function App () {
 		const real = allApps.filter((a) => !a.glyph && /^[A-Za-z0-9._-]+$/.test(a.id));
 		const dock = homeTiles.slice(0, config.firstRow).map((t) => t.key).filter((k) => real.some((a) => a.id === k));
 		const list = real.map((a) => ({id: a.id, title: a.title, color: a.color, plain: a.plain, file: iconFile(a, dir)}));
-		const text = JSON.stringify([dock, config.recentIds, list]);
+		const t = TILES_FOR[config.firstRow] || TILES_FOR[6];
+		const style = {size: t.size, height: t.height, gap: t.gap, perRow: config.firstRow, scale: BAR_FOCUS_SCALE[config.focusStrength] || BAR_FOCUS_SCALE.normal};
+		const text = JSON.stringify([dock, config.recentIds, list, style]);
 		let h = 5381;
 		for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
 		const id = window.setTimeout(() => {
-			syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, h.toString(36))
+			syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, h.toString(36), style)
 				.then((r) => { if (r === 'written') bootMark('bar: data written'); })
 				.catch(() => undefined);
 		}, 3000);
 		return () => window.clearTimeout(id);
-	}, [config.homeBar, allApps, homeTiles, config.firstRow, config.recentIds]);
+	}, [config.homeBar, allApps, homeTiles, config.firstRow, config.recentIds, config.focusStrength]);
 
 	// the first row (in the glass bar) holds config.firstRow apps; the rest make a grid of rows as wide below it, like the tvOS home screen
 	// (the grid rows are 'dock', 'dock:1', 'dock:2'...)

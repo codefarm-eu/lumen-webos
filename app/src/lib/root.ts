@@ -337,9 +337,12 @@ export function setHomeBar (appDir: string, on: boolean): Promise<'on' | 'off' |
 }
 
 export interface BarApp { id: string; title: string; color?: string; plain?: boolean; file?: string }
+/** The home bar's look, so Lumen bar draws its tiles at the same size: the first row's tile size, height and gap, how many tiles it shows
+ *  before it scrolls, and how much the focused tile grows. */
+export interface BarStyle { size: number; height: number; gap: number; perRow: number; scale: number }
 /** Fills Lumen bar's data/ folder: copies each app's icon file to data/icons/<id>.<ext> and writes data/bar.json (the dock, Lumen's recent
  *  list, the apps, Lumen's id). Skipped when data/sig already holds `sig` (an app update wipes data/, and then it is written again). */
-export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string): Promise<'same' | 'written' | 'missing'> {
+export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing'> {
 	if (!APP_DIR.test(appDir) || !APP_ID.test(lumenId) || !/^[a-z0-9]+$/.test(sig)) return Promise.reject(new Error('refused'));
 	const dir = barDir(appDir);
 	const out: Record<string, {title: string; color?: string; plain?: boolean; icon?: string}> = {};
@@ -354,7 +357,7 @@ export function syncBar (appDir: string, lumenId: string, dock: string[], recent
 		}
 		out[a.id] = entry;
 	});
-	const json = JSON.stringify({v: 1, lumen: lumenId, dock: dock.filter((x) => APP_ID.test(x)), recent: recent.filter((x) => APP_ID.test(x)), apps: out});
+	const json = JSON.stringify({v: 1, lumen: lumenId, dock: dock.filter((x) => APP_ID.test(x)), recent: recent.filter((x) => APP_ID.test(x)), apps: out, style});
 	const b64 = toBase64(json);
 	return run(`[ -d ${dir} ] || { echo missing; exit 0; }; [ "$(cat ${dir}/data/sig 2>/dev/null)" = ${sig} ] && { echo same; exit 0; }; `
 		+ `rm -rf ${dir}/data && mkdir -p ${dir}/data/icons; ${copies.join('; ') || 'true'}; `

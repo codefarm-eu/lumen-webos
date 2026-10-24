@@ -3,7 +3,9 @@
  * Data: data/bar.json in this app's own folder, written by Lumen (Settings > Home Screen > Home shows the bar) with the dock, the icons
  * (copied into data/icons/) and Lumen's app id; /var/lib/homehook/recent (the Home watcher's list of apps that were in front).
  * Keys: Left/Right move, OK opens, Up or the Home tile opens full Lumen, Back/Esc closes (focus goes back to the app underneath).
- * Closes by itself after IDLE_MS without a key. */
+ * Closes by itself after IDLE_MS without a key.
+ * Look: Lumen's home bar (bar.css). The tile size, gap, focus scale and tiles per row come from data/bar.json "style" (Lumen's first row);
+ * the tiles are placed here, and past perRow tiles the row scrolls to keep the focused one in view. */
 (function () {
 	'use strict';
 	var IDLE_MS = 10000;
@@ -17,6 +19,13 @@
 	var barEl = document.getElementById('bar');
 	var tilesEl = document.getElementById('tiles');
 	var labelEl = document.getElementById('label');
+	var viewEl = document.getElementById('view');
+	var trackEl = document.getElementById('track');
+	var STYLE = {size: 206, height: 124, gap: 38, perRow: 7, scale: 1.12};
+	var PAD = 40;   // glass round the tiles (bar.css --pad)
+	var SEP = 2;    // the divider's width; it has a gap either side
+	var style = STYLE;
+	var scroll = 0;
 	var items = [];
 	var focus = 0;
 	var lumenId = 'com.ovsteenb.lumen';
@@ -50,6 +59,14 @@
 		});
 	}
 
+	function num (v, lo, hi, d) { return typeof v === 'number' && v >= lo && v <= hi ? v : d; }
+	function readStyle (data) {
+		var st = (data && data.style) || {};
+		return {size: num(st.size, 80, 400, STYLE.size), height: num(st.height, 50, 300, STYLE.height), gap: num(st.gap, 0, 100, STYLE.gap),
+			perRow: Math.round(num(st.perRow, 3, 10, STYLE.perRow)), scale: num(st.scale, 1, 1.4, STYLE.scale)};
+	}
+	function setVar (el, name, value) { if (el && el.style && el.style.setProperty) el.style.setProperty(name, value); }
+
 	function letter (title) { var m = /[A-Za-z0-9]/.exec(title || ''); return m ? m[0].toUpperCase() : '?'; }
 
 	function render () {
@@ -58,12 +75,27 @@
 			var empty = document.createElement('div');
 			empty.className = 'bar__empty';
 			empty.textContent = 'Open Lumen once to fill the bar';
+			empty.style.left = (style.size + style.gap) + 'px';
 			tilesEl.appendChild(empty);
 		}
+		setVar(barEl, '--size', style.size + 'px');
+		setVar(barEl, '--height', style.height + 'px');
+		setVar(barEl, '--gap', style.gap + 'px');
+		setVar(barEl, '--scale', String(style.scale));
+		var x = 0;
 		for (var i = 0; i < items.length; i++) {
 			var it = items[i];
-			if (it.sep) { var s = document.createElement('div'); s.className = 'sep'; tilesEl.appendChild(s); }
+			if (it.sep) {
+				var s = document.createElement('div');
+				s.className = 'sep';
+				s.style.left = x + 'px';
+				x += SEP + style.gap;
+				tilesEl.appendChild(s);
+			}
 			var t = document.createElement('div');
+			it.x = x;
+			t.style.left = x + 'px';
+			x += style.size + style.gap;
 			t.className = 'tile' + (it.home ? ' tile--home' : '') + (it.plain ? ' tile--plain' : '');
 			if (it.color && /^#[0-9a-fA-F]{3,8}$|^rgba?\([0-9., ]+\)$/.test(it.color)) t.style.background = it.color;
 			if (it.home) {
@@ -84,11 +116,35 @@
 			it.el = t;
 			tilesEl.appendChild(t);
 		}
+		// the glass fits the tiles, up to perRow of them; past that the row scrolls
+		var width = x - style.gap + (items.length > 1 ? 0 : 440);
+		var max = style.perRow * style.size + (style.perRow - 1) * style.gap;
+		var view = Math.min(width, max);
+		barEl.style.width = (view + 2 * PAD) + 'px';
+		barEl.style.marginLeft = -Math.round((view + 2 * PAD) / 2) + 'px';
+		if (viewEl) viewEl.className = 'bar__view' + (width > max ? ' bar__view--scroll' : '');
+		scroll = 0;
+		layout.view = view;
+		layout.width = width;
 		show();
+	}
+	var layout = {view: 0, width: 0};
+	/** the focused tile in view (its whole width, as the row scrolls a tile at a time), and its name under it */
+	function place () {
+		var it = items[focus];
+		if (!it || it.x === undefined) return;
+		if (layout.width > layout.view) {
+			if (it.x < scroll) scroll = it.x;
+			if (it.x + style.size > scroll + layout.view) scroll = it.x + style.size - layout.view;
+			scroll = Math.max(0, Math.min(scroll, layout.width - layout.view));
+		} else scroll = 0;
+		if (trackEl) trackEl.style.transform = 'translateX(' + (-scroll) + 'px)';
+		labelEl.style.left = (it.x + style.size / 2) + 'px';
 	}
 	function show () {
 		for (var i = 0; i < items.length; i++) items[i].el.className = items[i].el.className.replace(/ tile--focus/g, '') + (i === focus ? ' tile--focus' : '');
 		labelEl.textContent = items[focus] ? items[focus].title : '';
+		place();
 	}
 
 	function parse (out) {
@@ -129,6 +185,7 @@
 		if (!SAFE_DIR.test(DIR)) { items = build(null, []); render(); return; }
 		exec('cat ' + DIR + '/data/bar.json 2>/dev/null; echo; echo @@RECENT; cat ' + HOMEHOOK + '/recent 2>/dev/null; true', function (out) {
 			var p = parse(out);
+			style = readStyle(p.data);
 			items = build(p.data, p.recent);
 			if (initial || focus >= items.length) focus = items.length > 1 ? 1 : 0;
 			render();

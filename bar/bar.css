@@ -1,19 +1,76 @@
-/* Lumen bar: an overlay window over the app that is playing. No backdrop blur (the overlay cannot see the video), so the glass is tinted:
-   a dark translucent fill, a light rim and a soft shadow. Chromium 53: no CSS variables needed, flexbox only. */
-html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: transparent; font-family: "Helvetica Neue", Arial, sans-serif; }
-.bar { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%) translateY(40px); opacity: 0; transition: opacity .16s ease-out, transform .2s ease-out;
-  padding: 26px 30px 62px; border-radius: 44px; background: rgba(16, 18, 26, 0.66); border: 1.5px solid rgba(255, 255, 255, 0.20);
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.18); }
-.bar--in { opacity: 1; transform: translateX(-50%) translateY(0); }
-.bar__tiles { display: flex; align-items: center; }
-.tile { position: relative; width: 150px; height: 150px; margin: 0 11px; border-radius: 34px; overflow: hidden; background: #2a2f3a; flex: none;
-  transition: transform .14s ease-out, box-shadow .14s ease-out; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+/* Lumen bar: drawn as Lumen's own home bar (the glass bar on the home screen, app/src/theme/global.css: ".rows > .row:first-child" and
+   ".rows .row::before"), with the same tile size, gap, radius, shadows, light, focus and name. The sizes come from data/bar.json
+   (Lumen writes its first row's tile size, gap and focus scale there, set in bar.js as --size, --height, --gap, --scale); the numbers
+   below are the defaults for 7 tiles a row. An overlay window can not blur the video under it, so the glass is Lumen's tinted fallback
+   (Settings > Appearance with Liquid Glass and blur off), the one Lumen draws on the TV. */
+@font-face { font-family: 'SF Private'; src: url(../com.ovsteenb.lumen/fonts/sf.woff2) format('woff2'); font-weight: 1 1000; }
+@font-face { font-family: 'Geist Static'; src: url(../com.ovsteenb.lumen/assets/geist-static-600.woff2) format('woff2'); font-weight: 600; }
+html, body { margin: 0; padding: 0; width: 1920px; height: 1080px; overflow: hidden; background: transparent; }
+body { font-family: 'SF Private', 'Geist Static', 'LG Smart UI', 'Helvetica Neue', Arial, sans-serif; color: #eee; -webkit-font-smoothing: antialiased; }
+
+.bar {
+	--size: 206px; --height: 124px; --gap: 38px; --scale: 1.12; --radius: 34px; --pad: 40px; --ms: 160ms;
+	position: absolute; bottom: 70px; left: 50%; height: calc(var(--height) + 2 * var(--pad));
+	opacity: 0; transform: translateY(30px); transition: opacity 180ms ease-out, transform 220ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.bar--in { opacity: 1; transform: none; }
+
+/* the glass: 40px round the tiles, radius = tile radius + 40, see-through at 0.74 as Lumen's; the tiles sit on it at full strength */
+.bar__glass {
+	position: absolute; left: 0; top: 0; right: 0; bottom: 0; border-radius: calc(var(--radius) + var(--pad)); opacity: 0.74;
+	background-color: rgba(30, 36, 50, 0.3);
+	background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.26) 0%, rgba(255, 255, 255, 0.07) 42%, rgba(255, 255, 255, 0.16) 100%),
+		linear-gradient(rgba(74, 84, 106, 0.6), rgba(40, 46, 62, 0.6));
+	box-shadow: inset 0 2px 1px -1px rgba(255, 255, 255, 0.9), inset 2px 0 1px -1px rgba(255, 255, 255, 0.55), inset 0 -2px 1px -1px rgba(255, 255, 255, 0.3),
+		inset -2px 0 1px -1px rgba(255, 255, 255, 0.3), inset 0 0 30px rgba(255, 255, 255, 0.08), 0 20px 44px rgba(0, 0, 0, 0.28);
+}
+/* the bright line along the top of the glass */
+.bar__glass::after {
+	content: ''; position: absolute; left: 48px; right: 48px; top: 22px; height: 3px; border-radius: 3px;
+	background: linear-gradient(to right, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.75) 22%, rgba(255, 255, 255, 0.35) 70%, rgba(255, 255, 255, 0));
+}
+
+/* the tiles' window: 20px into the glass either side, so a grown tile at the end is not cut; it scrolls (bar.js) past --perRow tiles */
+.bar__view { position: absolute; left: calc(var(--pad) - 20px); right: calc(var(--pad) - 20px); top: 0; bottom: 0; }
+.bar__view--scroll { overflow: hidden; }
+.bar__track { position: absolute; left: 20px; top: var(--pad); height: var(--height); transition: transform 220ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+.bar__tiles { position: absolute; left: 0; top: 0; height: var(--height); }
+
+.tile {
+	position: absolute; top: 0; width: var(--size); height: var(--height); border-radius: var(--radius); overflow: hidden;
+	background: #3b4256; box-shadow: 0 8px 16px rgba(0, 0, 0, 0.26), 0 2px 4px rgba(0, 0, 0, 0.16);
+	transition: transform var(--ms) ease-out, box-shadow var(--ms) ease-out; will-change: transform;
+}
+/* lit from above: a light from the top left fading out by the middle, a bright top rim, a fainter left one, a faint dark bottom edge */
+.tile::before {
+	content: ''; position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 1; border-radius: inherit; pointer-events: none;
+	background: linear-gradient(160deg, rgba(255, 255, 255, 0.20) 0%, rgba(255, 255, 255, 0.06) 30%, rgba(255, 255, 255, 0) 55%, rgba(0, 0, 0, 0.08) 100%);
+	box-shadow: inset 0 2px 1px -1px rgba(255, 255, 255, 0.55), inset 2px 0 1px -1px rgba(255, 255, 255, 0.28), inset 0 -2px 1px -1px rgba(0, 0, 0, 0.18);
+}
+/* the focused tile's shine */
+.tile::after {
+	content: ''; position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 2; border-radius: inherit; pointer-events: none; opacity: 0;
+	background: linear-gradient(115deg, rgba(255, 255, 255, 0.36) 0%, rgba(255, 255, 255, 0.10) 28%, rgba(255, 255, 255, 0) 46%);
+	transition: opacity var(--ms) ease-out;
+}
+.tile--focus { transform: scale(var(--scale)) translateY(-7.5px); box-shadow: 0 12px 22px rgba(0, 0, 0, 0.32), 0 3px 6px rgba(0, 0, 0, 0.18); }
+.tile--focus::after { opacity: 1; }
+
+/* an app's artwork fills the tile; a small square icon ("plain") is drawn at the tile's full height, centred on its own colour */
 .tile img { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; }
-.tile--plain img { left: 17%; top: 17%; width: 66%; height: 66%; object-fit: contain; }
-.tile__letter { position: absolute; left: 0; right: 0; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 64px; font-weight: 600; }
-.tile--home { background: rgba(255, 255, 255, 0.16); }
-.tile--home svg { position: absolute; left: 39px; top: 39px; width: 72px; height: 72px; }
-.tile--focus { transform: scale(1.12); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5), 0 0 0 4px rgba(255, 255, 255, 0.85); }
-.sep { width: 2px; height: 96px; margin: 0 14px; background: rgba(255, 255, 255, 0.22); border-radius: 1px; flex: none; }
-.bar__label { position: absolute; left: 0; right: 0; bottom: 16px; text-align: center; color: #fff; font-size: 28px; font-weight: 500; text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6); white-space: nowrap; }
-.bar__empty { color: rgba(255, 255, 255, 0.85); font-size: 28px; padding: 50px 40px; }
+.tile--plain img { left: 50%; width: auto; height: 100%; max-width: 100%; transform: translateX(-50%); object-fit: contain; }
+.tile__letter { position: absolute; left: 0; top: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-size: 92px; font-weight: 600; color: #fff; }
+/* the Home tile: Lumen's house glyph */
+.tile--home { background: #3b4256; }
+.tile--home svg { position: absolute; left: 21%; top: 21%; width: 58%; height: 58%; fill: none; stroke: #eee; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+/* between the dock and the recent apps */
+.sep { position: absolute; top: 22%; width: 2px; height: 56%; border-radius: 1px; background: rgba(255, 255, 255, 0.32); }
+
+/* the focused tile's name, under it inside the glass */
+.bar__label {
+	position: absolute; top: calc(var(--height) + 8.5px); white-space: nowrap; transform: translateX(-50%);
+	font-size: 19px; font-weight: 600; letter-spacing: -0.015em; line-height: 1.15; color: #eee;
+	text-shadow: 0 2px 14px rgba(0, 0, 0, 0.55), 0 0 2px rgba(0, 0, 0, 0.25); transition: left var(--ms) ease-out;
+}
+.bar__empty { position: absolute; left: 0; top: 0; height: var(--height); line-height: var(--height); white-space: nowrap; font-size: 26px; font-weight: 600; color: #eee; }

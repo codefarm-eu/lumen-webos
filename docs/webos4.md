@@ -179,6 +179,14 @@ sent through networkinput:
   Live TV only. 1.0.9007-1.0.9012 drew TV Settings as a grey "T" tile. The bar's code and CSS were otherwise byte-identical between the
   hand build and the published ones (only the version differs); the change came from Lumen's own data, refilled at its next start.
   Test: `tools/test/bar.test.mjs` (bar.js in a vm with a fake DOM and Luna bridge).
+- **Looks like Lumen's home bar (1.0.9014):** `bar/bar.css` uses the home bar's own values (`app/src/theme/global.css`,
+  `.rows > .row:first-child` and the glass `::before`): tiles 206x124 with radius 34 and 38px apart (for 7 a row), 40px of glass round them
+  with radius 74 at 0.74, the tinted fallback glass (an overlay can't blur the video), the bright rim line, the tile light and shadows, the
+  focused tile grown with `translateY(-7.5px)`, its shine, and its name under it in the glass (19px, 600). The glass bottom is 70px above
+  the screen's bottom, so it sits where Lumen's does (y 806 to 1010). Lumen writes its first row's `style` (tile size, height, gap, tiles per row,
+  focus scale for subtle/normal/strong) into `data/bar.json`, so the bar follows Settings; without it the bar uses the 7-a-row values. Past
+  that many tiles the row scrolls to keep the focused one in view. Fonts are Lumen's own (`../com.ovsteenb.lumen/fonts/sf.woff2`, then Geist).
+  Checked headless against the TV's data: glass at x 85 to 1835, y 806 to 1010, the same box as Lumen's home bar.
 - **Screenshots from the TV:** `luna://com.webos.service.tv.capture/executeOneShot {"path":"/tmp/x.jpg","method":"DISPLAY","format":"JPEG",
   "width":1920,"height":1080}` writes video plus graphics (YouTube was not blank); `"method":"GRAPHIC"` gives the overlays only, on black.
   `com.webos.service.capture` does not exist on webOS 4.
