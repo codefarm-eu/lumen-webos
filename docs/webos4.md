@@ -339,7 +339,8 @@ the watcher sees a wake (the power state back to Active, or a gap in its ticks) 
 whatever is in front (`wake_open`, in the background so a slow launch right after a wake does not stall the loop). It ticks every 0.5 s
 (`usleep`, because webOS 4's busybox `sleep` takes whole seconds) and opens Lumen again each tick until Lumen has stayed in front for 3 s
 (`WAKE_SETTLE`). Then the wake ends, and `WAKEFILE` is set to 0 so the `NL_HOME_SHOWN` path and Home shows the bar end their wake handling as well.
-That makes the old "about 90 s after a boot, Home opens full Lumen" window much shorter.
+That makes the old "about 90 s after a boot, Home opens full Lumen" window much shorter. The boot window only applies when the TV booted in the last
+5 minutes (`/proc/uptime`): a watcher restarted later (Lumen refreshing it, or by hand) no longer opens Lumen over the app in front.
 Added in this fork: an app other than LG's home or Live TV that comes up straight after Lumen was in front was opened from Lumen, so the
 wake ends there and that app is not covered by Lumen again. The LG Home branch no longer takes over during a wake on its own, because
 `wake_tick` does that. Undo: `touch /var/lib/homehook/no-wake-launch` (as before), or `stop_watch.sh`. The Home key bind and Home shows the

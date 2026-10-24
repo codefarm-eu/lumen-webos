@@ -24,6 +24,12 @@ function ticks (steps, {nowake = false, wakeuntil = 1090} = {}) {
 	return {out: out.trim().split('\n'), file};
 }
 
+test('the boot wake window only follows a real boot (uptime under 5 minutes), not a watcher restart', () => {
+	const src = readFileSync(SCRIPT, 'utf8');
+	assert.match(src, /booted=\$\(cut -d\. -f1 \/proc\/uptime/);
+	assert.match(src, /"\$booted" -gt 300 \] 2>\/dev\/null && wakeuntil=0/);
+});
+
 test('watch.sh parses in sh, and never sleeps fractions (webOS 4 busybox sleep takes whole seconds)', () => {
 	execFileSync('sh', ['-n', SCRIPT]);
 	assert.doesNotMatch(readFileSync(SCRIPT, 'utf8'), /(^|[^u])sleep [0-9]*\.[0-9]/m);
