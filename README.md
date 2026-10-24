@@ -10,6 +10,18 @@ and tested on a 2018 **LG OLED C8** (webOS 4.4) rooted with the [Homebrew Channe
 - **Full details:** what changed for Chromium 53, how each feature was tested on the TV, and what is still unknown are in
   [docs/webos4.md](docs/webos4.md).
 
+## Screenshots
+
+Taken on the LG OLED C8 (webOS 4.4) with the public build.
+
+![Lumen's home screen on an LG C8: clock and weather over a wallpaper, and the glass dock of apps](docs/screenshots/home-c8.webp)
+
+*The home screen: clock, weather, the wallpaper's credit, and the glass dock. Apps show the TV's own icons.*
+
+![Lumen bar over the Homebrew Channel: the dock as an overlay along the bottom of the screen](docs/screenshots/bar-c8.webp)
+
+*Lumen bar: Home over any app brings up the dock as an overlay; the app keeps running underneath. Home again or Back closes it.*
+
 ## Install
 
 1. Root the TV and install the Homebrew Channel.
