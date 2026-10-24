@@ -1,0 +1,121 @@
+// node --test tools/test/*.test.mjs: the remote's Home through LG Input Hook (tools/tv/watch.sh home_key) and Lumen bar's answer to it
+// (bar/bar.js): Home opens the bar over any app and over Lumen, and Home while the bar is up closes it, except right after it came up.
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
+import {mkdirSync, mkdtempSync, readFileSync, writeFileSync, chmodSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import vm from 'node:vm';
+
+const SCRIPT = new URL('../../tools/tv/watch.sh', import.meta.url).pathname;
+const BAR_SRC = readFileSync(new URL('../../bar/bar.js', import.meta.url), 'utf8');
+
+/** runs home_key once with `fg` in front; a fake luna-send records each launch's JSON. Prints the launches. */
+function homeKey (fg, {bar = true} = {}) {
+	const dir = mkdtempSync(join(tmpdir(), 'homekey-'));
+	const bin = join(dir, 'bin');
+	const apps = join(dir, 'apps');
+	mkdirSync(bin); mkdirSync(join(apps, 'com.ovsteenb.lumen'), {recursive: true});
+	if (bar) mkdirSync(join(apps, 'com.ovsteenb.lumen.bar'));
+	writeFileSync(join(bin, 'luna-send'), `#!/bin/sh
+case "$3" in
+  */getForegroundAppInfo) echo '{"returnValue":true,"appId":"${fg}"}' ;;
+  */launch) echo "$4" >> '${dir}/launches'; echo '{"returnValue":true}' ;;
+esac
+`);
+	chmodSync(join(bin, 'luna-send'), 0o755);
+	writeFileSync(join(dir, 'takeover'), '');
+	if (bar) writeFileSync(join(dir, 'home-bar'), '');
+	const sh = [`WATCH_SH_LIB=1 HOMEKEY_AT='${join(dir, 'at')}' . '${SCRIPT}'`,
+		`APPS='${apps}'; TAKEOVER_FLAG='${join(dir, 'takeover')}'; BAR_FLAG='${join(dir, 'home-bar')}'; WAKEFILE='${join(dir, 'wu')}'; LASTME='${join(dir, 'lastme')}'`,
+		'home_key'].join('\n');
+	// home_key puts /bin, /usr/bin... first; there is no luna-send there off the TV, so the fake one in front of PATH is the one found
+	execFileSync('sh', ['-c', sh], {encoding: 'utf8', env: {...process.env, PATH: `${bin}:${process.env.PATH}`}});
+	try { return readFileSync(join(dir, 'launches'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch { return []; }
+}
+
+test('Home over an app opens Lumen bar with {"home":true}', () => {
+	assert.deepEqual(homeKey('youtube.leanback.v4'), [{id: 'com.ovsteenb.lumen.bar', params: {home: true}}]);
+});
+
+test('Home over full Lumen opens the bar too', () => {
+	assert.deepEqual(homeKey('com.ovsteenb.lumen'), [{id: 'com.ovsteenb.lumen.bar', params: {home: true}}]);
+});
+
+test('without the bar: Home over an app opens Lumen, over Lumen it does nothing (as before)', () => {
+	assert.deepEqual(homeKey('youtube.leanback.v4', {bar: false}), [{id: 'com.ovsteenb.lumen'}]);
+	assert.deepEqual(homeKey('com.ovsteenb.lumen', {bar: false}), []);
+});
+
+/** runs bar.js in a vm with a fake DOM and clock; returns helpers to fire events and read the bar's state */
+function bar () {
+	const el = () => ({className: '', style: {}, children: [], textContent: '', innerHTML: '', parentNode: null,
+		appendChild (c) { c.parentNode = this; this.children.push(c); return c; }, removeChild () {}, querySelector () { return null; }, setAttribute () {}});
+	const ids = {bar: el(), view: el(), track: el(), tiles: el(), label: el()};
+	ids.bar.parentNode = el();
+	ids.view.parentNode = ids.bar; ids.track.parentNode = ids.view; ids.tiles.parentNode = ids.track; ids.label.parentNode = ids.track;
+	const handlers = {};
+	const timers = new Map();
+	let nextTimer = 1;
+	let now = 100000;
+	let closed = 0;
+	const ctx = {
+		location: {pathname: '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen.bar/index.html'},
+		document: {getElementById: (id) => ids[id], createElement: el, addEventListener (type, fn) { (handlers[type] = handlers[type] || []).push(fn); }},
+		PalmServiceBridge: function () { this.call = () => this.onservicecallback(JSON.stringify({returnValue: true, stdoutString: ''})); },
+		setTimeout: (fn, ms) => { const id = nextTimer++; timers.set(id, {fn, ms}); return id; },
+		clearTimeout: (id) => { timers.delete(id); },
+		close: () => { closed++; },
+		Date: {now: () => now}, decodeURIComponent, JSON, Math, String, RegExp
+	};
+	ctx.window = ctx;
+	vm.runInNewContext(BAR_SRC, ctx);
+	const fire = (type, props) => (handlers[type] || []).forEach((fn) => fn(Object.assign({type, preventDefault () {}}, props)));
+	return {
+		up: () => ids.bar.className.indexOf('bar--in') !== -1,
+		wait: (ms) => { now += ms; },
+		relaunch: (detail) => fire('webOSRelaunch', {detail}),
+		key: (keyCode) => fire('keydown', {keyCode, target: ids.bar}),
+		/** runs the pending 150 ms window.close timers; returns how many times the window was closed */
+		flush: () => { for (const [id, t] of [...timers]) if (t.ms === 150) { timers.delete(id); t.fn(); } return closed; }
+	};
+}
+
+test('bar: Home while it is up closes it, as Back does', () => {
+	const b = bar();
+	assert.ok(b.up());
+	b.wait(2000);
+	b.relaunch({home: true});
+	assert.ok(!b.up());
+	assert.equal(b.flush(), 1);
+});
+
+test('bar: a second Home within 500 ms of it coming up (double press) is ignored, it stays up', () => {
+	const b = bar();
+	b.wait(200);
+	b.relaunch({home: true});
+	assert.ok(b.up());
+	assert.equal(b.flush(), 0);
+	b.wait(400);
+	b.relaunch({home: true});
+	assert.ok(!b.up());
+});
+
+test('bar: a relaunch without "home" (LG Home seen by the watcher) keeps it up, as before', () => {
+	const b = bar();
+	b.wait(2000);
+	b.relaunch({});
+	assert.ok(b.up());
+});
+
+test('bar: Home again during the close fade-out opens it again, and the pending window close is cancelled', () => {
+	const b = bar();
+	b.wait(2000);
+	b.key(461);
+	assert.ok(!b.up());
+	b.wait(50);
+	b.relaunch({home: true});
+	assert.ok(b.up());
+	assert.equal(b.flush(), 0);
+});
