@@ -83,17 +83,22 @@ test('only one watcher runs: a second copy exits while the first is alive, and t
 
 /** sources watch.sh with Input Hook's paths in a temp folder: lginput2 is pid 4242, hooked or not per check (`hooked`, one entry per
  *  inputhook_check call), and ezinject is a stub that records its arguments. Runs inputhook_check at each of `nows`. */
-function reinject (nows, {hooked = [], bind = true, mark = true, state = ''} = {}) {
+function reinject (nows, {hooked = [], bind = true, mark = true, state = '', layout = 'php', traced = false} = {}) {
 	const dir = mkdtempSync(join(tmpdir(), 'inputhook-'));
 	const ih = join(dir, 'ih');
 	execFileSync('sh', ['-c', `mkdir -p '${ih}' && printf '#!/bin/sh\\necho "$@" >> "${dir}/calls"\\n' > '${ih}/ezinject' && chmod +x '${ih}/ezinject'`]);
+	if (layout === 'pp') writeFileSync(join(ih, 'libinputhookpp.so'), '');
+	if (layout === 'php') {
+		execFileSync('sh', ['-c', `mkdir -p '${ih}/libcrypt1' '${ih}/libcrypt2'`]);
+		for (const f of ['libcrypt1/libphp.so', 'libcrypt2/libphp.so', 'lginput-hook.php']) writeFileSync(join(ih, f), '');
+	}
 	if (mark) writeFileSync(join(dir, 'mark'), '');
 	if (state) writeFileSync(join(dir, 'state'), state);
 	writeFileSync(join(dir, 'keybinds.json'), bind ? '{"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}}\n' : '{}\n');
 	const h = nows.map((_, i) => (hooked[i] ? 1 : 0)).join(' ');
 	const sh = [`WATCH_SH_LIB=1 IH_DIR='${ih}' IH_MARK='${join(dir, 'mark')}' IH_STATE='${join(dir, 'state')}' IH_LOG='${join(dir, 'log')}' . '${SCRIPT}'`,
 		`KEYBINDS='${join(dir, 'keybinds.json')}'`, 'lginput_pid () { echo 4242; }', 'sleep () { :; }',
-		`set -- ${h}; HOOK="$*"`, 'lginput_hooked () { set -- $HOOK; [ "$1" = 1 ]; }',
+		`set -- ${h}; HOOK="$*"`, 'lginput_hooked () { set -- $HOOK; [ "$1" = 1 ]; }', `lginput_traced () { ${traced ? 'true' : 'false'}; }`,
 		...nows.map((n) => `inputhook_check ${n}; set -- $HOOK; shift; HOOK="$*"`)].join('\n');
 	execFileSync('sh', ['-c', sh], {encoding: 'utf8'});
 	const read = (f) => { try { return readFileSync(join(dir, f), 'utf8').trim(); } catch { return ''; } };
@@ -129,6 +134,17 @@ test('Input Hook: nothing without our Home bind, or before its own boot injectio
 	assert.deepEqual(reinject([1000, 1005], {mark: false}).calls, []);
 });
 
+test('Input Hook 1.5.0 (inputhookpp): re-injected with the service\'s own command', () => {
+	const r = reinject([1000, 1005], {hooked: [false, false], layout: 'pp'});
+	assert.equal(r.calls.length, 1);
+	assert.match(r.calls[0], /^-l \/tmp\/lginput-hook-lginput2\.log 4242 .*\/libinputhookpp\.so$/);
+});
+
+test('Input Hook: nothing while lginput2 is being traced (an injection under way), or when Input Hook\'s files are missing', () => {
+	assert.deepEqual(reinject([1000, 1005, 1010], {hooked: [false, false, false], traced: true}).calls, []);
+	assert.deepEqual(reinject([1000, 1005, 1010], {hooked: [false, false, false], layout: 'none'}).calls, []);
+});
+
 test('LG Home shown with no Home key from Input Hook before it is logged as a warning; right after a Home key it is not', () => {
 	const dir = mkdtempSync(join(tmpdir(), 'homekey-'));
 	writeFileSync(join(dir, 'keybinds.json'), '{"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}}\n');
@@ -142,4 +158,6 @@ test('LG Home shown with no Home key from Input Hook before it is logged as a wa
 	assert.match(run(0), /warning: LG Home shown with no Home key .*lginput2 hooked: no/);
 	assert.equal(run(998), '');
 	assert.match(run(990), /warning/);
+	// a stray value in the Home key file is a warning, not an arithmetic error that ends the reader (busybox ash)
+	assert.match(run('1x'), /warning/);
 });

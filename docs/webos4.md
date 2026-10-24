@@ -239,6 +239,10 @@ Now the Home key never reaches the surface manager.
   (at most once a minute and 5 times a boot, counted in `/tmp/homehook-reinject`), logging `Input Hook re-injected into lginput2`. LG's bar
   shown with our bind in place but no Home key in the 3 s before is logged as `warning: LG Home shown with no Home key ...` with the hook
   state (Back out of an app, long press and power on log it too, with `hooked: yes`).
+  Hardened after review: lginput2 must be a root process (found without a fork per process), nothing runs while lginput2 is being traced
+  (an injection under way), Input Hook 1.5.0's `libinputhookpp.so` is detected and injected with the service's own command, nothing runs if
+  Input Hook's files are missing or are not root's own plain files, `ezinject` gets `chmod go-w` (the service makes it 777) and runs in the
+  background (never killed, waited for 10 s at most), and `/tmp/homehook.log` is cut to its last 2000 lines past 512 KB.
 - **Lost:** Home long press (LG's recents).
 - **Checked on the C8, 24 Oct 2026 00:28 BST:** the bind was added and Input Hook logged `Keybinds reloaded` in `lginput2` and `tvservice`.
   `home-key.sh` over YouTube launched Lumen bar 0.11 s after it started, and the bar window was visible 0.38 s after it started

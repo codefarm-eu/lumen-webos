@@ -82,6 +82,7 @@ IH_GAP=60          # at most one re-injection a minute
 IH_MAX=5           # and at most 5 per boot, so a lginput2 crash loop is not fed
 IH_LOG=${IH_LOG:-/tmp/homehook.log}
 HOMEKEY_AT=${HOMEKEY_AT:-/tmp/lumen-homekey-at}   # epoch of the last Home key from Input Hook (home_key)
+ihlast=""         # lginput2 pid found last (lginput_pid tries it first)
 ihpid=""          # lginput2 pid seen without the hook at the last check (it is re-injected only when seen so twice in a row)
 ihgaveup=0
 prev=""
@@ -302,37 +303,70 @@ home_bind_on() {
 }
 # LG's bar came up ($1: now) with our Home bind in place but no Home key from Input Hook in the 3 s before: either Back out of an app, a long
 # press or power on (which never go through the bind), or Input Hook no longer hooked into lginput2. Logged with lginput2's hook state.
+# HOMEKEY_AT is checked to be digits first: in busybox ash, arithmetic on anything else ("1x") is a fatal error that would end home_reader.
 home_key_missed() {
   home_bind_on || return 0
   k=$(cat "$HOMEKEY_AT" 2>/dev/null)
-  [ -n "$k" ] && [ $(($1 - k)) -ge 0 ] 2>/dev/null && [ $(($1 - k)) -le 3 ] && return 0
+  case "$k" in ''|*[!0-9]*) ;; *) [ $(($1 - k)) -ge 0 ] && [ $(($1 - k)) -le 3 ] && return 0 ;; esac
   h=unknown
   p=$(lginput_pid) && { if lginput_hooked "$p"; then h=yes; else h=no; fi; }
   echo "$(date +%T) warning: LG Home shown with no Home key from Input Hook before it (Back, long press or power on; or Input Hook lost: lginput2 hooked: $h)" >> "$IH_LOG"
 }
-# prints lginput2's pid (the remote's key path, where Input Hook hooks in)
+# prints lginput2's pid (the remote's key path, where Input Hook hooks in). Only a root process counts, so a process that merely names itself
+# lginput2 is never taken for it. The last pid is tried first and comm is read with the read builtin: no fork per process every 5 s.
+lginput_is() {
+  { read -r c < "/proc/$1/comm"; } 2>/dev/null && [ "$c" = lginput2 ] && [ "$(stat -c %u "/proc/$1" 2>/dev/null)" = 0 ]
+}
 lginput_pid() {
+  [ -n "$ihlast" ] && lginput_is "$ihlast" && { echo "$ihlast"; return 0; }
   for p in /proc/[0-9]*; do
-    [ "$(cat "$p/comm" 2>/dev/null)" = lginput2 ] && { echo "${p#/proc/}"; return 0; }
+    { read -r c < "$p/comm"; } 2>/dev/null || continue
+    [ "$c" = lginput2 ] && lginput_is "${p#/proc/}" && { ihlast=${p#/proc/}; echo "$ihlast"; return 0; }
   done
   return 1
 }
-# true when Input Hook (its libphp.so) is loaded in process $1
+# true when Input Hook is loaded in process $1: libphp.so (Input Hook up to 1.4.x) or libinputhookpp.so (1.5.0 on)
 lginput_hooked() {
-  grep -q libphp "/proc/$1/maps" 2>/dev/null
+  grep -qE 'libphp|libinputhookpp' "/proc/$1/maps" 2>/dev/null
+}
+# true while something (an ezinject, Input Hook's own boot injection included) is attached to process $1 with ptrace
+lginput_traced() {
+  t=$(sed -n 's/^TracerPid:[[:space:]]*//p' "/proc/$1/status" 2>/dev/null)
+  [ -n "$t" ] && [ "$t" != 0 ]
+}
+# true when file $1 is a plain file (not a link) owned by the watcher's own user (root on the TV), so it is not one a non-root app put there
+ih_own() {
+  [ -f "$1" ] && [ ! -h "$1" ] && [ "$(stat -c %u "$1" 2>/dev/null)" = "$(id -u)" ]
 }
 # Re-injects LG Input Hook into lginput2 when it lost the hook (lginput2 restarted), as the service does once at boot. Only with our Home bind
 # on, Input Hook installed and its boot injection done (/tmp/inputhook), only when the same unhooked pid is seen on two checks in a row (so
-# the service's own boot injection, still running, is never doubled), at most once every IH_GAP s and IH_MAX times a boot. $1: now.
+# the service's own boot injection, still running, is never doubled), never while lginput2 is being traced (an injection under way), at most
+# once every IH_GAP s and IH_MAX times a boot. Uses the service's own command for the installed Input Hook (1.5.0's inputhookpp or 1.4.x's
+# PHP) and does nothing if neither is there. ezinject runs in the background and is never killed (that would leave lginput2 mid-call); the
+# loop waits for it 10 s at most. $1: now.
 inputhook_check() {
   [ "$ihgaveup" -eq 1 ] && return 0
   home_bind_on || return 0
   [ -x "$IH_DIR/ezinject" ] && [ -f "$IH_MARK" ] || return 0
   p=$(lginput_pid) || { ihpid=""; return 0; }
   if lginput_hooked "$p"; then ihpid=""; return 0; fi
+  lginput_traced "$p" && return 0
   [ "$ihpid" = "$p" ] || { ihpid=$p; return 0; }
+  # the same files and arguments the service uses
+  if [ -f "$IH_DIR/libinputhookpp.so" ]; then
+    set -- "$1" "$IH_DIR/libinputhookpp.so"
+    ih_own "$IH_DIR/ezinject" && ih_own "$2" || { ih_refuse "$p"; return 0; }
+    set -- "$1" -l /tmp/lginput-hook-lginput2.log "$p" "$2"
+  else
+    c=1; [ -e /usr/lib/libcrypt.so.2 ] && c=2
+    set -- "$1" "$IH_DIR/libcrypt$c/libphp.so" "$IH_DIR/lginput-hook.php"
+    [ -f "$2" ] && [ -f "$3" ] || return 0
+    ih_own "$IH_DIR/ezinject" && ih_own "$2" && ih_own "$3" || { ih_refuse "$p"; return 0; }
+    set -- "$1" "$p" "$2" "$3" lginput2
+  fi
   n=0; lastinj=0
   [ -f "$IH_STATE" ] && { n=$(grep -c . "$IH_STATE"); lastinj=$(tail -n 1 "$IH_STATE"); }
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
   case "$lastinj" in ''|*[!0-9]*) lastinj=0 ;; esac
   if [ "$n" -ge "$IH_MAX" ]; then
     ihgaveup=1
@@ -341,14 +375,31 @@ inputhook_check() {
   fi
   [ $(($1 - lastinj)) -ge "$IH_GAP" ] 2>/dev/null || [ $(($1 - lastinj)) -lt 0 ] 2>/dev/null || return 0
   echo "$1" >> "$IH_STATE"
-  # the same libphp.so the service picks (libcrypt.so.2 or .1 on this firmware)
-  c=1; [ -e /usr/lib/libcrypt.so.2 ] && c=2
-  "$IH_DIR/ezinject" "$p" "$IH_DIR/libcrypt$c/libphp.so" "$IH_DIR/lginput-hook.php" lginput2 > /tmp/ezinject-lginput2.log 2>&1 </dev/null
-  rc=$?
-  sleep 1
-  if lginput_hooked "$p"; then r=ok; else r="failed (ezinject $rc, see /tmp/ezinject-lginput2.log)"; fi
+  shift
+  # Input Hook's service makes ezinject mode 777 at each start; take write away from others before root runs it
+  chmod go-w "$IH_DIR/ezinject" 2>/dev/null
+  "$IH_DIR/ezinject" "$@" > /tmp/ezinject-lginput2.log 2>&1 </dev/null &
+  e=$!
+  i=0
+  while kill -0 "$e" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
+  if kill -0 "$e" 2>/dev/null; then
+    r="ezinject still running after 10 s, left alone"
+  else
+    wait "$e"; rc=$?
+    if lginput_hooked "$p"; then r=ok; else r="failed (ezinject $rc, see /tmp/ezinject-lginput2.log)"; fi
+  fi
   echo "$(date +%T) Input Hook re-injected into lginput2 (pid $p): $r" >> "$IH_LOG"
   ihpid=""
+}
+# Input Hook's files are not root's own plain files: never run or inject them as root (logged once per watcher)
+ih_refuse() {
+  ihgaveup=1
+  echo "$(date +%T) Input Hook: lginput2 (pid $1) unhooked, not re-injected: Input Hook's ezinject or library is not a plain file owned by root" >> "$IH_LOG"
+}
+# keeps the log in /tmp (RAM) under about 512 KB: the last 2000 lines are kept
+trim_log() {
+  [ "$(stat -c %s "$1" 2>/dev/null || echo 0)" -gt 524288 ] || return 0
+  tail -n 2000 "$1" > "$1.tmp" && mv "$1.tmp" "$1"
 }
 
 # One watcher at a time. Two Lumen starts close together can each refresh the watcher; each kills the running copy, then starts one through
@@ -503,6 +554,7 @@ while true; do
   # keep the extra blocked names in /etc/hosts (about every 30 s; the dashboard rewrites the table at boot)
   ticks=$((ticks + 1))
   [ $((ticks % 5)) -eq 1 ] && { sync_home_key; inputhook_check "$now"; }
+  [ $((ticks % 300)) -eq 2 ] && trim_log "$IH_LOG"
   if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
     # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real
     grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | while IFS= read -r l; do
