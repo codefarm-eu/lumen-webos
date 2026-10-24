@@ -1560,3 +1560,11 @@ html.fakeglass:not(.light):not(.wp-video) .cc__mod:not(.cc__mod--focused) {
 	background: rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.85); transition: transform 120ms ease-out;
 }
 .prompt__button--focused { background: #fff; color: #111; transform: scale(1.06); }
+
+/* ---------- Settings pickers (Settings > Apps, Inputs, Channels): the focused tile's name in light text, like the Settings rows ----------
+   An app not on the home screen is "dimmed" (its tile at 0.45), and its name used --color-text-muted (#666), which was unreadable
+   over the dark Settings backdrop. The name stays bright; only the tile shows whether the app is picked. */
+.grid__track .tile__label { color: rgba(255, 255, 255, 0.94); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6), 0 2px 12px rgba(0, 0, 0, 0.55); }
+.grid__track .tile--dimmed .tile__label { color: rgba(255, 255, 255, 0.82); }
+html.light .grid__track .tile__label { color: #14151b; text-shadow: 0 1px 2px rgba(255, 255, 255, 0.45); }
+html.light .grid__track .tile--dimmed .tile__label { color: #2b2d3a; }
