@@ -3,8 +3,10 @@
  * Data: data/bar.json in this app's own folder, written by Lumen (Settings > Home Screen > Home shows the bar) with the dock, the icons
  * (copied into data/icons/) and Lumen's app id; /var/lib/homehook/recent (the Home watcher's list of apps that were in front).
  * Keys: Left/Right move, OK opens, 1 to 6 open the dock's apps, Up or the Home tile opens full Lumen, Back/Esc closes (focus goes back to the app underneath).
- * The remote's Home closes it too: Input Hook runs watch.sh's home_key, which launches the bar again with {"home":true}; that relaunch while the
- * bar is up closes it like Back, and HOME_DEBOUNCE_MS after it came up a second press is ignored (a quick double press leaves it open).
+ * The remote's Home closes it too: watch.sh's home_key closes the bar itself (closeByAppId) when the surface manager says it is up. Only when
+ * that is unknown does it launch the bar again with {"home":true}; that relaunch while the bar is up closes it like Back, and HOME_DEBOUNCE_MS
+ * after it came up a second press is ignored. webOS 4 delivered one relaunch twice (C8, 24 Oct 2026: closed, then opened again), so a
+ * relaunch within RELAUNCH_DUP_MS of the previous one is dropped.
  * Magic Remote pointer: pointing at a tile focuses it, a click opens it, the wheel moves along; a click off the glass closes the bar. With the
  * pointer showing, OK can come as a click, as keydown 13, or as both: whichever comes first opens the tile and closes the bar, so the
  * other is ignored (closing), and a keydown 13 with the pointer off every tile does nothing (its click closes the bar).
@@ -15,6 +17,7 @@
 	'use strict';
 	var IDLE_MS = 10000;
 	var HOME_DEBOUNCE_MS = 500;
+	var RELAUNCH_DUP_MS = 250;
 	var CALL_MS = 3000;
 	var RECENT_MAX = 4;
 	var HOMEHOOK = '/var/lib/homehook';
@@ -40,6 +43,7 @@
 	var closing = false;
 	var closeTimer = 0;
 	var openedAt = 0;      // when the bar last came up (Date.now), for the Home debounce
+	var relaunchAt = 0;    // the last webOSRelaunch handled (Date.now), to drop a duplicate
 	var pointer = false;   // the Magic Remote's pointer is showing (cursorStateChange, or a pointer move)
 	var hover = -1;        // the tile under the pointer
 	var told = {};         // pointer events already written to the log once (to see on the TV which ones reach this overlay window)
@@ -351,6 +355,9 @@
 		try { return JSON.parse((sys && sys.launchParams) || '{}') || {}; } catch (err) { return {}; }
 	}
 	document.addEventListener('webOSRelaunch', function (e) {
+		var t = Date.now();
+		if (relaunchAt && t - relaunchAt >= 0 && t - relaunchAt < RELAUNCH_DUP_MS) { log('relaunch: duplicate dropped (' + (t - relaunchAt) + ' ms)'); return; }
+		relaunchAt = t;
 		var p = relaunchParams(e);
 		if (p.home && !closing) {
 			// the remote's Home while the bar is up: close it, as Back does; not right after it came up (a double press, or a key bounce)

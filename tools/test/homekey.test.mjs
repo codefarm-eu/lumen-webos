@@ -12,7 +12,7 @@ const SCRIPT = new URL('../../tools/tv/watch.sh', import.meta.url).pathname;
 const BAR_SRC = readFileSync(new URL('../../bar/bar.js', import.meta.url), 'utf8');
 
 /** runs home_key once with `fg` in front; a fake luna-send records each launch's JSON. Prints the launches. */
-function homeKey (fg, {bar = true} = {}) {
+function homeKey (fg, {bar = true, syslog = null, uptime = '20000.00', close = 'true'} = {}) {
 	const dir = mkdtempSync(join(tmpdir(), 'homekey-'));
 	const bin = join(dir, 'bin');
 	const apps = join(dir, 'apps');
@@ -22,17 +22,26 @@ function homeKey (fg, {bar = true} = {}) {
 case "$3" in
   */getForegroundAppInfo) echo '{"returnValue":true,"appId":"${fg}"}' ;;
   */launch) echo "$4" >> '${dir}/launches'; echo '{"returnValue":true}' ;;
+  */closeByAppId) echo "$4" | sed 's/^/CLOSE /' >> '${dir}/launches.close'; echo '{"returnValue": ${close}}' ;;
 esac
 `);
 	chmodSync(join(bin, 'luna-send'), 0o755);
+	if (syslog !== null) writeFileSync(join(dir, 'messages'), syslog);
 	writeFileSync(join(dir, 'takeover'), '');
 	if (bar) writeFileSync(join(dir, 'home-bar'), '');
 	const sh = [`WATCH_SH_LIB=1 HOMEKEY_AT='${join(dir, 'at')}' . '${SCRIPT}'`,
+		`SYSLOG='${join(dir, 'messages')}'; BAR_CLOSED_AT='${join(dir, 'closed-at')}'`, `up () { echo '${uptime}'; }`,
 		`APPS='${apps}'; TAKEOVER_FLAG='${join(dir, 'takeover')}'; BAR_FLAG='${join(dir, 'home-bar')}'; WAKEFILE='${join(dir, 'wu')}'; LASTME='${join(dir, 'lastme')}'`,
 		'home_key'].join('\n');
 	// home_key puts /bin, /usr/bin... first; there is no luna-send there off the TV, so the fake one in front of PATH is the one found
 	execFileSync('sh', ['-c', sh], {encoding: 'utf8', env: {...process.env, PATH: `${bin}:${process.env.PATH}`}});
-	try { return readFileSync(join(dir, 'launches'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch { return []; }
+	let launches = [];
+	try { launches = readFileSync(join(dir, 'launches'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)); } catch { /* none */ }
+	try { launches = launches.concat(readFileSync(join(dir, 'launches.close'), 'utf8').trim().split('\n')); } catch { /* none */ }
+	let closedAt = '';
+	try { closedAt = readFileSync(join(dir, 'closed-at'), 'utf8').trim(); } catch { /* not written */ }
+	homeKey.closedAt = closedAt;
+	return launches;
 }
 
 test('Home over an app opens Lumen bar with {"home":true}', () => {
@@ -118,4 +127,52 @@ test('bar: Home again during the close fade-out opens it again, and the pending 
 	b.relaunch({home: true});
 	assert.ok(b.up());
 	assert.equal(b.flush(), 0);
+});
+
+/** a surface-manager line as the C8 writes it, at uptime `at` (seconds) */
+const vsc = (at, visible) => `2026-10-24T20:48:11.402145Z [${at}] user.info surface-manager-starfish [] LSM NL_VSC {     "app_id": "com.ovsteenb.lumen.bar",     "visible": ${visible},     "window_type": "_WEBOS_WINDOW_TYPE_OVERLAY" }  \n`;
+
+test('Home while the surface manager says Lumen bar is up closes it (closeByAppId), with no relaunch', () => {
+	const r = homeKey('youtube.leanback.v4', {syslog: vsc('19990.084747309', 'false') + vsc('19995.084747309', 'true'), uptime: '20000.00'});
+	assert.deepEqual(r, ['CLOSE {"id":"com.ovsteenb.lumen.bar"}']);
+	assert.equal(homeKey.closedAt, '2000000');
+});
+
+test('Home within 0.5 s of the bar coming up is ignored (double press)', () => {
+	assert.deepEqual(homeKey('youtube.leanback.v4', {syslog: vsc('19999.700000000', 'true'), uptime: '20000.00'}), []);
+});
+
+test('bar hidden, or no surface-manager line (log rotated): Home opens the bar', () => {
+	const open = [{id: 'com.ovsteenb.lumen.bar', params: {home: true}}];
+	assert.deepEqual(homeKey('youtube.leanback.v4', {syslog: vsc('19995.0', 'true') + vsc('19998.084747309', 'false')}), open);
+	assert.deepEqual(homeKey('youtube.leanback.v4', {syslog: ''}), open);
+	assert.deepEqual(homeKey('youtube.leanback.v4'), open);
+});
+
+test('a close that fails (stale log line) falls back to launching the bar', () => {
+	const r = homeKey('youtube.leanback.v4', {syslog: vsc('19990.084747309', 'true'), close: 'false'});
+	assert.deepEqual(r, [{id: 'com.ovsteenb.lumen.bar', params: {home: true}}, 'CLOSE {"id":"com.ovsteenb.lumen.bar"}']);
+});
+
+test('bar_just_closed: true for 2 s after a Home close; a stamp that is not digits counts as none', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'closed-'));
+	const f = join(dir, 'at');
+	const check = (stamp, now) => {
+		writeFileSync(f, stamp);
+		return execFileSync('sh', ['-c', `WATCH_SH_LIB=1 BAR_CLOSED_AT='${f}' . '${SCRIPT}'; up () { echo '${now}'; }; bar_just_closed && echo yes || echo no`], {encoding: 'utf8'}).trim();
+	};
+	assert.equal(check('2000000', '20001.50'), 'yes');
+	assert.equal(check('2000000', '20002.50'), 'no');
+	assert.equal(check('1x', '20000.10'), 'no');
+	assert.equal(check('', '20000.10'), 'no');
+});
+
+test('bar: a relaunch delivered twice (webOS 4) is handled once, so Home does not close and reopen it', () => {
+	const b = bar();
+	b.wait(2000);
+	b.relaunch({home: true});
+	b.wait(18);
+	b.relaunch({home: true});
+	assert.ok(!b.up());
+	assert.equal(b.flush(), 1);
 });
