@@ -1,13 +1,15 @@
 # Builds the public .ipk (no app/private/) and publishes it as a GitHub release.
 #  - a tag v* (v1.1.0): a release of that name; with a hyphen (v1.1.0-rc.1) a prerelease
-#  - a push to any branch (upstream: any but main): adds a build of that commit to the rolling prerelease "dev", which keeps the last 5 builds (so a
+#  - a push to main: adds a build of that commit to the rolling prerelease "dev", which keeps the last 5 builds (so a
 #    Channel that still lists the previous build can install it)
+# Work lands on main through pull requests; ci.yml builds and tests each pull request (Node 22, as here) without publishing, so a test that
+# fails on CI's Node (1.0.9009 and 1.0.9010 failed: Node 22's `node --test` does not take a folder) is caught before main.
 name: release
-# ovsteenb/lumen-webos (the webOS 4 fork): main publishes dev builds too, since the fork's work lands on main; Run workflow builds by hand.
+# ovsteenb/lumen-webos (the webOS 4 fork): only main publishes dev builds (other branches are pull requests, checked by ci.yml); Run workflow builds by hand.
 on:
   push:
     tags: ['v*']
-    branches: ['**', '!hbc-repo']
+    branches: ['main']
   workflow_dispatch:
 permissions:
   contents: write
