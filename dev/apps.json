@@ -15,18 +15,18 @@
       "manifestUrl": "https://raw.githubusercontent.com/codefarm-eu/lumen-webos/hbc-repo/dev/com.ovsteenb.lumen.manifest.json",
       "manifest": {
         "id": "com.ovsteenb.lumen",
-        "version": "1.0.9024",
+        "version": "1.0.9025",
         "type": "web",
         "title": "Lumen",
         "appDescription": "Lumen home screen (webOS 4 fork): apps, inputs and a way back to LG's home.",
         "iconUri": "https://raw.githubusercontent.com/codefarm-eu/lumen-webos/hbc-repo/dev/com.ovsteenb.lumen.png",
         "sourceUrl": "https://github.com/codefarm-eu/lumen-webos",
         "rootRequired": true,
-        "ipkUrl": "https://github.com/codefarm-eu/lumen-webos/releases/download/dev/com.ovsteenb.lumen_1.0.9024_all.ipk",
+        "ipkUrl": "https://github.com/codefarm-eu/lumen-webos/releases/download/dev/com.ovsteenb.lumen_1.0.9025_all.ipk",
         "ipkHash": {
-          "sha256": "b990cb0dcca93092c15ac383f8b30bb4ba8d7de8e1b33f019491cf516d1cb3a3"
+          "sha256": "72ff255d1c2edc976b5de60b2f64ae24890bf5193b65ebfa4ea6757dfbaa6b8b"
         },
-        "ipkSize": 3254108
+        "ipkSize": 3254102
       },
       "pool": "main",
       "shortDescription": "Lumen home screen (webOS 4 fork): apps, inputs and a way back to LG's home."
@@ -38,18 +38,18 @@
       "manifestUrl": "https://raw.githubusercontent.com/codefarm-eu/lumen-webos/hbc-repo/dev/com.ovsteenb.lumen.bar.manifest.json",
       "manifest": {
         "id": "com.ovsteenb.lumen.bar",
-        "version": "1.0.9024",
+        "version": "1.0.9025",
         "type": "web",
         "title": "Lumen bar",
         "appDescription": "Lumen's app bar over what is playing (webOS 4 fork). Needs Lumen; turn on Settings > Home Screen > Home shows the bar.",
         "iconUri": "https://raw.githubusercontent.com/codefarm-eu/lumen-webos/hbc-repo/dev/com.ovsteenb.lumen.bar.png",
         "sourceUrl": "https://github.com/codefarm-eu/lumen-webos",
         "rootRequired": true,
-        "ipkUrl": "https://github.com/codefarm-eu/lumen-webos/releases/download/dev/com.ovsteenb.lumen.bar_1.0.9024_all.ipk",
+        "ipkUrl": "https://github.com/codefarm-eu/lumen-webos/releases/download/dev/com.ovsteenb.lumen.bar_1.0.9025_all.ipk",
         "ipkHash": {
-          "sha256": "577ada81eeea835276158dace57ab7e0ec2897bc21abbebc71dea647250168d6"
+          "sha256": "8b809ec8852e8adff0a90f60c7f4c51b8b46c1e584898445226161a578f84743"
         },
-        "ipkSize": 27406
+        "ipkSize": 27988
       },
       "pool": "main",
       "shortDescription": "Lumen's app bar over what is playing (webOS 4 fork). Needs Lumen; turn on Settings > Home Screen > Home shows the bar."
