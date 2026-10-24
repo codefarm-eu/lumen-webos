@@ -350,8 +350,8 @@ bar are unchanged. Test: `tools/test/watch.test.mjs` sources `watch.sh` with `WA
 
 Control Center > Restart now runs the shell's `reboot` as root, detached (`(sleep 1; reboot) >/dev/null 2>&1 &`), so the Homebrew Channel's
 exec call returns before the TV goes down. Upstream found on webOS 25 that every `tvpower/power/reboot` reason comes back in Active Standby
-(screen off), while the shell's `reboot` comes back on. **Not tested on the C8 yet:** whether webOS 4's `reboot` comes back on, and whether
-the exec call returns before the TV goes down.
+(screen off), while the shell's `reboot` comes back on. **C8, 24 Oct 2026:** the same detached `reboot` (run over ssh, because the Channel's
+exec was hung that day) came back **on**: first the last input (HDMI 2), then the watcher's wake rule opened Lumen within seconds.
 
 ## Risks
 
