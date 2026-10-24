@@ -80,8 +80,9 @@ To undo:
 
 ## Known limitations
 
-- For about 90 s after power on, or after the watcher starts, Home over an app can open full Lumen instead of the bar. This happens only
-  if LG's bar comes up, for example when the key bind isn't active yet.
+- After power on, Lumen is opened over whatever the TV shows (LG's home, or Live TV after Wake-on-LAN) until it has stayed in front
+  for 3 s, for at most 90 s after a boot or 30 s after a wake (`no-wake-launch` turns this off). Until then, Home over an app can open full
+  Lumen instead of the bar, but only if LG's bar comes up, for example when the key bind isn't active yet.
 - The key bind takes the Home key, so **holding Home** no longer opens LG's recents.
 - Lumen bar is a transparent overlay and **cannot blur the video** under it. Its glass is a tint.
 - LG Input Hook 1.4.0 binds have been reported to **stop after a while on some webOS 4 TVs**. Home then reaches LG again, and the
