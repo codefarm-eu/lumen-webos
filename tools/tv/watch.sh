@@ -34,7 +34,8 @@
 #  - The Home key itself (webOS 4 and any TV with LG Input Hook injected): with home-takeover on, the watcher adds one key bind to LG Input Hook
 #    (/home/root/.config/lginputhook/keybinds.json): key 773 (IR_KEY_HOME, Qt Key_Super_L) runs /var/lib/homehook/home-key.sh instead of
 #    reaching the surface manager, so LG's home bar never comes up for a Home press. home-key.sh runs this file as watch-key (home_key below):
-#    over another app it launches Lumen bar (home-bar) or Lumen, over Lumen it does nothing. Without the watcher it sends LG's own Home
+#    with Lumen bar (home-bar) it launches the bar over any app or Lumen, with {"home":true} so a press while the bar is up closes it (bar.js);
+#    without the bar it launches Lumen over another app, and over Lumen does nothing. Without the watcher it sends LG's own Home
 #    (networkinput, which Input Hook does not see). The bind is removed again when home-takeover goes, with /var/lib/homehook/no-home-key, or
 #    by stop_watch.sh. A bind on 773 that is not ours is never touched. If Input Hook stops working, Home reaches LG again and the log
 #    path (NL_HOME_SHOWN) below takes over as before.
@@ -220,15 +221,18 @@ home_key() {
   fi
   main=$(luna-send -n 1 luna://com.webos.applicationManager/getForegroundAppInfo '{}' </dev/null 2>/dev/null | sed 's/": *"/":"/g')
   fg=$(printf '%s' "$main" | sed -n 's/.*"appId":"\([^"]*\)".*/\1/p')
-  if me_in_front "$main" >/dev/null; then
-    # as before: Home over Lumen closed LG's bar and left Lumen as it was
+  # a real Home press is never the power-on Home, so the wake window does not apply to the bar here
+  bar=0
+  [ -f "$BAR_FLAG" ] && [ -f "$TAKEOVER_FLAG" ] && [ -d "$APPS/$BAR" ] && bar=1
+  if [ "$bar" -eq 0 ] && me_in_front "$main" >/dev/null; then
+    # no bar: as before, Home over Lumen closed LG's bar and left Lumen as it was
     echo "$(date +%T) Home key [$t0] over $fg: nothing to do" >> /tmp/homehook.log
     return 0
   fi
-  id=$target
-  # a real Home press is never the power-on Home, so the wake window does not apply to the bar here
-  [ -f "$BAR_FLAG" ] && [ -f "$TAKEOVER_FLAG" ] && [ -d "$APPS/$BAR" ] && id=$BAR
-  r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$id\"}" </dev/null 2>&1 | tr -d ' \n')
+  # with the bar, over any app and over Lumen itself. {"home":true}: if the bar is already up (an overlay, so it is never the app in front),
+  # this relaunch closes it (bar.js), so Home toggles the bar as Back closes it
+  if [ "$bar" -eq 1 ]; then id=$BAR; launch='{"id":"'$BAR'","params":{"home":true}}'; else id=$target; launch='{"id":"'$target'"}'; fi
+  r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "$launch" </dev/null 2>&1 | tr -d ' \n')
   echo "$(date +%T) Home key [$t0] over ${fg:-?} -> $id [$(up)]: $r" >> /tmp/homehook.log
 }
 # opens Lumen without waiting (a launch can take seconds right after a wake), unless the last one is still in flight; $1 is the app in front

@@ -225,8 +225,11 @@ Now the Home key never reaches the surface manager.
   `"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}` while `home-takeover` is set (checked every 5 s; Input Hook
   reloads the file within 1 s). A 773 bind that is not this exact one is never touched, and other binds are kept.
 - **`/var/lib/homehook/home-key.sh`** (written by the watcher) runs `watch.sh` through the symlink `watch-key`, which only runs
-  `home_key`: one `getForegroundAppInfo`, then over another app it launches Lumen bar (`home-bar` on) or Lumen; over Lumen it does
-  nothing (as before: the bar was closed and Lumen left as it was). If `watch.sh` is gone, or takeover is off, it sends LG's own Home with
+  `home_key`: one `getForegroundAppInfo`, then with `home-bar` on it launches Lumen bar with `{"home":true}`, over any app and over
+  Lumen itself; without the bar it launches Lumen over another app and does nothing over Lumen. Lumen bar is an overlay, never the app in
+  front, so a press while it is up relaunches it: with `home` set, `bar.js` closes it as Back does (Home toggles the bar), except within
+  500 ms of it coming up, so a quick double press leaves it open. A relaunch without `home` (the `NL_HOME_SHOWN` path) keeps it up. **(verify)**
+  that webOS 4 passes the relaunch parameters (event `detail`, else `PalmSystem.launchParams`). If `watch.sh` is gone, or takeover is off, it sends LG's own Home with
   networkinput, which has its own uinput device (`UInputWriter` in `network-input-service`) and so is not seen by Input Hook. That is also
   why Lumen's **LG Home** button still opens LG's bar, and from there LG's Settings and inputs, as before. The Settings and Inputs keys
   are not bound.
