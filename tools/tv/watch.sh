@@ -42,6 +42,10 @@
 #  - Input Hook injects itself into lginput2 once per boot; if lginput2 restarts, the hook is gone. Every 5 s the watcher checks lginput2 for
 #    the hook (libphp in its maps) and re-injects it (inputhook_check: at most once a minute, 5 times a boot), logging "Input Hook
 #    re-injected". LG's bar shown with no Home key before it is logged as a warning, with lginput2's hook state.
+#  - After a Homebrew Channel update of Lumen the watcher refreshes itself (self_update), so the new watch.sh and 60-homehook run without
+#    opening Lumen first: about every 30 s it compares the copies packaged in the Lumen build's folder (homehook/) with the installed ones and,
+#    once the packaged pair has read the same on two checks in a row (the install has finished), installs it and re-execs itself. The re-exec
+#    keeps this pid, so the lock stays its own and the boot hook still sees it, and it is not a boot: no wake window and no hidden preload.
 # Never spins: reacts only when the app changes, and at most once every 3 s. Does nothing if the app is not installed.
 # ME lists every Lumen build (stable, dev). Home opens the one that was last in front, or the first installed one in this list. The flag files in
 # /var/lib/homehook/ are shared by all of them, which is fine while only one is in front at a time.
@@ -104,9 +108,15 @@ launchpid=0
 tick=$(date +%s)
 wakeuntil=$((tick + 90))   # a boot counts as a wake; LG Home may take a while to come up
 # but only a boot: a watcher (re)started later (Lumen refreshing it, stop/start by hand) must not open Lumen over the app in front
-booted=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+booted=$(cut -d. -f1 "${WATCH_UPTIME:-/proc/uptime}" 2>/dev/null)
 [ -n "$booted" ] && [ "$booted" -gt 300 ] 2>/dev/null && wakeuntil=0
 preloadat=$((tick + 60))   # once, after the boot rush; 0 when done
+# likewise only after a boot: a watcher that re-execs itself after a Lumen update (self_update) does not start Lumen hidden
+[ "$wakeuntil" -eq 0 ] && preloadat=0
+WATCH_LOCK=${WATCH_LOCK:-/tmp/homehook-watch.lock}
+# self_update re-execs this same pid, which still holds the lock. That is not a boot, even in the first 5 minutes (uptime under
+# 300 would otherwise open Lumen over the app in front and preload again). WATCH_UPTIME is /proc/uptime; tests point it elsewhere.
+if [ -f "$WATCH_LOCK/pid" ] && [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null)" = "$$" ]; then wakeuntil=0; preloadat=0; fi
 # prints the newest "LG Home shown" line's timestamp from the surface manager's log (webOS 4), or nothing
 home_shown_stamp() {
   [ -f "$SYSLOG" ] || return 0
@@ -456,17 +466,172 @@ trim_log() {
   tail -n 2000 "$1" > "$1.tmp" && mv "$1.tmp" "$1"
 }
 
+# Self-refresh after a Homebrew Channel update of Lumen (Lumen itself only refreshes the watcher when it is opened). About every 30 s:
+#  - the packaged pair is $APPS/<build>/homehook/{watch.sh,60-homehook} for the build me_target names (the one Home opens). The app folder
+#    belongs to the developer user and is world-writable on the C8, so the packaged files cannot be checked for root ownership: they are read
+#    once into root's own temporary files next to the installed ones (mktemp, mode 600), at most SU_MAXSIZE bytes, and every check below is
+#    made on those copies. A symlink, an empty file, anything over SU_MAXSIZE, or a file that is no longer the same plain file after the
+#    read, is refused. There is no stat cache: a same-size rewrite in the same second would otherwise be skipped for the rest of the run.
+#  - the installed watcher (and the boot hook, when it is replaced) must be root's own plain files (ih_own), checked again just before the
+#    move. A boot hook that is not installed is not recreated.
+#  - an install must have finished: the copies' md5 has to be the same on two checks in a row. An empty or failed checksum is not a match.
+#  - the copies must parse in sh and look like the watcher and its hook; a pair that fails is logged once and not tried again until it changes.
+#  - at most one refresh every SU_GAP s and SU_MAX a boot. SU_STATE in /tmp keeps the count across the re-exec. It is only ever a plain file
+#    of our own: a symlink or someone else's file is replaced by rename, never read or written through, so it cannot reset the count or
+#    append a line onto the watcher.
+# Then the copies are moved over the installed files (mv: the running shell keeps reading its old file), home_reader is stopped and the
+# watcher re-execs itself: the same pid, so the single_instance lock stays its own, and the same command line, so 60-homehook still sees it.
+# home_reader is a fork of this script, so its command line matches too; it has to be gone before the new copy starts, or Home is handled
+# twice (the bar would close and open again). A re-exec is not a boot. A hook-only change updates the hook without a re-exec.
+SELF=${SELF:-/var/lib/homehook/watch.sh}
+INIT_HOOK=${INIT_HOOK:-/var/lib/webosbrew/init.d/60-homehook}
+SU_STATE=${SU_STATE:-/tmp/homehook-selfupdate}   # one line per refresh (epoch seconds)
+SU_GAP=60
+SU_MAX=5
+SU_MAXSIZE=262144
+supend=""      # checksum of the packaged pair seen at the last check (it is installed only when seen the same twice)
+sufail=""      # checksum of a pair that was refused (logged once)
+sugaveup=0
+hrpid=""       # home_reader's pid, stopped before a re-exec
+# prints the packaged homehook/ folder of the Lumen build Home opens; false when there is none (or it is reached through a symlink)
+su_src() {
+  sut=$(me_target) || return 1
+  [ -d "$APPS/$sut/homehook" ] && [ ! -h "$APPS/$sut" ] && [ ! -h "$APPS/$sut/homehook" ] || return 1
+  echo "$APPS/$sut/homehook"
+}
+# true when $1 is a plain file (not a symlink) of 1 to SU_MAXSIZE bytes
+su_plain() {
+  [ -f "$1" ] && [ ! -h "$1" ] || return 1
+  suz=$(stat -c %s "$1" 2>/dev/null)
+  case "$suz" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$suz" -gt 0 ] && [ "$suz" -le "$SU_MAXSIZE" ]
+}
+su_log() { echo "$(date +%T) watcher refresh: $*" >> "$IH_LOG"; }
+# true when pid $1 is still a shell running this watcher, and not this process
+su_reader_alive() {
+  [ -n "$1" ] && [ "$1" != "$$" ] || return 1
+  case "$(cat "/proc/$1/cmdline" 2>/dev/null | tr '\0' ' ')" in
+    "/bin/sh $SELF"*|"sh $SELF"*) return 0 ;;
+  esac
+  return 1
+}
+# home_reader is a fork, so its command line is this script's. Stop that pid only, and wait until it is gone, so the re-exec does not
+# leave a second reader handling Home (a second Home then closes the bar and opens it again). A reused pid is left alone.
+su_stop_reader() {
+  su_reader_alive "$hrpid" || return 0
+  kill "$hrpid" 2>/dev/null || return 0
+  sui=0
+  while su_reader_alive "$hrpid" && [ "$sui" -lt 20 ]; do
+    usleep 100000 2>/dev/null || { sleep 1; break; }
+    sui=$((sui + 1))
+  done
+  su_reader_alive "$hrpid" && kill -9 "$hrpid" 2>/dev/null
+}
+su_reexec() {
+  su_stop_reader
+  exec /bin/sh "$SELF"
+  su_log "could not re-exec $SELF"
+}
+# copy $1 into $2 (our own file). At most SU_MAXSIZE bytes, so a swap to a huge file or /dev/zero cannot fill the disk, and only when $1
+# is still the same plain file afterwards. ulimit -f is 512-byte blocks; SIGXFSZ stays in the subshell.
+su_snap() {
+  su_plain "$1" || return 1
+  smeta=$(stat -c '%d %i %s' "$1" 2>/dev/null) || return 1
+  ( ulimit -f $((SU_MAXSIZE / 512)) && cat "$1" > "$2" ) 2>/dev/null
+  su_plain "$2" || return 1
+  [ ! -h "$1" ] || return 1
+  [ "$(stat -c '%d %i %s' "$1" 2>/dev/null)" = "$smeta" ] || return 1
+  [ "$(stat -c %s "$2" 2>/dev/null)" = "${smeta##* }" ]
+}
+# prints the md5 of the two copies, or fails. Empty output is not a checksum: it must not compare equal to a pair not seen yet.
+su_sum() {
+  sline=$(cat "$1" "$2" | md5sum 2>/dev/null) || return 1
+  suhash=${sline%% *}
+  case "$suhash" in *[!0-9a-f]*) return 1 ;; esac
+  [ "${#suhash}" -eq 32 ] || return 1
+  printf '%s\n' "$suhash"
+}
+# append epoch $1 to SU_STATE. A symlink or a file we do not own is replaced by rename, not followed.
+su_note() {
+  nt=$(mktemp "$SU_STATE.XXXXXX" 2>/dev/null) || return 1
+  if [ ! -h "$SU_STATE" ] && [ -f "$SU_STATE" ] && [ "$(stat -c %u "$SU_STATE" 2>/dev/null)" = "$(id -u)" ]; then
+    cat "$SU_STATE" > "$nt" || { rm -f "$nt"; return 1; }
+  fi
+  printf '%s\n' "$1" >> "$nt" || { rm -f "$nt"; return 1; }
+  mv -f "$nt" "$SU_STATE" || { rm -f "$nt"; return 1; }
+}
+# $1: now (digits; busybox ash exits the whole watcher on arithmetic with anything else)
+self_update() {
+  [ "$sugaveup" -eq 1 ] && return 0
+  case "$1" in ''|*[!0-9]*) return 0 ;; esac
+  ih_own "$SELF" || return 0
+  sud=$(su_src) || return 0
+  su_plain "$sud/watch.sh" && su_plain "$sud/60-homehook" || return 0
+  # root's own copies, read once; everything from here on looks only at them
+  nw=$(mktemp "$SELF.new.XXXXXX" 2>/dev/null) || return 0
+  nh=$(mktemp "$SELF.hook.XXXXXX" 2>/dev/null) || { rm -f "$nw"; return 0; }
+  if ! su_snap "$sud/watch.sh" "$nw" || ! su_snap "$sud/60-homehook" "$nh"; then
+    rm -f "$nw" "$nh"; return 0
+  fi
+  # the boot hook is replaced only where it is installed as root's own plain file (removed by hand: left removed)
+  suhook=0
+  ih_own "$INIT_HOOK" && suhook=1
+  if cmp -s "$nw" "$SELF" && { [ "$suhook" -eq 0 ] || cmp -s "$nh" "$INIT_HOOK"; }; then
+    rm -f "$nw" "$nh"; supend=""; return 0
+  fi
+  susum=$(su_sum "$nw" "$nh") || { rm -f "$nw" "$nh"; return 0; }
+  if [ "$susum" = "$sufail" ]; then rm -f "$nw" "$nh"; return 0; fi
+  # an install may still be writing the files: only a pair read the same twice in a row is taken
+  if [ "$susum" != "$supend" ]; then supend=$susum; rm -f "$nw" "$nh"; return 0; fi
+  if ! sh -n "$nw" 2>/dev/null || ! sh -n "$nh" 2>/dev/null || [ "$(head -n 1 "$nw")" != '#!/bin/sh' ] || [ "$(head -n 1 "$nh")" != '#!/bin/sh' ] \
+    || ! grep -q '^single_instance()' "$nw" || ! grep -q '^home_key()' "$nw" || ! grep -qF '/var/lib/homehook/watch.sh' "$nh"; then
+    sufail=$susum; supend=""; rm -f "$nw" "$nh"
+    su_log "the watcher packaged in $sud does not look right (does not parse, or is not watch.sh and 60-homehook), not installed"
+    return 0
+  fi
+  sun=0; lastsu=0
+  if [ ! -h "$SU_STATE" ] && [ -f "$SU_STATE" ] && [ "$(stat -c %u "$SU_STATE" 2>/dev/null)" = "$(id -u)" ]; then
+    sun=$(grep -c . "$SU_STATE")
+    lastsu=$(tail -n 1 "$SU_STATE")
+  fi
+  case "$sun" in ''|*[!0-9]*) sun=0 ;; esac
+  case "$lastsu" in ''|*[!0-9]*) lastsu=0 ;; esac
+  if [ "$sun" -ge "$SU_MAX" ]; then
+    sugaveup=1; rm -f "$nw" "$nh"
+    su_log "not refreshed from $sud ($sun refreshes this boot already)"
+    return 0
+  fi
+  if ! { [ $(($1 - lastsu)) -ge "$SU_GAP" ] || [ $(($1 - lastsu)) -lt 0 ]; }; then rm -f "$nw" "$nh"; return 0; fi
+  # again, immediately before the files change: a swap of the installed path must not be written through
+  ih_own "$SELF" || { rm -f "$nw" "$nh"; return 0; }
+  if [ "$suhook" -eq 1 ] && ! ih_own "$INIT_HOOK"; then suhook=0; fi
+  chmod 755 "$nw" "$nh" || { rm -f "$nw" "$nh"; return 0; }
+  su_note "$1" || { rm -f "$nw" "$nh"; su_log "could not record the refresh, not installed"; return 0; }
+  if [ "$suhook" -eq 1 ] && ! cmp -s "$nh" "$INIT_HOOK"; then
+    mv -f "$nh" "$INIT_HOOK" || { rm -f "$nw" "$nh"; su_log "could not replace $INIT_HOOK"; return 0; }
+  else
+    rm -f "$nh"
+  fi
+  [ "$suhook" -eq 0 ] && { [ -e "$INIT_HOOK" ] || [ -h "$INIT_HOOK" ]; } && su_log "$INIT_HOOK is not root's own plain file, left as it is"
+  if cmp -s "$nw" "$SELF"; then rm -f "$nw"; supend=""; su_log "boot hook updated from $sud"; return 0; fi
+  mv -f "$nw" "$SELF" || { rm -f "$nw"; su_log "could not replace $SELF"; return 0; }
+  su_log "updated from $sud (Lumen was updated), restarting"
+  su_reexec
+}
+
 # One watcher at a time. Two Lumen starts close together can each refresh the watcher; each kills the running copy, then starts one through
 # 60-homehook, whose "already running?" check can miss a copy that is still starting (seen on the C8 on 24 Oct: two watcher trees, so every
 # action could happen twice). The lock is a directory (mkdir is atomic) holding the owner's pid; a lock whose owner is gone is taken over.
-WATCH_LOCK=${WATCH_LOCK:-/tmp/homehook-watch.lock}
+# A self-refresh re-exec keeps this pid, so a lock that already names us is kept: deleting it would let another start take it and this copy
+# would exit, and nothing would be left to answer Home.
 single_instance() {
   for try in 1 2 3; do
     if mkdir "$WATCH_LOCK" 2>/dev/null; then echo $$ > "$WATCH_LOCK/pid"; return 0; fi
     old=$(cat "$WATCH_LOCK/pid" 2>/dev/null)
     # the other copy may not have written its pid yet
     [ -z "$old" ] && { sleep 1; old=$(cat "$WATCH_LOCK/pid" 2>/dev/null); }
-    if [ -n "$old" ] && [ "$old" != "$$" ] && kill -0 "$old" 2>/dev/null \
+    if [ -n "$old" ] && [ "$old" = "$$" ]; then return 0; fi
+    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null \
       && tr '\0' ' ' < "/proc/$old/cmdline" 2>/dev/null | grep -q 'watch\.sh'; then return 1; fi
     rm -rf "$WATCH_LOCK"
   done
@@ -480,6 +645,7 @@ single_instance || { echo "$(date +%T) watcher: another copy is running, this on
 
 echo "$wakeuntil" > "$WAKEFILE"
 home_reader &
+hrpid=$!
 
 while true; do
   # wake: the power state goes back to Active from standby or off (not from the screensaver), or the loop missed its ticks (suspended)
@@ -609,6 +775,7 @@ while true; do
   ticks=$((ticks + 1))
   [ $((ticks % 5)) -eq 1 ] && { sync_home_key; inputhook_check "$now"; }
   [ $((ticks % 300)) -eq 2 ] && trim_log "$IH_LOG"
+  [ $((ticks % 30)) -eq 15 ] && self_update "$now"
   if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
     # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real
     grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | while IFS= read -r l; do

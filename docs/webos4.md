@@ -90,6 +90,18 @@ and starts the watcher, and at each start it refreshes the watcher if this build
 `livetv-to-lumen` and sets `no-wake-launch`. The watcher keeps running for the Recent row. While off, Lumen never touches a watcher that
 was set up over SSH.
 
+The running watcher also refreshes itself after a Homebrew Channel update of Lumen, without Lumen being opened. About every 30 s it
+compares the `homehook/` pair in the folder of the Lumen build Home opens with the installed copies. A pair that differs and reads the same
+on two checks in a row (the install has finished) is copied into root's own temporary files, at most 256 KB, and only if the packaged file
+is still that same plain file afterwards (a symlink, or a file swapped mid-read, is not installed). The copies are checked there (they must
+parse in `sh` and look like the watcher and its hook), moved into place, and the watcher re-execs itself. The re-exec keeps the watcher's
+pid, so its lock stays its own and the boot hook still sees the same command line. It is not a boot: no wake window and no hidden preload,
+including in the first 5 minutes. `home_reader` is stopped first, because it is a fork of the same script and would otherwise handle Home
+a second time. A refresh runs at most once a minute and 5 times a boot. The count is a plain file of the watcher's own in `/tmp` (a symlink
+there is replaced, not followed). Each refresh is logged in `/tmp/homehook.log`. The app folder is world-writable and owned by the
+developer user on the C8, so the packaged files can't be checked for root ownership. Only the installed copies are checked that way. A boot
+hook that was removed by hand stays removed.
+
 Once a second the watcher checks for LG's home and opens Lumen in its place:
 - `com.webos.app.home` or `com.webos.app.launcher` as the foreground app. This covers the Home key (short or long press), Back out of an
   app to the top level, and power on.
