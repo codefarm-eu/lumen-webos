@@ -227,9 +227,12 @@ Now the Home key never reaches the surface manager.
 - **`/var/lib/homehook/home-key.sh`** (written by the watcher) runs `watch.sh` through the symlink `watch-key`, which only runs
   `home_key`: one `getForegroundAppInfo`, then with `home-bar` on it launches Lumen bar with `{"home":true}`, over any app and over
   Lumen itself; without the bar it launches Lumen over another app and does nothing over Lumen. Lumen bar is an overlay, never the app in
-  front, so a press while it is up relaunches it: with `home` set, `bar.js` closes it as Back does (Home toggles the bar), except within
-  500 ms of it coming up, so a quick double press leaves it open. A relaunch without `home` (the `NL_HOME_SHOWN` path) keeps it up. **(verify)**
-  that webOS 4 passes the relaunch parameters (event `detail`, else `PalmSystem.launchParams`). If `watch.sh` is gone, or takeover is off, it sends LG's own Home with
+  front, so `home_key` reads the surface manager's newest `NL_VSC` line for the bar in `/var/log/messages` (stamped with the uptime). If it
+  says visible, Home closes the bar with `closeByAppId` (no relaunch), except within 0.3 s of its window coming up, about 0.8 s after the first press (double press). If the line is
+  missing (log rotated) or the close fails, the bar is launched with `{"home":true}` and `bar.js` closes it on that relaunch. Checked on
+  the C8, 24 Oct 2026: the relaunch path alone failed, because webOS 4 delivered each relaunch to the bar twice (closed, then opened again:
+  the bar twitched and stayed up); `bar.js` now drops a relaunch within 250 ms of the previous one. After a Home close, `on_home_shown`
+  does not bring the bar back for 2 s (`/tmp/lumen-bar-closed-at`, uptime in centiseconds, digits checked). If `watch.sh` is gone, or takeover is off, it sends LG's own Home with
   networkinput, which has its own uinput device (`UInputWriter` in `network-input-service`) and so is not seen by Input Hook. That is also
   why Lumen's **LG Home** button still opens LG's bar, and from there LG's Settings and inputs, as before. The Settings and Inputs keys
   are not bound.

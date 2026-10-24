@@ -83,6 +83,9 @@ IH_GAP=60          # at most one re-injection a minute
 IH_MAX=5           # and at most 5 per boot, so a lginput2 crash loop is not fed
 IH_LOG=${IH_LOG:-/tmp/homehook.log}
 HOMEKEY_AT=${HOMEKEY_AT:-/tmp/lumen-homekey-at}   # epoch of the last Home key from Input Hook (home_key)
+BAR_CLOSED_AT=${BAR_CLOSED_AT:-/tmp/lumen-bar-closed-at}   # uptime (centiseconds) when Home last closed Lumen bar (home_key)
+BAR_DEBOUNCE_CS=30     # Home within 0.3 s of the bar window coming up (about 0.5 s after the press) is ignored: a quick double press leaves it open
+BAR_REOPEN_CS=200      # LG's bar showing within 2 s of a Home close does not bring Lumen bar back (on_home_shown)
 ihlast=""         # lginput2 pid found last (lginput_pid tries it first)
 ihpid=""          # lginput2 pid seen without the hook at the last check (it is re-injected only when seen so twice in a row)
 ihgaveup=0
@@ -145,6 +148,11 @@ on_home_shown() {
   # Home shows the bar (home-bar, and Lumen bar installed), not right after a wake: LG's bar is closed with Back first (Back would otherwise
   # go to Lumen bar once it has the focus), then Lumen bar comes up over the app, which keeps playing
   if [ -f "$BAR_FLAG" ] && [ -f "$TAKEOVER_FLAG" ] && [ -d "$APPS/$BAR" ] && { [ -z "$wu" ] || [ "$now" -ge "$wu" ] 2>/dev/null; }; then
+    if bar_just_closed; then
+      # Home has just closed Lumen bar: never bring it back from here; only LG's bar is closed
+      hide_home "Lumen bar just closed with Home"
+      return 0
+    fi
     hide_home "for Lumen bar"
     i=0
     while [ "$i" -lt 8 ] && home_visible; do usleep 100000 2>/dev/null || sleep 1; i=$((i + 1)); done
@@ -203,6 +211,32 @@ note_recent() {
 
 # uptime with centiseconds, for timing in the log
 up() { cut -d' ' -f1 /proc/uptime; }
+# uptime in centiseconds (digits only), or nothing
+up_cs() {
+  u=$(up); u=${u%%.*}${u#*.}
+  case "$u" in ''|*[!0-9]*) return 1 ;; esac
+  # no leading zeros (ash reads 012 as octal and 08 as an error), e.g. 0.50 s after a boot
+  u=${u#"${u%%[!0]*}"}; echo "${u:-0}"
+}
+# Lumen bar's window as the surface manager last logged it (webOS 4: "LSM NL_VSC {... "app_id": "<bar>", "visible": true ...}", stamped with
+# the uptime in brackets). Prints that uptime in centiseconds when the newest line says visible; false when hidden or unknown (no line: the
+# log was rotated, or another firmware), and then the caller falls back to relaunching the bar.
+bar_shown_at() {
+  [ -f "$SYSLOG" ] || return 1
+  l=$(grep -F NL_VSC "$SYSLOG" 2>/dev/null | grep -F "\"$BAR\"" | tail -n 1 | tr -d ' ')
+  case "$l" in *'"visible":true'*) ;; *) return 1 ;; esac
+  u=$(printf '%s' "$l" | sed -n 's/^[^[]*\[\([0-9][0-9]*\)\.\([0-9][0-9]\).*/\1\2/p')
+  case "$u" in ''|*[!0-9]*) return 1 ;; esac
+  u=${u#"${u%%[!0]*}"}; echo "${u:-0}"
+}
+# true when Home closed Lumen bar less than BAR_REOPEN_CS ago (BAR_CLOSED_AT checked to be digits: ash arithmetic on anything else is fatal)
+bar_just_closed() {
+  c=$(cat "$BAR_CLOSED_AT" 2>/dev/null)
+  case "$c" in ''|*[!0-9]*) return 1 ;; esac
+  c=${c#"${c%%[!0]*}"}; c=${c:-0}
+  n=$(up_cs) || return 1
+  [ $((n - c)) -ge 0 ] && [ $((n - c)) -lt "$BAR_REOPEN_CS" ]
+}
 # the Home key, from LG Input Hook (home-key.sh -> watch-key): LG's bar never came up, so only Lumen bar or Lumen has to be opened
 home_key() {
   export PATH="/bin:/sbin:/usr/bin:/usr/sbin:$PATH"
@@ -230,8 +264,24 @@ home_key() {
     echo "$(date +%T) Home key [$t0] over $fg: nothing to do" >> /tmp/homehook.log
     return 0
   fi
-  # with the bar, over any app and over Lumen itself. {"home":true}: if the bar is already up (an overlay, so it is never the app in front),
-  # this relaunch closes it (bar.js), so Home toggles the bar as Back closes it
+  # Lumen bar up (an overlay, so it is never the app in front; the surface manager's log says): Home closes it, as Back does. Closed from
+  # here (closeByAppId), not by relaunching it: on the C8 a relaunch reached bar.js twice, so it closed and opened again (24 Oct 2026).
+  # Within BAR_DEBOUNCE_CS of it coming up the press is ignored. If the close fails (the log was stale), the bar is launched as below.
+  if [ "$bar" -eq 1 ] && shown=$(bar_shown_at) && n=$(up_cs); then
+    if [ $((n - shown)) -ge 0 ] && [ $((n - shown)) -lt "$BAR_DEBOUNCE_CS" ]; then
+      echo "$(date +%T) Home key [$t0] over ${fg:-?}: Lumen bar came up $((n - shown))0 ms ago, ignored" >> /tmp/homehook.log
+      return 0
+    fi
+    r=$(luna-send -n 1 luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$BAR\"}" </dev/null 2>&1 | tr -d ' \n')
+    case "$r" in
+      *'"returnValue":true'*)
+        up_cs > "$BAR_CLOSED_AT"
+        echo "$(date +%T) Home key [$t0] over ${fg:-?}: Lumen bar closed [$(up)]: $r" >> /tmp/homehook.log
+        return 0 ;;
+    esac
+    echo "$(date +%T) Home key [$t0]: Lumen bar close failed ($r), launching it" >> /tmp/homehook.log
+  fi
+  # with the bar, over any app and over Lumen itself. {"home":true}: a relaunch while the bar is up (the log above unknown) closes it (bar.js)
   if [ "$bar" -eq 1 ]; then id=$BAR; launch='{"id":"'$BAR'","params":{"home":true}}'; else id=$target; launch='{"id":"'$target'"}'; fi
   r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "$launch" </dev/null 2>&1 | tr -d ' \n')
   echo "$(date +%T) Home key [$t0] over ${fg:-?} -> $id [$(up)]: $r" >> /tmp/homehook.log
