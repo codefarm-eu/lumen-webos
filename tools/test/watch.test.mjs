@@ -62,3 +62,21 @@ test('no-wake-launch, a screen that is not on, or a wake that is over: nothing i
 	assert.deepEqual(ticks([{app: 'com.webos.app.livetv', now: 1000, power: 'Active Standby'}]).out, ['wakeuntil=1090']);
 	assert.deepEqual(ticks([{app: 'com.webos.app.livetv', now: 1100}]).out, ['wakeuntil=1090']);
 });
+
+/** a shell that sources watch.sh and runs single_instance against `lock`, printing ok or busy, then holds for `hold` seconds */
+function claim (lock, hold = 0) {
+	return `WATCH_SH_LIB=1 WATCH_LOCK='${lock}' . '${SCRIPT}'; if single_instance; then echo ok; else echo busy; fi; sleep ${hold}`;
+}
+
+test('only one watcher runs: a second copy exits while the first is alive, and takes over once it is gone', async () => {
+	const {spawn} = await import('node:child_process');
+	const lock = join(mkdtempSync(join(tmpdir(), 'watch-lock-')), 'lock');
+	const first = spawn('sh', ['-c', claim(lock, 5)]);
+	const firstOut = await new Promise((ok) => first.stdout.once('data', (d) => ok(String(d).trim())));
+	assert.equal(firstOut, 'ok');
+	assert.equal(execFileSync('sh', ['-c', claim(lock)], {encoding: 'utf8'}).trim(), 'busy');
+	first.kill('SIGKILL');
+	await new Promise((ok) => first.once('exit', ok));
+	// the lock is left behind with a dead pid: the next copy takes it over
+	assert.equal(execFileSync('sh', ['-c', claim(lock)], {encoding: 'utf8'}).trim(), 'ok');
+});

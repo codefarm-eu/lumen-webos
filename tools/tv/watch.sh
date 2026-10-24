@@ -280,9 +280,27 @@ sync_home_key() {
   fi
 }
 
+# One watcher at a time. Two Lumen starts close together can each refresh the watcher; each kills the running copy, then starts one through
+# 60-homehook, whose "already running?" check can miss a copy that is still starting (seen on the C8 on 24 Oct: two watcher trees, so every
+# action could happen twice). The lock is a directory (mkdir is atomic) holding the owner's pid; a lock whose owner is gone is taken over.
+WATCH_LOCK=${WATCH_LOCK:-/tmp/homehook-watch.lock}
+single_instance() {
+  for try in 1 2 3; do
+    if mkdir "$WATCH_LOCK" 2>/dev/null; then echo $$ > "$WATCH_LOCK/pid"; return 0; fi
+    old=$(cat "$WATCH_LOCK/pid" 2>/dev/null)
+    # the other copy may not have written its pid yet
+    [ -z "$old" ] && { sleep 1; old=$(cat "$WATCH_LOCK/pid" 2>/dev/null); }
+    if [ -n "$old" ] && [ "$old" != "$$" ] && kill -0 "$old" 2>/dev/null \
+      && tr '\0' ' ' < "/proc/$old/cmdline" 2>/dev/null | grep -q 'watch\.sh'; then return 1; fi
+    rm -rf "$WATCH_LOCK"
+  done
+  return 1
+}
+
 case "$0" in */watch-key) home_key; exit 0 ;; esac
 # tools/test/watch.test.mjs sources this file for its functions only
 [ -n "$WATCH_SH_LIB" ] && return 0
+single_instance || { echo "$(date +%T) watcher: another copy is running, this one exits" >> /tmp/homehook.log; exit 0; }
 
 echo "$wakeuntil" > "$WAKEFILE"
 home_reader &
