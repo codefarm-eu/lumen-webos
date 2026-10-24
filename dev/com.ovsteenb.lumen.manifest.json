@@ -1,15 +1,15 @@
 {
   "id": "com.ovsteenb.lumen",
-  "version": "1.0.9022",
+  "version": "1.0.9023",
   "type": "web",
   "title": "Lumen",
   "appDescription": "Lumen home screen (webOS 4 fork): apps, inputs and a way back to LG's home.",
   "iconUri": "https://raw.githubusercontent.com/codefarm-eu/lumen-webos/hbc-repo/dev/com.ovsteenb.lumen.png",
   "sourceUrl": "https://github.com/codefarm-eu/lumen-webos",
   "rootRequired": true,
-  "ipkUrl": "https://github.com/codefarm-eu/lumen-webos/releases/download/dev/com.ovsteenb.lumen_1.0.9022_all.ipk",
+  "ipkUrl": "https://github.com/codefarm-eu/lumen-webos/releases/download/dev/com.ovsteenb.lumen_1.0.9023_all.ipk",
   "ipkHash": {
-    "sha256": "59fd1dfd916a6b635ab618a71eac6ddbf5ddb7766f434888f4f9a65655bba472"
+    "sha256": "fc16c0008967b659488e5ffaed68e70bcac86af5bd27ebed5192a24875c82d77"
   },
-  "ipkSize": 3253618
+  "ipkSize": 3254096
 }
