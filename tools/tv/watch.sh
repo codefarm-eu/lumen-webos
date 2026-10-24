@@ -110,6 +110,8 @@ wakeuntil=$((tick + 90))   # a boot counts as a wake; LG Home may take a while t
 booted=$(cut -d. -f1 /proc/uptime 2>/dev/null)
 [ -n "$booted" ] && [ "$booted" -gt 300 ] 2>/dev/null && wakeuntil=0
 preloadat=$((tick + 60))   # once, after the boot rush; 0 when done
+# likewise only after a boot: a watcher that re-execs itself after a Lumen update (self_update) does not start Lumen hidden
+[ "$wakeuntil" -eq 0 ] && preloadat=0
 # prints the newest "LG Home shown" line's timestamp from the surface manager's log (webOS 4), or nothing
 home_shown_stamp() {
   [ -f "$SYSLOG" ] || return 0

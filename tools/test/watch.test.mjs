@@ -249,3 +249,14 @@ test('self-refresh: the watcher checks about every 30 s and keeps home_reader\'s
 	assert.match(src, /home_reader &\nhrpid=\$!/);
 	assert.match(src, /exec \/bin\/sh "\$SELF"/);
 });
+
+test('self-refresh: the real watch.sh and 60-homehook pass the shape check (a refactor must not stop later refreshes)', () => {
+	const real = (f) => readFileSync(new URL(`../../tools/tv/${f}`, import.meta.url), 'utf8');
+	const r = selfUpdate([1000, 1030], {pkgWatch: real('watch.sh'), pkgHook: real('60-homehook')});
+	assert.equal(r.out, 'REEXEC');
+	assert.equal(r.watch, real('watch.sh'));
+});
+
+test('a watcher started after the first 5 minutes (re-exec, restart) does not preload Lumen', () => {
+	assert.match(readFileSync(SCRIPT, 'utf8'), /\[ "\$wakeuntil" -eq 0 \] && preloadat=0/);
+});
