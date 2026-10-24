@@ -165,6 +165,8 @@ test('bar_just_closed: true for 2 s after a Home close; a stamp that is not digi
 	assert.equal(check('2000000', '20002.50'), 'no');
 	assert.equal(check('1x', '20000.10'), 'no');
 	assert.equal(check('', '20000.10'), 'no');
+	// leading zeros are not read as octal (0.50 s after a boot)
+	assert.equal(check('0010', '0.50'), 'yes');
 });
 
 test('bar: a relaunch delivered twice (webOS 4) is handled once, so Home does not close and reopen it', () => {

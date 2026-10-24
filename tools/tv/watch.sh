@@ -215,7 +215,8 @@ up() { cut -d' ' -f1 /proc/uptime; }
 up_cs() {
   u=$(up); u=${u%%.*}${u#*.}
   case "$u" in ''|*[!0-9]*) return 1 ;; esac
-  echo "$u"
+  # no leading zeros (ash reads 012 as octal and 08 as an error), e.g. 0.50 s after a boot
+  u=${u#"${u%%[!0]*}"}; echo "${u:-0}"
 }
 # Lumen bar's window as the surface manager last logged it (webOS 4: "LSM NL_VSC {... "app_id": "<bar>", "visible": true ...}", stamped with
 # the uptime in brackets). Prints that uptime in centiseconds when the newest line says visible; false when hidden or unknown (no line: the
@@ -226,12 +227,13 @@ bar_shown_at() {
   case "$l" in *'"visible":true'*) ;; *) return 1 ;; esac
   u=$(printf '%s' "$l" | sed -n 's/^[^[]*\[\([0-9][0-9]*\)\.\([0-9][0-9]\).*/\1\2/p')
   case "$u" in ''|*[!0-9]*) return 1 ;; esac
-  echo "$u"
+  u=${u#"${u%%[!0]*}"}; echo "${u:-0}"
 }
 # true when Home closed Lumen bar less than BAR_REOPEN_CS ago (BAR_CLOSED_AT checked to be digits: ash arithmetic on anything else is fatal)
 bar_just_closed() {
   c=$(cat "$BAR_CLOSED_AT" 2>/dev/null)
   case "$c" in ''|*[!0-9]*) return 1 ;; esac
+  c=${c#"${c%%[!0]*}"}; c=${c:-0}
   n=$(up_cs) || return 1
   [ $((n - c)) -ge 0 ] && [ $((n - c)) -lt "$BAR_REOPEN_CS" ]
 }
