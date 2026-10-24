@@ -146,3 +146,15 @@ test('the wheel moves the focus along the bar', () => {
 	run.fire('wheel', {deltaY: -100});
 	assert.match(tiles[1].className, /tile--focus/);
 });
+
+test('number keys 1 to 6 open the dock app at that place, as on the home screen; not a recent app, and not past the dock', () => {
+	run(DATA, ['com.webos.app.livetv']);
+	run.fire('keydown', {keyCode: 50});
+	assert.deepEqual(run.launches, ['netflix']);
+	run(DATA, ['com.webos.app.livetv']);
+	run.fire('keydown', {keyCode: 51});   // 3: the place after the dock is Live TV, a recent app
+	assert.deepEqual(run.launches, []);
+	run(DATA, []);
+	run.fire('keydown', {keyCode: 97});   // number pad 1
+	assert.deepEqual(run.launches, ['youtube.leanback.v4']);
+});

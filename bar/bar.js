@@ -2,7 +2,7 @@
  * "overlay" in appinfo.json; the app underneath stays in front and keeps playing). Plain ES5 for Chromium 53, no build step.
  * Data: data/bar.json in this app's own folder, written by Lumen (Settings > Home Screen > Home shows the bar) with the dock, the icons
  * (copied into data/icons/) and Lumen's app id; /var/lib/homehook/recent (the Home watcher's list of apps that were in front).
- * Keys: Left/Right move, OK opens, Up or the Home tile opens full Lumen, Back/Esc closes (focus goes back to the app underneath).
+ * Keys: Left/Right move, OK opens, 1 to 6 open the dock's apps, Up or the Home tile opens full Lumen, Back/Esc closes (focus goes back to the app underneath).
  * Magic Remote pointer: pointing at a tile focuses it, a click opens it, the wheel moves along; a click off the glass closes the bar. With the
  * pointer showing, OK can come as a click, as keydown 13, or as both: whichever comes first opens the tile and closes the bar, so the
  * other is ignored (closing), and a keydown 13 with the pointer off every tile does nothing (its click closes the bar).
@@ -184,7 +184,7 @@
 			// does not match the rest of the bar
 			if (seen[id] || !apps[id] || !apps[id].icon || /^com\.ovsteenb\.lumen/.test(id)) continue;
 			seen[id] = true;
-			list.push({id: id, title: apps[id].title, color: apps[id].color, plain: apps[id].plain, icon: apps[id].icon, sep: added === 0});
+			list.push({id: id, title: apps[id].title, color: apps[id].color, plain: apps[id].plain, icon: apps[id].icon, sep: added === 0, recent: true});
 			added++;
 		}
 		return list;
@@ -228,6 +228,8 @@
 		launch(it.id);
 		close('open ' + it.id + ' (' + how + ')');
 	}
+	/** 1 to 6 on the digit row or the number pad (Lumen's Home.tsx dockDigit), else 0 */
+	function dockDigit (k) { return k >= 49 && k <= 54 ? k - 48 : k >= 97 && k <= 102 ? k - 96 : 0; }
 	function move (by) {
 		if (!items.length) return;
 		focus = Math.max(0, Math.min(items.length - 1, focus + by));
@@ -292,6 +294,12 @@
 			// with the pointer showing, OK on a tile opens that tile (hover focused it); off every tile it waits for its click
 			if (pointer && hover < 0) return;
 			activate(pointer ? hover : focus, pointer ? 'ok, pointer' : 'ok');
+		} else if (dockDigit(k)) {
+			// 1 to 6 open the dock's apps at those places, as on Lumen's home screen (the Home tile is not counted, nor are recent apps)
+			var d = dockDigit(k);
+			if (!items[d] || items[d].recent || items[d].home) return;
+			e.preventDefault();
+			activate(d, 'key ' + d);
 		} else if (k === KEY.up) {
 			e.preventDefault();
 			launch(lumenId);

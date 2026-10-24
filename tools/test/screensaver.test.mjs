@@ -31,3 +31,14 @@ test('nextBuiltin never repeats the picture on screen and covers every other one
 	assert.ok(nextBuiltin(files, 'zzz', () => 0.999) === 4);
 	assert.ok(nextBuiltin(files, 'a', () => 0.9999) === 4);
 });
+
+test('the cached last picture is only reused by its own source (from upstream bb94320: the TV-started screensaver opens on it)', async () => {
+	const {lastPictureFits} = await import('data:text/javascript,' + encodeURIComponent(js));
+	const files = ['./wallpapers/a.jpg', './wallpapers/b.jpg'];
+	assert.equal(lastPictureFits('./wallpapers/b.jpg', files), true);
+	assert.equal(lastPictureFits('./wallpapers/old.jpg', files), false);
+	assert.equal(lastPictureFits('3f2a9c1e-0b7d-4c2e-9a51-6f0e1d2c3b4a', files), false);
+	assert.equal(lastPictureFits('3f2a9c1e-0b7d-4c2e-9a51-6f0e1d2c3b4a'), true);
+	assert.equal(lastPictureFits('./wallpapers/a.jpg'), false);
+	assert.equal(lastPictureFits(''), false);
+});

@@ -19,3 +19,10 @@ export function nextBuiltin (files: string[], current: string, rand: () => numbe
 	const i = Math.min(files.length - 2, Math.floor(rand() * (files.length - 1)));
 	return i >= at ? i + 1 : i;
 }
+
+/** The last picture the screensaver showed (cached, so a screensaver the TV starts opens on a picture rather than black) is only reused by
+ *  the same source: one of the bundled pictures for the built-in slideshow, an Immich asset (a UUID) for Immich. */
+export function lastPictureFits (id: string, builtin?: string[]): boolean {
+	if (!id) return false;
+	return builtin ? builtin.indexOf(id) !== -1 : /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+}
