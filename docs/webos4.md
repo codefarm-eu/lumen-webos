@@ -304,6 +304,15 @@ built-in pictures alike):
 - Test: `tools/test/burnin.test.mjs`. Checked in headless Chrome at 1920x1080: after the first minute the clock moved from (119, 894) to
   (152, 334) and the weather from (1509, 917) to (1397, 468), both inside their halves, and the built-in pictures kept changing.
 
+## Wallpaper dimming (port of upstream e296505)
+
+Settings > Wallpaper > **Dim the wallpaper**: Off, At night (19:00 to 06:00) or Always. The older on/off setting `nightDim` becomes At night
+(`lib/dim.ts`, `wallpaperDimFrom`). With the dock hiding on, Settings > Home Screen > **Dim when the dock is hidden** fades a black layer
+(opacity only) over the wallpaper while the dock is away. Unlike upstream, the screensaver's own night layer (`.ambient__night`) follows
+the hours only (`html.night-hours`), also with Always, so that a screensaver lowered by Settings > Screensaver > Brightness is not darker
+all day as well. Settings' unpicked wallpaper tiles are grey instead of faded, with their names in full white, and the Re-order button is a glass pill.
+Test: `tools/test/dim.test.mjs`.
+
 ## Risks
 
 - **Speed**: `background-attachment: fixed` glass is not composited, so a glass shape that moves or scales (focus zoom, Control Center

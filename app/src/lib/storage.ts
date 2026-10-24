@@ -2,6 +2,7 @@
 // plus options. Persisted in localStorage (private to this app on the TV).
 
 import {STORAGE_KEY} from '../config/constants';
+import {wallpaperDimFrom} from './dim';
 import {DEFAULT_APP_IDS} from '../config/catalog';
 import {WALLPAPERS} from '../config/wallpapers';
 
@@ -50,8 +51,10 @@ export interface UserConfig {
 	favoriteWallpapers: string[];
 	/** pick a new wallpaper every N minutes when a shuffle is chosen; 0 = never */
 	wpAutoMinutes: number;
-	/** dim the wallpaper between 19:00 and 06:00 */
-	nightDim: boolean;
+	/** dim the wallpaper: off | night (19:00 to 06:00) | always */
+	wallpaperDim: string;
+	/** darken the screen while the dock is hidden */
+	dockDim: boolean;
 	/** offer the TV's own apps (Live TV, AirPlay ...) in Settings */
 	showAllApps: boolean;
 	/** date and weather beside the clock */
@@ -135,7 +138,8 @@ export const DEFAULT_CONFIG: UserConfig = {
 	idleSeconds: 0,
 	favoriteWallpapers: [],
 	wpAutoMinutes: 0,
-	nightDim: false,
+	wallpaperDim: 'off',
+	dockDim: false,
 	showAllApps: false,
 	showWeather: true,
 	weatherCountry: '',
@@ -202,7 +206,8 @@ function parsePlace (v: unknown): WeatherPlace | null {
 
 /** A config from JSON, with every field checked and anything missing or wrong replaced by its default. Throws on malformed JSON. */
 export function parseConfig (raw: string): UserConfig {
-	const parsed = JSON.parse(raw) as Partial<UserConfig>;
+	// nightDim is the older on/off form of wallpaperDim
+	const parsed = JSON.parse(raw) as Partial<UserConfig> & {nightDim?: boolean};
 	return withWallpaper({
 		appIds: Array.isArray(parsed.appIds) ? parsed.appIds : DEFAULT_CONFIG.appIds,
 		sourceIds: Array.isArray(parsed.sourceIds) ? parsed.sourceIds : null,
@@ -221,7 +226,8 @@ export function parseConfig (raw: string): UserConfig {
 		idleSeconds: IDLE_SECONDS.indexOf(Number(parsed.idleSeconds)) !== -1 ? Number(parsed.idleSeconds) : 0,
 		favoriteWallpapers: Array.isArray(parsed.favoriteWallpapers) ? parsed.favoriteWallpapers : [],
 		wpAutoMinutes: typeof parsed.wpAutoMinutes === 'number' ? parsed.wpAutoMinutes : 0,
-		nightDim: parsed.nightDim === true,
+		wallpaperDim: wallpaperDimFrom(parsed),
+		dockDim: parsed.dockDim === true,
 		showAllApps: parsed.showAllApps === true,
 		showWeather: parsed.showWeather !== false,
 		weatherCountry: typeof parsed.weatherCountry === 'string' ? parsed.weatherCountry : '',

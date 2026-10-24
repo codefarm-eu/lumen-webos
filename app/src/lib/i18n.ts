@@ -479,15 +479,26 @@ const TABLE: Record<string, string[]> = {
 		"Duvar kâğıdını otomatik değiştir",
 		"वॉलपेपर अपने आप बदलें"
 	],
-	"Dim the wallpaper at night": [
-		"Hintergrund nachts abdunkeln",
-		"Atenuar fondo de noche",
-		"Assombrir le fond la nuit",
-		"Scurisci lo sfondo di notte",
-		"Escurecer papel de parede à noite",
-		"Achtergrond 's nachts dimmen",
-		"Geceleri duvar kâğıdını karart",
-		"रात में वॉलपेपर मंद करें"
+	"Dim the wallpaper": [
+		"Hintergrund abdunkeln",
+		"Atenuar fondo",
+		"Assombrir le fond",
+		"Scurisci lo sfondo",
+		"Escurecer papel de parede",
+		"Achtergrond dimmen",
+		"Duvar kâğıdını karart",
+		"वॉलपेपर मंद करें"
+	],
+	"At night": ["Nachts", "De noche", "La nuit", "Di notte", "À noite", "'s Nachts", "Geceleri", "रात में"],
+	"Dim when the dock is hidden": [
+		"Abdunkeln, wenn das Dock ausgeblendet ist",
+		"Atenuar con el dock oculto",
+		"Assombrir quand le dock est masqué",
+		"Scurisci con il dock nascosto",
+		"Escurecer com o dock oculto",
+		"Dimmen als het dock verborgen is",
+		"Dock gizliyken karart",
+		"डॉक छिपने पर मंद करें"
 	],
 	"AM/PM on the clock": [
 		"AM/PM an der Uhr",
