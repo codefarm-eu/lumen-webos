@@ -346,6 +346,13 @@ wake ends there and that app is not covered by Lumen again. The LG Home branch n
 `wake_tick` does that. Undo: `touch /var/lib/homehook/no-wake-launch` (as before), or `stop_watch.sh`. The Home key bind and Home shows the
 bar are unchanged. Test: `tools/test/watch.test.mjs` sources `watch.sh` with `WATCH_SH_LIB=1` and runs `wake_tick` with a stub launcher.
 
+## Restart (port of upstream ad6eac5)
+
+Control Center > Restart now runs the shell's `reboot` as root, detached (`(sleep 1; reboot) >/dev/null 2>&1 &`), so the Homebrew Channel's
+exec call returns before the TV goes down. Upstream found on webOS 25 that every `tvpower/power/reboot` reason comes back in Active Standby
+(screen off), while the shell's `reboot` comes back on. **C8, 24 Oct 2026:** the same detached `reboot` (run over ssh, because the Channel's
+exec was hung that day) came back **on**: first the last input (HDMI 2), then the watcher's wake rule opened Lumen within seconds.
+
 ## Risks
 
 - **Speed**: `background-attachment: fixed` glass is not composited, so a glass shape that moves or scales (focus zoom, Control Center
