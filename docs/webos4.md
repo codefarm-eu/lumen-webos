@@ -232,6 +232,13 @@ Now the Home key never reaches the surface manager.
   are not bound.
 - **Fallbacks:** before Input Hook is injected after a boot, or if its binds stop (reported for 1.4.0 on some webOS 4 TVs), Home reaches LG
   again and the `NL_HOME_SHOWN` path above answers it as in 1.0.9007. Power on and Back out of an app still use that path.
+- **lginput2 restarts drop the hook (seen on the C8, 24 Oct 2026):** `lginput2` restarted at 17:25 BST, 41 min after a boot. Input Hook
+  injects only once per boot (its service marks it done in `/tmp/inputhook`), so the new process had no hook: every Home press opened LG's
+  bar first and the `NL_HOME_SHOWN` path then put Lumen bar over it. The watcher now checks every 5 s that `lginput2` has Input Hook's
+  `libphp.so` mapped and, if the same unhooked pid is seen twice in a row, runs the service's own `ezinject` command for `lginput2` only
+  (at most once a minute and 5 times a boot, counted in `/tmp/homehook-reinject`), logging `Input Hook re-injected into lginput2`. LG's bar
+  shown with our bind in place but no Home key in the 3 s before is logged as `warning: LG Home shown with no Home key ...` with the hook
+  state (Back out of an app, long press and power on log it too, with `hooked: yes`).
 - **Lost:** Home long press (LG's recents).
 - **Checked on the C8, 24 Oct 2026 00:28 BST:** the bind was added and Input Hook logged `Keybinds reloaded` in `lginput2` and `tvservice`.
   `home-key.sh` over YouTube launched Lumen bar 0.11 s after it started, and the bar window was visible 0.38 s after it started
