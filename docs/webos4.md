@@ -174,6 +174,15 @@ sent through networkinput:
 - **com.sammysco.avoverlay:** its watcher launches it after each app (card) launch. It did not launch after Lumen bar (an overlay), and it
   did not take the bar's keys. When Lumen bar opens YouTube, avoverlay comes up as usual for that launch.
 
+- **Recent tiles need an icon (1.0.9013):** a recent app with no icon file in `data/icons/` (TV Settings, `com.palm.app.settings`, and other
+  system apps Lumen draws with its own glyph) is left out, as in the first hand-installed test build, where the bar showed the dock plus
+  Live TV only. 1.0.9007-1.0.9012 drew TV Settings as a grey "T" tile. The bar's code and CSS were otherwise byte-identical between the
+  hand build and the published ones (only the version differs); the change came from Lumen's own data, refilled at its next start.
+  Test: `tools/test/bar.test.mjs` (bar.js in a vm with a fake DOM and Luna bridge).
+- **Screenshots from the TV:** `luna://com.webos.service.tv.capture/executeOneShot {"path":"/tmp/x.jpg","method":"DISPLAY","format":"JPEG",
+  "width":1920,"height":1080}` writes video plus graphics (YouTube was not blank); `"method":"GRAPHIC"` gives the overlays only, on black.
+  `com.webos.service.capture` does not exist on webOS 4.
+
 Known issues (1.0.9007):
 - LG's bar flashed for about 0.5 s before it was closed, in bar mode 1.5 to 1.75 s (surface-manager log, 23 Oct, 23:16-23:17 UTC: `visible`
   true to false 1.64 s, 1.55 s, 1.75 s over YouTube). Fixed in 1.0.9008 by the Home key bind below.

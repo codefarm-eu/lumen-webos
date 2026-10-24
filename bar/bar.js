@@ -116,7 +116,9 @@
 		var added = 0;
 		for (var j = 0; j < ids.length && added < RECENT_MAX; j++) {
 			var id = ids[j];
-			if (seen[id] || !apps[id] || /^com\.ovsteenb\.lumen/.test(id)) continue;
+			// a recent app with no icon file (TV Settings and other system apps Lumen draws with its own glyph) is left out: a grey letter tile
+			// does not match the rest of the bar
+			if (seen[id] || !apps[id] || !apps[id].icon || /^com\.ovsteenb\.lumen/.test(id)) continue;
 			seen[id] = true;
 			list.push({id: id, title: apps[id].title, color: apps[id].color, plain: apps[id].plain, icon: apps[id].icon, sep: added === 0});
 			added++;
