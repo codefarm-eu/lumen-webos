@@ -12,6 +12,7 @@
 (function () {
 	'use strict';
 	var IDLE_MS = 10000;
+	var CALL_MS = 3000;
 	var RECENT_MAX = 4;
 	var HOMEHOOK = '/var/lib/homehook';
 	var DIR = decodeURIComponent(location.pathname).replace(/\/[^\/]*$/, '');
@@ -38,13 +39,17 @@
 	var hover = -1;        // the tile under the pointer
 	var told = {};         // pointer events already written to the log once (to see on the TV which ones reach this overlay window)
 
+	/** A Luna call. With no answer within CALL_MS, cb(null): on 24 Oct the Homebrew Channel's service stopped answering on the C8, and the bar
+	 *  waited for ever with no tiles, an invisible window that took Home and Back until it timed out. */
 	function call (uri, params, cb) {
 		if (typeof window.PalmServiceBridge !== 'function') { if (cb) cb(null); return; }
 		var bridge = new window.PalmServiceBridge();
 		var done = false;
+		var timer = window.setTimeout(function () { if (done) return; done = true; if (cb) cb(null); }, CALL_MS);
 		bridge.onservicecallback = function (text) {
 			if (done) return;
 			done = true;
+			window.clearTimeout(timer);
 			var r = null;
 			try { r = JSON.parse(text); } catch (e) { r = null; }
 			if (cb) cb(r);
@@ -189,14 +194,37 @@
 		}
 		return list;
 	}
+	/** a file as text, read straight from disk (a webOS 4 web app may read file:// paths); null when it can't be read */
+	function readFile (path, cb) {
+		var done = false;
+		var finish = function (text) { if (!done) { done = true; cb(text); } };
+		try {
+			var x = new XMLHttpRequest();
+			x.open('GET', 'file://' + path, true);
+			x.onreadystatechange = function () { if (x.readyState === 4) finish((x.status === 0 || x.status === 200) && x.responseText ? String(x.responseText) : null); };
+			x.onerror = function () { finish(null); };
+			x.send();
+		} catch (e) { finish(null); }
+	}
+	function apply (out, initial) {
+		var p = parse(out);
+		style = readStyle(p.data);
+		items = build(p.data, p.recent);
+		if (initial || focus >= items.length) focus = items.length > 1 ? 1 : 0;
+		render();
+	}
+	/** The bar's data is read from disk, without the Homebrew Channel; only if that fails is it read through the Channel's exec (as root).
+	 *  Either way something is drawn: with nothing read, the bar still has its Home tile. */
 	function load (initial) {
 		if (!SAFE_DIR.test(DIR)) { items = build(null, []); render(); return; }
-		exec('cat ' + DIR + '/data/bar.json 2>/dev/null; echo; echo @@RECENT; cat ' + HOMEHOOK + '/recent 2>/dev/null; true', function (out) {
-			var p = parse(out);
-			style = readStyle(p.data);
-			items = build(p.data, p.recent);
-			if (initial || focus >= items.length) focus = items.length > 1 ? 1 : 0;
-			render();
+		readFile(DIR + '/data/bar.json', function (json) {
+			readFile(HOMEHOOK + '/recent', function (recent) {
+				if (json) { apply(json + '\n@@RECENT\n' + (recent || ''), initial); return; }
+				exec('cat ' + DIR + '/data/bar.json 2>/dev/null; echo; echo @@RECENT; cat ' + HOMEHOOK + '/recent 2>/dev/null; true', function (out) {
+					if (out === null) log('load: no data (Homebrew Channel not answering)');
+					apply(out, initial);
+				});
+			});
 		});
 	}
 
