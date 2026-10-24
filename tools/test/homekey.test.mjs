@@ -138,8 +138,8 @@ test('Home while the surface manager says Lumen bar is up closes it (closeByAppI
 	assert.equal(homeKey.closedAt, '2000000');
 });
 
-test('Home within 0.5 s of the bar coming up is ignored (double press)', () => {
-	assert.deepEqual(homeKey('youtube.leanback.v4', {syslog: vsc('19999.700000000', 'true'), uptime: '20000.00'}), []);
+test('Home within 0.3 s of the bar window coming up is ignored (double press)', () => {
+	assert.deepEqual(homeKey('youtube.leanback.v4', {syslog: vsc('19999.800000000', 'true'), uptime: '20000.00'}), []);
 });
 
 test('bar hidden, or no surface-manager line (log rotated): Home opens the bar', () => {

@@ -228,7 +228,7 @@ Now the Home key never reaches the surface manager.
   `home_key`: one `getForegroundAppInfo`, then with `home-bar` on it launches Lumen bar with `{"home":true}`, over any app and over
   Lumen itself; without the bar it launches Lumen over another app and does nothing over Lumen. Lumen bar is an overlay, never the app in
   front, so `home_key` reads the surface manager's newest `NL_VSC` line for the bar in `/var/log/messages` (stamped with the uptime). If it
-  says visible, Home closes the bar with `closeByAppId` (no relaunch), except within 0.5 s of it coming up (double press). If the line is
+  says visible, Home closes the bar with `closeByAppId` (no relaunch), except within 0.3 s of its window coming up, about 0.8 s after the first press (double press). If the line is
   missing (log rotated) or the close fails, the bar is launched with `{"home":true}` and `bar.js` closes it on that relaunch. Checked on
   the C8, 24 Oct 2026: the relaunch path alone failed, because webOS 4 delivered each relaunch to the bar twice (closed, then opened again:
   the bar twitched and stayed up); `bar.js` now drops a relaunch within 250 ms of the previous one. After a Home close, `on_home_shown`
