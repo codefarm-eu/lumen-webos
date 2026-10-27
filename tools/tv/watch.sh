@@ -312,6 +312,8 @@ home_key() {
     case "$r" in
       *'"returnValue":true'*)
         up_cs > "$BAR_CLOSED_AT"
+        # the bar may have been showing its screensaver, which can not clear its flag when closed from here
+        me_in_front "$main" >/dev/null || rm -f "$AMBIENT_ON"
         echo "$(date +%T) Home key [$t0] over ${fg:-?}: Lumen bar closed [$(up)]: $r" >> /tmp/homehook.log
         return 0 ;;
     esac
@@ -751,6 +753,8 @@ while true; do
     # is pressed), so it is only ended, not answered by opening Lumen again.
     case "$pw" in
       *'"Screen Saver"'*)
+        # a flag left by Lumen bar's screensaver when the bar was closed some other way (neither Lumen in front nor the bar open): gone
+        [ -f "$AMBIENT_ON" ] && [ -z "$front" ] && [ "$pwprev" != "saver" ] && ! bar_running && rm -f "$AMBIENT_ON"
         if [ -f "$AMBIENT_ON" ] && { [ -n "$front" ] || bar_running; }; then
           luna-send -n 1 luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1
         elif [ "$pwprev" != "saver" ] && [ $((now - saverlast)) -ge 5 ]; then
