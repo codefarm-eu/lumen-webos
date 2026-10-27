@@ -354,3 +354,20 @@ test('self-refresh: a packaged watcher over 256 KB is refused; a rate-limit syml
 	assert.equal(linked.state, '1030');
 	assert.equal(linked.watch, WATCH_OK('new'));
 });
+
+/** saver_params for the app in front ($1) */
+function saverParams (app) {
+	return execFileSync('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'; saver_params "$1"`, 'sh', app], {encoding: 'utf8'});
+}
+
+test('the screensaver over another app passes it as "back", so dismissing it returns there (Moonfin, YouTube, any app)', () => {
+	assert.equal(saverParams('org.moonfin.webos'), '{"view":"ambient","back":"org.moonfin.webos"}');
+	assert.equal(saverParams('youtube.leanback.v4'), '{"view":"ambient","back":"youtube.leanback.v4"}');
+	assert.equal(saverParams('com.webos.app.hdmi1'), '{"view":"ambient","back":"com.webos.app.hdmi1"}');
+});
+
+test('no "back" over Lumen, Lumen bar, LG Home, nothing, or an id that is not a plain app id', () => {
+	for (const app of ['', LUMEN, 'com.ovsteenb.lumen.dev', 'com.ovsteenb.lumen.bar', 'com.webos.app.home', 'com.webos.app.launcher', 'a"b', 'x y', '$(id)']) {
+		assert.equal(saverParams(app), '{"view":"ambient"}', app);
+	}
+});

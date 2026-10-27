@@ -7,7 +7,7 @@ const require = createRequire(new URL('../../app/package.json', import.meta.url)
 const {transformSync} = require('esbuild');
 const src = readFileSync(new URL('../../app/src/lib/screensaver.ts', import.meta.url), 'utf8');
 const js = transformSync(src, {loader: 'ts', format: 'esm'}).code;
-const {screensaverSource, nextBuiltin} = await import('data:text/javascript,' + encodeURIComponent(js));
+const {screensaverSource, nextBuiltin, returnTo} = await import('data:text/javascript,' + encodeURIComponent(js));
 
 test('Immich off or not set up: the bundled pictures, never Immich', () => {
 	assert.deepEqual(screensaverSource({ambientOn: false, ambient: 'immich:recent'}, false), {kind: 'builtin'});
@@ -41,4 +41,15 @@ test('the cached last picture is only reused by its own source (from upstream bb
 	assert.equal(lastPictureFits('3f2a9c1e-0b7d-4c2e-9a51-6f0e1d2c3b4a'), true);
 	assert.equal(lastPictureFits('./wallpapers/a.jpg'), false);
 	assert.equal(lastPictureFits(''), false);
+});
+
+test('dismissing the screensaver returns to the app it came up over while that app is still open', () => {
+	assert.equal(returnTo('org.moonfin.webos', ['com.ovsteenb.lumen', 'org.moonfin.webos']), 'org.moonfin.webos');
+	assert.equal(returnTo('youtube.leanback.v4', null), 'youtube.leanback.v4');   // running list unreadable: launched anyway
+});
+
+test('no app, or one that has been closed since: Lumen stays on its home screen', () => {
+	assert.equal(returnTo(null, ['org.moonfin.webos']), null);
+	assert.equal(returnTo('', null), null);
+	assert.equal(returnTo('org.moonfin.webos', ['com.ovsteenb.lumen']), null);
 });

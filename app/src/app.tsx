@@ -26,7 +26,7 @@ import {resized, setLiveBlur, setPicks, setWallpaper, shownWallpaper} from './li
 import {restoreLeftoverBacklight} from './lib/tvcontrols';
 import {albums as immichAlbums, cachedServer, IMMICH_SOURCES, loadServer} from './lib/immich';
 import {Ambient} from './components/Ambient';
-import {screensaverSource} from './lib/screensaver';
+import {returnTo, screensaverSource} from './lib/screensaver';
 import {setVideoChoice, setVideoPaused, setVideoWallpaper, VIDEO_PLACES} from './lib/wallpaperVideo';
 import {resyncFlags, setAmbientFlag, setVideoFlag, startScreensaver} from './lib/system';
 import {setFpsCounter} from './lib/fps';
@@ -155,7 +155,12 @@ export function App () {
 		const apply = (p: LaunchParams) => {
 			if (p.view === 'recent') setFocusRow({id: ROW.dock, seq: ++seq});
 			// watch.sh opens Lumen with {"view":"ambient"} when the TV's screensaver starts (Settings > Screensaver)
-			if (p.view === 'ambient' && configRef.current.ambientOn) { ambientOpening.current = null; setScreen('ambient'); }
+			// with "back" (the app the TV's screensaver came up over), dismissing it returns there. A second ambient launch while it is up (LG's
+			// screensaver timer again) has no "back" and keeps the first one.
+			if (p.view === 'ambient' && configRef.current.ambientOn) {
+				if (p.back || screenRef.current !== 'ambient') ambientBack.current = p.back || null;
+				ambientOpening.current = null; setScreen('ambient');
+			} else ambientBack.current = null;
 			// {"view":"guide"} is the remote's Guide button, rebound with LG Input Hook; only with Settings > Live TV on; off, the button does nothing here
 			if (p.view === 'guide' && configRef.current.liveTv) { setScreen('guide'); setControls(false); }
 			// a plain relaunch is the remote's Home button: back to the home screen from Settings, the Guide, the screensaver or Control Center
@@ -311,6 +316,22 @@ export function App () {
 	videoOnRef.current = videoOn;
 	// the wallpaper the screensaver opens on when started from the home screen; none when the TV's screensaver opens it
 	const ambientOpening = useRef<ReturnType<typeof shownWallpaper>>(null);
+	/** The app the TV's screensaver came up over (watch.sh's launch parameter "back"), or null: the screensaver was Lumen's own, or over Lumen. */
+	const ambientBack = useRef<string | null>(null);
+	const screenRef = useRef(screen);
+	screenRef.current = screen;
+	/** Leaving the screensaver: Lumen's home screen, then back to the app it came up over when there was one and it is still open (a paused
+	 *  film in Moonfin or YouTube comes forward as it was). */
+	const leaveAmbient = () => {
+		const back = ambientBack.current;
+		ambientBack.current = null;
+		setScreen('home');
+		if (!back) return;
+		runningApps().then((ids) => ids, () => null).then((ids) => {
+			const to = returnTo(back, ids);
+			if (to) launchApp(to).catch(() => undefined);
+		});
+	};
 	useEffect(() => setVideoWallpaper(videoOn), [videoOn]);
 	useEffect(() => {
 		const root = document.documentElement.classList;
@@ -348,7 +369,7 @@ export function App () {
 	 *  bundled pictures (lib/screensaver.ts). The idle timer (`own` false) opens LG's own when Use my photos is off; Control Center always opens Lumen's. */
 	const showScreensaver = (own = configRef.current.ambientOn) => {
 		if (own && (LOCAL_WALLPAPERS.length > 0 || screensaverSource(configRef.current, !!cachedServer()).kind === 'immich')) {
-			ambientOpening.current = videoOnRef.current ? null : shownWallpaper(); setScreen('ambient'); return;
+			ambientBack.current = null; ambientOpening.current = videoOnRef.current ? null : shownWallpaper(); setScreen('ambient'); return;
 		}
 		startScreensaver().catch(() => showToast("Couldn't start the screensaver (it needs the Homebrew Channel)", 'error'));
 	};
@@ -1016,7 +1037,7 @@ export function App () {
 		<>
 			{/* Home stays mounted under Settings so it keeps its focus position. */}
 			<Home rows={rows} tiles={TILES_FOR[firstRow] || TILES_FOR[6]} perRow={firstRow} topItems={TOP_ITEMS} menuItems={MENU_ITEMS} inputs={shownInputs.map(inputTile)} active={screen === 'home' && !controls} onActivate={onActivate} showPeriod={config.showAmPm} onEdit={onEdit} folders={folderMap} weather={weather} dockHide={config.dockHide} dockDim={config.dockDim} focusRow={focusRow} />
-			{screen === 'ambient' && <Ambient source={config.ambient} builtin={saver.kind === 'builtin' ? builtinFiles : undefined} seconds={config.ambientSeconds} backlight={AMBIENT_BACKLIGHT[config.ambientBrightness]} weather={weather} showPeriod={config.showAmPm} print={config.ambientPrint} move={config.ambientMove} opening={ambientOpening.current} onExit={() => setScreen('home')} />}
+			{screen === 'ambient' && <Ambient source={config.ambient} builtin={saver.kind === 'builtin' ? builtinFiles : undefined} seconds={config.ambientSeconds} backlight={AMBIENT_BACKLIGHT[config.ambientBrightness]} weather={weather} showPeriod={config.showAmPm} print={config.ambientPrint} move={config.ambientMove} opening={ambientOpening.current} onExit={leaveAmbient} />}
 			{screen === 'guide' && config.liveTv && <Guide channels={live.channels} listings={live.listings} logos={live.logos} now={live.now} schedule={live.schedule} pending={live.pending} full={config.guideFull} onMode={(full) => { if (configRef.current.guideFull !== full) updateConfig({...configRef.current, guideFull: full}); }} active={!controls} onOpen={watchChannel} onClose={() => setScreen('home')} />}
 			{screen === 'settings' && <Settings tabs={tabs} wallpaper={wallpaper} options={options} active={!prompt} onToggle={onToggle} onReorder={onReorder} onOption={onOption} onChoose={onChoose} onClose={() => setScreen('home')} />}
 			{controls && <ControlCenter

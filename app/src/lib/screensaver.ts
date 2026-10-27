@@ -26,3 +26,13 @@ export function lastPictureFits (id: string, builtin?: string[]): boolean {
 	if (!id) return false;
 	return builtin ? builtin.indexOf(id) !== -1 : /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 }
+
+/** Where dismissing a screensaver that the TV started over another app goes (tools/tv/watch.sh passes that app as `back`): back to it when it is
+ *  still open, so it comes forward as it was (a paused film stays paused where it was), rather than a cold start. `running` is the app manager's
+ *  running list, or null when it could not be read; then the app is launched anyway, as a relaunch of an app that is still open resumes it.
+ *  null (stay on Lumen's home screen) when there is no such app or it has been closed since. */
+export function returnTo (back: string | null | undefined, running: string[] | null): string | null {
+	if (!back) return null;
+	if (running && running.indexOf(back) === -1) return null;
+	return back;
+}

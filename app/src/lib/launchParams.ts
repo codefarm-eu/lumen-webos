@@ -3,11 +3,16 @@
 
 const system = () => window.webOSSystem || window.PalmSystem;
 
-export interface LaunchParams { view?: string; }
+/** `back`: with {"view":"ambient"}, the app that was in front when the TV's screensaver started (tools/tv/watch.sh); dismissing the screensaver
+ *  returns to it. Only a plain app id is kept. */
+export interface LaunchParams { view?: string; back?: string; }
+
+const APP_ID = /^[A-Za-z0-9._-]{1,128}$/;
 
 function clean (p: unknown): LaunchParams {
 	const o = (p && typeof p === 'object' ? p : {}) as Record<string, unknown>;
-	return typeof o.view === 'string' ? {view: o.view} : {};
+	if (typeof o.view !== 'string') return {};
+	return typeof o.back === 'string' && APP_ID.test(o.back) ? {view: o.view, back: o.back} : {view: o.view};
 }
 
 /** The parameters Lumen was started with. Dev preview: ?view=recent. */
