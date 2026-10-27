@@ -371,3 +371,25 @@ test('no "back" over Lumen, Lumen bar, LG Home, nothing, or an id that is not a 
 		assert.equal(saverParams(app), '{"view":"ambient"}', app);
 	}
 });
+
+/** saver_overlay with saver_params' output $1; bar installed with (saver) or without the screensaver, or not at all */
+function overlay (sp, {bar = 'saver', off = false} = {}) {
+	const dir = mkdtempSync(join(tmpdir(), 'watch-'));
+	if (bar) { execFileSync('mkdir', ['-p', join(dir, 'com.ovsteenb.lumen.bar')]); writeFileSync(join(dir, 'com.ovsteenb.lumen.bar', 'index.html'), bar === 'saver' ? '<div id="saver" class="saver">' : '<div id="bar">'); }
+	if (off) writeFileSync(join(dir, 'no-saver-overlay'), '');
+	try {
+		execFileSync('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'; APPS='${dir}'; NOSAVEROVERLAY_FLAG='${join(dir, 'no-saver-overlay')}'; saver_overlay "$1"`, 'sh', sp]);
+		return true;
+	} catch { return false; }
+}
+
+test('over another app the screensaver is Lumen bar\'s overlay, so the app (and its paused player) stays in front', () => {
+	assert.equal(overlay('{"view":"ambient","back":"org.moonfin.webos"}'), true);
+});
+
+test('full-screen Lumen as before: over Lumen or nothing, an older Lumen bar, no Lumen bar, or no-saver-overlay', () => {
+	assert.equal(overlay('{"view":"ambient"}'), false);
+	assert.equal(overlay('{"view":"ambient","back":"org.moonfin.webos"}', {bar: 'old'}), false);
+	assert.equal(overlay('{"view":"ambient","back":"org.moonfin.webos"}', {bar: null}), false);
+	assert.equal(overlay('{"view":"ambient","back":"org.moonfin.webos"}', {off: true}), false);
+});

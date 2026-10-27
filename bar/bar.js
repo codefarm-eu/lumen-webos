@@ -12,7 +12,11 @@
  * other is ignored (closing), and a keydown 13 with the pointer off every tile does nothing (its click closes the bar).
  * Closes by itself after IDLE_MS without a key.
  * Look: Lumen's home bar (bar.css). The tile size, gap, focus scale and tiles per row come from data/bar.json "style" (Lumen's first row);
- * the tiles are placed here, and past perRow tiles the row scrolls to keep the focused one in view. */
+ * the tiles are placed here, and past perRow tiles the row scrolls to keep the focused one in view.
+ * Screensaver ({"saver":true}, from tools/tv/watch.sh when the TV's screensaver starts over another app): Lumen's bundled pictures and a clock,
+ * full screen and opaque, in this overlay window, so the app underneath (a film paused in Moonfin or YouTube) stays in front with its player
+ * as it was: it is never sent to the background or relaunched, which made Moonfin drop its player. Any key or click closes it, and the remote
+ * is the app's again. /tmp/lumen-ambient-on is set while it is up, so the watcher only ends LG's screensaver when its timer fires again. */
 (function () {
 	'use strict';
 	var IDLE_MS = 10000;
@@ -237,6 +241,98 @@
 		});
 	}
 
+	// ----- screensaver -----
+	var SAVER_SECONDS = 30;
+	var APPS_DIR = DIR.replace(/\/[^\/]*$/, '');
+	var saverEl = document.getElementById('saver');
+	var saverPics = [document.getElementById('saverA'), document.getElementById('saverB')];
+	var saverClockEl = document.getElementById('saverClock');
+	var saver = {on: false, timer: 0, clockTimer: 0, files: [], at: -1, layer: 0, seconds: SAVER_SECONDS, ends: 0};
+	function two (n) { return (n < 10 ? '0' : '') + n; }
+	function saverClock () {
+		if (!saverClockEl) return;
+		var d = new Date();
+		saverClockEl.textContent = two(d.getHours()) + ':' + two(d.getMinutes());
+		// a few pixels further each minute, so the clock never burns in
+		var m = d.getHours() * 60 + d.getMinutes();
+		saverClockEl.style.transform = 'translate(' + ((m * 37) % 240) + 'px, ' + (-((m * 23) % 160)) + 'px)';
+	}
+	/** Lumen's bundled pictures (wallpapers/default-N.jpg in Lumen's folder, read straight from disk), found by loading them in turn */
+	function saverFind (cb) {
+		var found = [];
+		var base = 'file://' + APPS_DIR + '/' + lumenId + '/wallpapers/default-';
+		var probe = function (n) {
+			if (n >= 40 || typeof Image !== 'function') { cb(found); return; }
+			var img = new Image();
+			img.onload = function () { found.push(base + n + '.jpg'); probe(n + 1); };
+			img.onerror = function () { cb(found); };
+			img.src = base + n + '.jpg';
+		};
+		probe(0);
+	}
+	function saverNext () {
+		if (!saver.on || !saver.files.length) return;
+		var n = saver.files.length;
+		var next = n === 1 ? 0 : (saver.at + 1 + Math.floor(Math.random() * (n - 1))) % n;
+		saver.at = next;
+		var show = saverPics[saver.layer];
+		var hide = saverPics[1 - saver.layer];
+		saver.layer = 1 - saver.layer;
+		if (show) {
+			show.onload = function () { show.className = 'saver__pic saver__pic--in'; if (hide) hide.className = 'saver__pic'; };
+			show.src = saver.files[next];
+		}
+		saver.timer = window.setTimeout(saverNext, saver.seconds * 1000);
+	}
+	/** Settings > Screensaver's picture time and brightness, from Lumen's settings backup on the TV; the defaults when it can't be read */
+	function saverSettings (cb) {
+		readFile(HOMEHOOK + '/lumen-config.json', function (text) {
+			var c = null;
+			try { c = JSON.parse(text || 'null'); } catch (e) { c = null; }
+			c = c && typeof c === 'object' ? (c.config && typeof c.config === 'object' ? c.config : c) : {};
+			cb({seconds: num(c.ambientSeconds, 5, 3600, SAVER_SECONDS), brightness: c.ambientBrightness === 'dim' || c.ambientBrightness === 'low' ? c.ambientBrightness : ''});
+		});
+	}
+	function openSaver () {
+		if (!saverEl) { log('saver: no screensaver in this build'); return; }
+		if (saver.on) return;
+		saver.on = true;
+		saver.ends = 0;
+		window.clearTimeout(idleTimer);
+		window.clearTimeout(closeTimer);
+		closing = false;
+		barEl.className = 'bar';
+		openedAt = Date.now();
+		try { if (sys && sys.activate) sys.activate(); } catch (e) { /* older firmware */ }
+		exec('touch /tmp/lumen-ambient-on', function () {});
+		saverClock();
+		saver.clockTimer = window.setInterval ? window.setInterval(saverClock, 10000) : 0;
+		saverSettings(function (st) {
+			saver.seconds = st.seconds;
+			saverEl.className = 'saver saver--on' + (st.brightness ? ' saver--' + st.brightness : '');
+			window.setTimeout(function () { if (saver.on) saverEl.className += ' saver--in'; }, 30);
+			saverFind(function (files) {
+				saver.files = files;
+				log('saver: open, ' + files.length + ' pictures');
+				saverNext();
+			});
+		});
+	}
+	function closeSaver (why) {
+		if (!saver.on) return;
+		saver.on = false;
+		window.clearTimeout(saver.timer);
+		if (saver.clockTimer && window.clearInterval) window.clearInterval(saver.clockTimer);
+		if (saverEl) saverEl.className = 'saver saver--on';
+		exec('rm -f /tmp/lumen-ambient-on', function () {});
+		log('saver: close ' + why);
+		closing = true;
+		closeTimer = window.setTimeout(function () { try { window.close(); } catch (e) { /* nothing */ } }, 400);
+	}
+	function wantsSaver (p) { return !!(p && p.saver === true); }
+	/** the Lumen build whose pictures to show (watch.sh passes the one Home opens) */
+	function saverLumen (p) { if (p && typeof p.lumen === 'string' && APP_ID.test(p.lumen)) lumenId = p.lumen; }
+
 	function close (why) {
 		if (closing) return;
 		closing = true;
@@ -287,6 +383,7 @@
 	function once (what) { if (!told[what]) { told[what] = true; log('pointer: ' + what); } }
 
 	function pointed (e) {
+		if (saver.on) return;   // the pointer moving does not end the screensaver (a remote on a table), a click or a key does
 		if (closing) return;
 		once(e.type);
 		pointer = true;
@@ -297,6 +394,7 @@
 	document.addEventListener('mousemove', pointed, true);
 	document.addEventListener('mouseover', pointed, true);
 	document.addEventListener('click', function (e) {
+		if (saver.on) { if (e.preventDefault) e.preventDefault(); closeSaver('click'); return; }
 		if (closing) return;
 		once('click');
 		if (e.preventDefault) e.preventDefault();
@@ -305,6 +403,7 @@
 		else if (!onBar(e.target)) close('pointer outside');   // off the glass: the app underneath gets the remote back
 	}, true);
 	document.addEventListener('wheel', function (e) {
+		if (saver.on) { if (e.preventDefault) e.preventDefault(); closeSaver('wheel'); return; }
 		if (closing) return;
 		once('wheel');
 		if (e.preventDefault) e.preventDefault();
@@ -322,6 +421,8 @@
 
 	document.addEventListener('keydown', function (e) {
 		var k = e.keyCode;
+		// any key ends the screensaver, and only that: the app underneath gets the next one
+		if (saver.on) { e.preventDefault(); closeSaver('key ' + k); return; }
 		if (closing) return;
 		poke();
 		if (k === KEY.left || k === KEY.right) {
@@ -359,6 +460,9 @@
 		if (relaunchAt && t - relaunchAt >= 0 && t - relaunchAt < RELAUNCH_DUP_MS) { log('relaunch: duplicate dropped (' + (t - relaunchAt) + ' ms)'); return; }
 		relaunchAt = t;
 		var p = relaunchParams(e);
+		if (wantsSaver(p)) { saverLumen(p); openSaver(); return; }
+		// Home while the screensaver is up: it ends, and the app underneath is in front as it was
+		if (saver.on) { closeSaver(p.home ? 'home' : 'relaunch'); return; }
 		if (p.home && !closing) {
 			// the remote's Home while the bar is up: close it, as Back does; not right after it came up (a double press, or a key bounce)
 			if (Date.now() - openedAt < HOME_DEBOUNCE_MS) { log('home: ignored (' + (Date.now() - openedAt) + ' ms after opening)'); return; }
@@ -367,5 +471,6 @@
 		}
 		open(false);
 	}, true);
-	open(true);
+	var started = relaunchParams(null);
+	if (wantsSaver(started)) { saverLumen(started); openSaver(); } else open(true);
 })();

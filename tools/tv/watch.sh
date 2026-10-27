@@ -14,8 +14,10 @@
 #    it for its Recent row, so apps opened from anywhere show there.
 #  - When the TV's power state becomes "Screen Saver" and /var/lib/homehook/ambient-screensaver exists (Settings > Options > Screensaver):
 #    opens Lumen with {"view":"ambient"} (your Immich photos) and ends LG's screensaver. The video wallpaper, when on and in front, wins.
-#    When another app was in front (a paused film in Moonfin or YouTube), it is passed as "back", and a key that dismisses the screensaver
-#    returns to that app, still open as it was, instead of Lumen's home screen.
+#    When another app was in front (a paused film in Moonfin or YouTube) and Lumen bar is installed, the screensaver is Lumen bar's overlay
+#    ({"saver":true}) instead: the app stays in front under it, untouched, and a key closes the overlay. (A full-screen Lumen sent the app to
+#    the background, and Moonfin answers the relaunch back with its home screen, its player gone.) Without Lumen bar, or with
+#    /var/lib/homehook/no-saver-overlay, full-screen Lumen gets the app as "back" and relaunches it when the screensaver is dismissed.
 #  - When the TV's power state becomes "Screen Saver" (LG's screensaver is not a foreground app, so the power state is what shows it) and
 #    /var/lib/homehook/frame-screensaver exists: opens Frame in screensaver mode, then ends LG's screensaver (turnOnScreen) so Frame is what shows.
 #  - What counts as LG Home: com.webos.app.home (webOS 3 to 6: the launcher bar and its Recent list, whatever brought it up: Home, a long
@@ -65,6 +67,7 @@ SAVER_FLAG=/var/lib/homehook/frame-screensaver
 VIDEO_FLAG=/var/lib/homehook/video-wallpaper
 AMBIENT_FLAG=/var/lib/homehook/ambient-screensaver
 AMBIENT_ON=/tmp/lumen-ambient-on
+NOSAVEROVERLAY_FLAG=/var/lib/homehook/no-saver-overlay   # the screensaver over an app is full-screen Lumen again (returns with a relaunch)
 APPS=/media/developer/apps/usr/palm/applications
 EXTRA=/var/lib/homehook/hosts-extra
 TAKEOVER_FLAG=/var/lib/homehook/home-takeover
@@ -215,6 +218,17 @@ saver_params() {
   [ -n "$b" ] && me_in_front "\"appId\":\"$b\"" >/dev/null && b=""
   for id in $LGHOMES $BAR; do [ "$b" = "$id" ] && b=""; done
   if [ -n "$b" ]; then printf '{"view":"ambient","back":"%s"}' "$b"; else printf '{"view":"ambient"}'; fi
+}
+# true when the screensaver over another app is Lumen bar's overlay ($1: saver_params' output, which names the app as "back"): Lumen bar
+# installed in a build that has the screensaver (its index.html has the saver element), and not switched off with no-saver-overlay
+saver_overlay() {
+  case "$1" in *'"back"'*) ;; *) return 1 ;; esac
+  [ -f "$NOSAVEROVERLAY_FLAG" ] && return 1
+  grep -q 'id="saver"' "$APPS/$BAR/index.html" 2>/dev/null
+}
+# true while Lumen bar is open (its screensaver may be up)
+bar_running() {
+  luna-send -n 1 luna://com.webos.applicationManager/running '{}' </dev/null 2>/dev/null | grep -q '"id": *"'$BAR'"'
 }
 # prints the Lumen build Home should open: the last one in front if still installed, else the first installed one
 me_target() {
@@ -737,16 +751,23 @@ while true; do
     # is pressed), so it is only ended, not answered by opening Lumen again.
     case "$pw" in
       *'"Screen Saver"'*)
-        if [ -n "$front" ] && [ -f "$AMBIENT_ON" ]; then
+        if [ -f "$AMBIENT_ON" ] && { [ -n "$front" ] || bar_running; }; then
           luna-send -n 1 luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1
         elif [ "$pwprev" != "saver" ] && [ $((now - saverlast)) -ge 5 ]; then
           saverlast=$now
           # the app in front (LG's screensaver is not an app), unless LG's bar is up over it
           over=$app; [ "$homeup" -eq 1 ] && over=""
           sp=$(saver_params "$over")
-          r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\",\"params\":$sp}" </dev/null 2>&1)
-          echo "$(date +%T) screensaver: ambient ($target, over ${over:-nothing}): $r" >> /tmp/homehook.log
-          sleep 1
+          if saver_overlay "$sp"; then
+            # over another app: Lumen bar's screensaver, an overlay, so the app stays in front with its player as it was (a full-screen
+            # Lumen sent it to the background, and the relaunch back made Moonfin drop its player). Shown at once, without the wait below.
+            r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$BAR\",\"params\":{\"saver\":true,\"lumen\":\"$target\"}}" </dev/null 2>&1)
+            echo "$(date +%T) screensaver: Lumen bar over $over: $r" >> /tmp/homehook.log
+          else
+            r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\",\"params\":$sp}" </dev/null 2>&1)
+            echo "$(date +%T) screensaver: ambient ($target, over ${over:-nothing}): $r" >> /tmp/homehook.log
+            sleep 1
+          fi
           luna-send -n 1 luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1
         fi
         pwprev="saver"
