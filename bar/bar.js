@@ -399,7 +399,8 @@
 	/** Lowers the backlight to `level` (never raises it). The value before is kept in SAVED_BACKLIGHT, unless one is there already (a
 	 *  screensaver that never put it back: that one is still the real value). A value kept for another picture mode (or with the mode now
 	 *  unreadable) leaves the panel as it is: lowered, this mode would have nothing saved to come back to, and stay dim. Prints "dimmed"
-	 *  when it did. */
+	 *  only when the settings service took the lowering: otherwise the pictures are darkened instead (saverDim), and the value saved
+	 *  here, the real one, is put back as usual. */
 	function saverDimCommand (level) {
 		return 'f=' + SAVED_BACKLIGHT + '; ' + PICTURE_GET + '; case "$c" in \'\'|*[!0-9]*) exit 0 ;; esac; '
 			+ '[ "$c" -gt ' + level + ' ] || exit 0; '
@@ -407,7 +408,7 @@
 			// a file that vanished between the check and the read (or that can't be read) has nothing to compare: save this mode, and if that
 			// write fails leave the panel alone. Lowering without a value that can be put back is what left a mode dim.
 			+ 'case "$sc" in \'\'|*[!0-9]*) mkdir -p ' + HOMEHOOK + ' && echo "$c $m" > $f || exit 0 ;; *) [ -z "$sm" ] || [ "$sm" = "$m" ] || exit 0 ;; esac; '
-			+ 'else mkdir -p ' + HOMEHOOK + ' && echo "$c $m" > $f || exit 0; fi; ' + backlightSet(level) + '; '
+			+ 'else mkdir -p ' + HOMEHOOK + ' && echo "$c $m" > $f || exit 0; fi; ' + backlightSet(level) + ' || exit 0; '
 			// the screensaver already gone (its flag removed: the watcher closed the bar, and put the backlight back, while this was under way):
 			// put it back here too, or the panel stayed dim with nothing left to undo it
 			+ 'if [ -f /tmp/lumen-ambient-on ]; then echo dimmed; else ' + SAVER_RESTORE + '; fi';

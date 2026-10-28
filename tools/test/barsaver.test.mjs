@@ -226,9 +226,9 @@ case "$*" in
   *setSystemSettings*) ${setOk ? `v=$(echo "$*" | sed -n 's/.*"backlight":"\\([0-9]*\\)".*/\\1/p'); echo "$v $m" > '${dir}/tv'; echo '{"returnValue": true}'` : `echo '{"returnValue": false}'`} ;;
 esac
 `, {mode: 0o755});
-	execFileSync('sh', ['-c', '{ ' + cmd.split('/var/lib/homehook/saver-backlight').join(join(dir, 'saved')).split('mkdir -p /var/lib/homehook').join('true') + '\n}; true'], {env: {...process.env, PATH: `${dir}:${process.env.PATH}`}});
+	const out = execFileSync('sh', ['-c', '{ ' + cmd.split('/var/lib/homehook/saver-backlight').join(join(dir, 'saved')).split('mkdir -p /var/lib/homehook').join('true') + '\n}; true'], {encoding: 'utf8', env: {...process.env, PATH: `${dir}:${process.env.PATH}`}});
 	const read = (f) => { try { return readFileSync(join(dir, f), 'utf8').trim(); } catch { return null; } };
-	return {tv: read('tv'), saved: read('saved')};
+	return {tv: read('tv'), saved: read('saved'), out: out.trim()};
 }
 
 test('backlight as root: saved with its picture mode, put back only into that mode, and kept when the settings service refuses', () => {
@@ -300,4 +300,25 @@ test('backlight as root: a value still saved for another picture mode leaves thi
 	r = runRoot(lower, dir, {backlight: 80, mode: 'cinema'});
 	assert.equal(r.tv, '80 cinema');
 	chmodSync(join(dir, 'saved'), 0o644);
+});
+
+test('backlight as root: a lowering the settings service refused does not say "dimmed", so the pictures are darkened instead', () => {
+	const t = start({saver: true}, {exec: CONFIG({ambientBrightness: 'dim'})});
+	t.tick();
+	const dim = t.execs().find((c) => c.indexOf('echo "$c $m"') !== -1);
+	const dir = mkdtempSync(join(tmpdir(), 'bar-bl-'));
+	writeFileSync(join(dir, 'flag'), 'bar');
+	const lower = dim.split('/tmp/lumen-ambient-on').join(join(dir, 'flag'));
+	let r = runRoot(lower, dir, {backlight: 80, mode: 'cinema', setOk: false});
+	assert.equal(r.tv, '80 cinema');
+	assert.equal(r.out, '', 'not "dimmed": the panel is as bright as before');
+	// the value saved first is the real one and stays for the restore (the same value, no harm) rather than being lost
+	assert.equal(r.saved, '80 cinema');
+	r = runRoot(lower, dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.out, 'dimmed');
+	assert.equal(r.tv, '30 cinema');
+	// in the window: a refused lowering keeps the pictures dark (saver--dim), the same as a panel that could not be read
+	const refused = start({saver: true}, {exec: (cmd) => (cmd.indexOf('cat /var/lib/homehook/lumen-config.json') === 0 ? JSON.stringify({config: {ambientBrightness: 'dim'}}) : '')});
+	refused.tick();
+	assert.match(refused.ids.saver.className, /saver--dim/);
 });
