@@ -261,29 +261,29 @@ saver_overlay() {
 # black with the clock.)
 bar_pictures() {
   bpl=""
-  for id in $1 $ME; do case " $ME " in *" $id "*) [ -d "$APPS/$id/wallpapers" ] && { bpl=$id; break; } ;; esac; done
+  for bpi in $1 $ME; do case " $ME " in *" $bpi "*) [ -d "$APPS/$bpi/wallpapers" ] && { bpl=$bpi; break; } ;; esac; done
   [ -n "$bpl" ] && [ -d "$APPS/$BAR" ] && [ ! -L "$APPS/$BAR" ] || return 0
   bpd="$APPS/$BAR/data/wallpapers"
   [ -L "$APPS/$BAR/data" ] && rm -f "$APPS/$BAR/data"
   [ -L "$bpd" ] && rm -f "$bpd"
   mkdir -p "$bpd" 2>/dev/null && chmod 755 "$APPS/$BAR/data" "$bpd" 2>/dev/null || return 0
   bpn=""; bpc=0
-  for f in "$APPS/$bpl"/wallpapers/default-[0-9].jpg "$APPS/$bpl"/wallpapers/default-[0-9][0-9].jpg; do
-    [ -f "$f" ] && [ ! -L "$f" ] || continue
-    b=${f##*/}
-    bpn="$bpn$b
+  for bpf in "$APPS/$bpl"/wallpapers/default-[0-9].jpg "$APPS/$bpl"/wallpapers/default-[0-9][0-9].jpg; do
+    [ -f "$bpf" ] && [ ! -L "$bpf" ] || continue
+    bpb=${bpf##*/}
+    bpn="$bpn$bpb
 "
-    if [ ! -f "$bpd/$b" ] || [ -L "$bpd/$b" ] || [ "$(wc -c < "$f")" != "$(wc -c < "$bpd/$b")" ]; then
-      rm -f "$bpd/$b"; cp -P "$f" "$bpd/$b" 2>/dev/null && chmod 644 "$bpd/$b" && bpc=$((bpc + 1))
+    if [ ! -f "$bpd/$bpb" ] || [ -L "$bpd/$bpb" ] || [ "$(wc -c < "$bpf")" != "$(wc -c < "$bpd/$bpb")" ]; then
+      rm -f "$bpd/$bpb"; cp -P "$bpf" "$bpd/$bpb" 2>/dev/null && chmod 644 "$bpd/$bpb" && bpc=$((bpc + 1))
     fi
   done
-  for f in "$bpd"/*; do
-    b=${f##*/}
-    [ "$b" = list ] && continue
+  for bpf in "$bpd"/*; do
+    bpb=${bpf##*/}
+    [ "$bpb" = list ] && continue
     case "
 $bpn" in *"
-$b
-"*) ;; *) rm -f "$f" ;; esac
+$bpb
+"*) ;; *) rm -f "$bpf" ;; esac
   done
   if [ "$(cat "$bpd/list" 2>/dev/null)" != "$(printf '%s' "$bpn")" ]; then
     bpt=$(mktemp "$bpd/list.XXXXXX") && printf '%s' "$bpn" > "$bpt" && chmod 644 "$bpt" && mv -f "$bpt" "$bpd/list"
