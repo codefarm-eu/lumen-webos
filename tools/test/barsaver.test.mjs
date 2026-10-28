@@ -2,7 +2,10 @@
 // Luna bridge and fake Image loads (data/wallpapers/default-0..2.jpg exist: the watcher's copy of Lumen's pictures).
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import vm from 'node:vm';
 
 const SRC = readFileSync(new URL('../../bar/bar.js', import.meta.url), 'utf8');
@@ -16,12 +19,18 @@ function start (launchParams, opts = {}) {
 	const ids = {bar: el(), view: el(), track: el(), tiles: el(), label: el(), saver: el(), saverA: el(), saverB: el(), saverClock: el()};
 	const handlers = {};
 	const calls = [];
+	const held = [];
 	const timers = [];
 	let closed = 0;
 	const ctx = {
 		location: {pathname: '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen.bar/index.html'},
 		document: {getElementById: (id) => ids[id], createElement: el, addEventListener (type, fn) { (handlers[type] = handlers[type] || []).push(fn); }},
-		PalmServiceBridge: function () { this.call = (uri, params) => { calls.push({uri, params: JSON.parse(params)}); this.onservicecallback(JSON.stringify({returnValue: true, stdoutString: opts.exec ? opts.exec(JSON.parse(params).command || '') : ''})); }; },
+		PalmServiceBridge: function () { this.call = (uri, params) => {
+			calls.push({uri, params: JSON.parse(params)});
+			const cmd = JSON.parse(params).command || '';
+			const answer = () => this.onservicecallback(JSON.stringify({returnValue: true, stdoutString: opts.exec ? opts.exec(cmd) : ''}));
+			if (opts.hold && opts.hold(cmd)) held.push(answer); else answer();
+		}; },
 		PalmSystem: {launchParams: JSON.stringify(launchParams || {})},
 		Image: function () { const img = this; Object.defineProperty(img, 'src', {set (v) { img._src = v; (loads.test(v) ? img.onload : img.onerror)(); }}); },
 		setTimeout: (fn, ms) => { fn.pending = true; timers.push({fn, ms: ms || 0}); return 1; }, clearTimeout () {}, setInterval: () => 1, clearInterval () {},
@@ -34,7 +43,7 @@ function start (launchParams, opts = {}) {
 	const execs = () => calls.filter((c) => c.uri.indexOf('/exec') !== -1).map((c) => c.params.command).filter((c) => c.indexOf('lumen-bar.log') === -1);
 	// runs the timers set for `ms` or less (the screensaver's 30 ms fade-in), once
 	const tick = (ms = 50) => { timers.splice(0).forEach((t) => { if (t.ms <= ms) t.fn(); else timers.push(t); }); };
-	return {ids, fire, calls, execs, tick, closed: () => closed, ctx};
+	return {ids, fire, calls, execs, tick, closed: () => closed, ctx, held};
 }
 
 test('{"saver":true}: an opaque screensaver with Lumen\'s pictures, no bar, and the watcher told it is up', () => {
@@ -152,9 +161,18 @@ test('answered Luna bridges are let go, and the log stops after LOG_MAX lines pe
 	for (let i = 0; i < 400; i++) t.fire('cursorStateChange', {detail: {visibility: i % 2 === 0}});
 	const logs = t.calls.filter((c) => (c.params.command || '').indexOf('lumen-bar.log') !== -1);
 	assert.ok(logs.length <= 200, String(logs.length));
-	// the log is cut back by rename, and a link at its name is removed first
-	assert.match(logs[0].params.command, /\[ -h \$f \] && rm -f \$f/);
-	assert.match(logs[0].params.command, /mktemp \$f\.XXXXXX/);
+	// written as root only inside the watcher's own folder: there it is, as a link or missing nothing is written
+	const cmd = logs[0].params.command;
+	const dir = mkdtempSync(join(tmpdir(), 'barlog-'));
+	const runIn = (d) => execFileSync('sh', ['-c', cmd.split('/tmp/homehook.run').join(d)]);
+	execFileSync('sh', ['-c', `mkdir -m 700 '${dir}/run' && mkdir '${dir}/elsewhere' && ln -s '${dir}/elsewhere' '${dir}/link'`]);
+	runIn(join(dir, 'run'));
+	assert.match(readFileSync(join(dir, 'run', 'lumen-bar.log'), 'utf8'), /pointer/);
+	runIn(join(dir, 'link'));
+	runIn(join(dir, 'missing'));
+	assert.equal(execFileSync('sh', ['-c', `ls -A '${dir}/elsewhere'; ls -d '${dir}/missing' 2>/dev/null; true`], {encoding: 'utf8'}), '');
+	assert.match(cmd, /mktemp \$f\.XXXXXX/);
+	assert.doesNotMatch(cmd, /\/tmp\/lumen-bar\.log/);
 });
 
 test('Brightness Dim lowers the panel (not the pictures) and the old value is put back after, in that order', () => {
@@ -165,7 +183,7 @@ test('Brightness Dim lowers the panel (not the pictures) and the old value is pu
 	assert.match(t.execs()[dim], /"backlight":"'30'"/);
 	assert.doesNotMatch(t.ids.saver.className, /saver--dim/);
 	t.fire('keydown', {keyCode: 13});
-	const restore = t.execs().findIndex((c) => c.indexOf('f=/var/lib/homehook/saver-backlight; c=$(cat $f') === 0);
+	const restore = t.execs().findIndex((c) => c.indexOf('f=/var/lib/homehook/saver-backlight; read -r c sm') === 0);
 	assert.ok(restore > dim);
 });
 
@@ -184,4 +202,62 @@ test('Move clock: the clock goes to a place inside the safe area; off, it stays 
 	assert.ok(850 + y >= 65 && 850 + y + 150 <= 1015, String(y));
 	const off = start({saver: true}, {exec: CONFIG({ambientMove: false})});
 	assert.equal(off.ids.saverClock.style.transform, '');
+});
+
+test('the root queue waits for a slow lowering to really finish (not just the 3 s call timeout) before the restore goes', () => {
+	const t = start({saver: true}, {exec: CONFIG({ambientBrightness: 'dim'}), hold: (c) => c.indexOf('getSystemSettings') !== -1 && c.indexOf('echo "$c $m"') !== -1});
+	t.tick();
+	assert.equal(t.held.length, 1, 'the lowering is out');
+	t.fire('keydown', {keyCode: 13});
+	t.tick(3000);   // the call timeout passes: the lowering may still be running on the TV
+	const restoreSent = () => t.execs().some((c) => c.indexOf('f=/var/lib/homehook/saver-backlight; read -r c sm') === 0);
+	assert.equal(restoreSent(), false, 'no restore while the lowering may still land');
+	t.held.shift()();   // the lowering answers
+	assert.equal(restoreSent(), true);
+});
+
+/** runs one of the bar's root commands in sh against a fake settings service (state in `dir`) */
+function runRoot (cmd, dir, {backlight = 80, mode = 'cinema', setOk = true} = {}) {
+	writeFileSync(join(dir, 'tv'), `${backlight} ${mode}`);
+	writeFileSync(join(dir, 'luna-send'), `#!/bin/sh
+read -r b m < '${dir}/tv'
+case "$*" in
+  *getSystemSettings*) printf '{"returnValue": true, "settings": {"backlight": "%s", "pictureMode": "%s"}}\\n' "$b" "$m" ;;
+  *setSystemSettings*) ${setOk ? `v=$(echo "$*" | sed -n 's/.*"backlight":"\\([0-9]*\\)".*/\\1/p'); echo "$v $m" > '${dir}/tv'; echo '{"returnValue": true}'` : `echo '{"returnValue": false}'`} ;;
+esac
+`, {mode: 0o755});
+	execFileSync('sh', ['-c', '{ ' + cmd.split('/var/lib/homehook/saver-backlight').join(join(dir, 'saved')).split('mkdir -p /var/lib/homehook').join('true') + '\n}; true'], {env: {...process.env, PATH: `${dir}:${process.env.PATH}`}});
+	const read = (f) => { try { return readFileSync(join(dir, f), 'utf8').trim(); } catch { return null; } };
+	return {tv: read('tv'), saved: read('saved')};
+}
+
+test('backlight as root: saved with its picture mode, put back only into that mode, and kept when the settings service refuses', () => {
+	const t = start({saver: true}, {exec: CONFIG({ambientBrightness: 'dim'})});
+	t.tick();
+	const dim = t.execs().find((c) => c.indexOf('echo "$c $m"') !== -1);
+	t.fire('keydown', {keyCode: 13});
+	const restore = t.execs().find((c) => c.indexOf('f=/var/lib/homehook/saver-backlight; read -r c sm') === 0);
+	const dir = mkdtempSync(join(tmpdir(), 'bar-bl-'));
+	let r = runRoot(dim.split('/tmp/lumen-ambient-on').join(join(dir, 'flag')), dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.saved, null, 'no flag: the lowering put itself back at once');
+	// the flag is up, so the lowering stays
+	writeFileSync(join(dir, 'flag'), 'bar');
+	r = runRoot(dim.split('/tmp/lumen-ambient-on').join(join(dir, 'flag')), dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.saved, '80 cinema');
+	assert.equal(r.tv, '30 cinema');
+	// another mode on: left alone for the watcher
+	r = runRoot(restore, dir, {backlight: 100, mode: 'hdrCinema'});
+	assert.equal(r.saved, '80 cinema');
+	assert.equal(r.tv, '100 hdrCinema');
+	// the settings service refuses: kept
+	r = runRoot(restore, dir, {backlight: 30, mode: 'cinema', setOk: false});
+	assert.equal(r.saved, '80 cinema');
+	r = runRoot(restore, dir, {backlight: 30, mode: 'cinema'});
+	assert.equal(r.saved, null);
+	assert.equal(r.tv, '80 cinema');
+	// an older build's number only
+	writeFileSync(join(dir, 'saved'), '70\n');
+	r = runRoot(restore, dir, {backlight: 30, mode: 'vivid'});
+	assert.equal(r.tv, '70 vivid');
+	assert.equal(r.saved, null);
 });

@@ -182,7 +182,7 @@ test('bar_just_closed: true for 2 s after a Home close; a stamp that is not digi
 	const f = join(dir, 'at');
 	const check = (stamp, now) => {
 		writeFileSync(f, stamp);
-		return execFileSync('sh', ['-c', `WATCH_SH_LIB=1 BAR_CLOSED_AT='${f}' . '${SCRIPT}'; up () { echo '${now}'; }; bar_just_closed && echo yes || echo no`], {encoding: 'utf8'}).trim();
+		return execFileSync('sh', ['-c', `WATCH_SH_LIB=1 HOMEHOOK_BAR_CLOSED_AT='${f}' . '${SCRIPT}'; up () { echo '${now}'; }; bar_just_closed && echo yes || echo no`], {encoding: 'utf8'}).trim();
 	};
 	assert.equal(check('2000000', '20001.50'), 'yes');
 	assert.equal(check('2000000', '20002.50'), 'no');

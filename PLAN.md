@@ -59,6 +59,10 @@ Update Lumen in the Homebrew Channel first (dev build from commit 8e2bd15 or lat
 - [ ] Lumen bar's screensaver backlight after a switch-off (verify): with Brightness at Dim, let the TV's screensaver come up over a paused
       film (Lumen bar's overlay), then switch the TV off with the remote and on again. Within about 5 s of the watcher running the backlight is
       back at its old value, and the log says `screensaver backlight put back to <n>`, even if the bar's `lumen-ambient-on` flag was left in /tmp.
+- [ ] Screensaver backlight and picture mode (verify): with Brightness at Dim and Lumen bar's screensaver up in one picture mode, switch to another
+      (e.g. start an HDR film) before dismissing it. The new mode's backlight is left alone; back in the first mode, its old backlight returns
+      within a few seconds (`homehook.log`: `waits for picture mode ...`, then `put back to <n>`).
+- [ ] Lumen bar's log is now `/tmp/homehook.run/lumen-bar.log` (verify it is written: "saver: open ..." when the overlay screensaver opens).
 - [ ] Screensaver flag owner and video wallpaper (verify): with the video wallpaper on but no clip playing (Settings open, or the video failed), LG's screensaver or Lumen's photos still start. Close Lumen bar mid-screensaver some other way: the next screensaver still shows with Lumen in front. With "Home shows the bar" off, Home over Lumen bar's screensaver ends it and leaves the app in front, not Lumen under the overlay. LG Home seen in the log opens the Lumen build last in front.
 - [ ] Night dim on the screensaver: after 7 pm with Dim the wallpaper at night on, the photos are darker too.
 - [ ] Immich wallpaper night dim: after 7 pm the Photos wallpaper shows at 55%, like a cloud one. The code path is the same; Sam saw it not dim.

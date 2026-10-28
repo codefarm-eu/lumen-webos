@@ -56,3 +56,23 @@ test('icon cache: a listing that looked nothing up (the TV\'s list unreadable) p
 	await listApps(true, false).catch(() => undefined);
 	assert.deepEqual(JSON.parse(store[CACHE]), {'/a/icon.png': 'data:a'});
 });
+
+// lib/root.ts setSetting, with the Homebrew Channel's exec answering `T.answer` as the command's output
+const rootCode = (await build({
+	entryPoints: [new URL('../../app/src/lib/root.ts', import.meta.url).pathname], bundle: true, format: 'esm', write: false,
+	plugins: [{name: 'stubs', setup (b) {
+		const s = {'../config/constants': "export const LUNA = {homebrewExec: 'luna://org.webosbrew.hbchannel.service/exec'};",
+			'./luna': 'export const isWebOS = () => true; export const lunaCall = () => Promise.resolve({stdoutString: globalThis.T.answer});'};
+		b.onResolve({filter: /^\.\.?\//}, (a) => (s[a.path] !== undefined ? {path: a.path, namespace: 'stub2'} : undefined));
+		b.onLoad({filter: /.*/, namespace: 'stub2'}, (a) => ({contents: s[a.path], loader: 'js'}));
+	}}]
+})).outputFiles[0].text;
+const {setSetting} = await import('data:text/javascript,' + encodeURIComponent(rootCode));
+
+test('a setting counts as set only on "returnValue": true; a refusal (with or without the space) or no answer is an error', async () => {
+	for (const ok of ['{"returnValue":true}', '{"returnValue": true, "method": "setSystemSettings"}']) { T.answer = ok; await setSetting('backlight', '80'); }
+	for (const [answer, why] of [['{"returnValue":false}', /refused/], ['{"returnValue": false, "errorText": "x"}', /refused/], ['', /no answer/]]) {
+		T.answer = answer;
+		await assert.rejects(setSetting('backlight', '80'), why, answer);
+	}
+});

@@ -39,7 +39,12 @@ jobs:
         run: |
           V=$(python3 -c "import json; print(json.load(open('app/public/appinfo.json'))['version'])")
           [ "v$V" = "${REF%%-*}" ] || { echo "::error::tag $REF does not match appinfo.json version $V"; exit 1; }
-          TOP=$(gh release view dev --json assets -q '.assets[].name' 2>/dev/null | sed -n 's/^com\.ovsteenb\.lumen_\([0-9.]*\)_.*\.ipk$/\1/p' | sort -V | tail -n 1)
+          # the dev builds published so far; no dev release yet is fine, any other failure (auth, network) stops the release rather than
+          # letting a tag below them through unchecked
+          if NAMES=$(gh release view dev --json assets -q '.assets[].name' 2>gh-err.txt); then :
+          elif grep -qi 'release not found' gh-err.txt; then NAMES=""
+          else echo "::error::could not read the dev release: $(cat gh-err.txt)"; exit 1; fi
+          TOP=$(printf '%s\n' "$NAMES" | sed -n 's/^com\.ovsteenb\.lumen_\([0-9.]*\)_.*\.ipk$/\1/p' | sort -V | tail -n 1)
           if [ -n "$TOP" ] && [ "$(printf '%s\n%s\n' "$TOP" "$V" | sort -V | tail -n 1)" != "$V" -o "$TOP" = "$V" ]; then
             echo "::error::$V is not above the newest dev build $TOP"; exit 1
           fi

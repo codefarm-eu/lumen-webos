@@ -217,7 +217,9 @@ export function setSetting (key: string, value: string): Promise<void> {
 	const s = SETTINGS[key];
 	if (!s || (s.values && s.values.indexOf(value) === -1)) return Promise.reject(new Error(`refused: ${key}=${value}`));
 	return run(luna('luna://com.webos.settingsservice/setSystemSettings', {category: s.category, settings: {[key]: value}})).then((text) => {
-		if (text.indexOf('"returnValue":false') !== -1) throw new Error(`the TV refused ${key}=${value}`);
+		// only a "returnValue": true counts (with or without the space luna-send puts there on some firmware): a refusal, or no answer at
+		// all, is an error, so a backlight the screensaver lowered is never taken as put back when it wasn't (lib/backlightSaver.ts)
+		if (!/"returnValue": *true/.test(text)) throw new Error(/"returnValue": *false/.test(text) ? `the TV refused ${key}=${value}` : `no answer for ${key}=${value}`);
 	});
 }
 

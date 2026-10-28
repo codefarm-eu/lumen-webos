@@ -26,7 +26,7 @@
 	var IDLE_MS = 10000;
 	var HOME_DEBOUNCE_MS = 500;
 	var RELAUNCH_DUP_MS = 250;
-	var LOG_MAX = 200;     // lines this window writes to /tmp/lumen-bar.log (RAM) before it stops; the file itself is kept under LOG_BYTES
+	var LOG_MAX = 200;     // lines this window writes to /tmp/homehook.run/lumen-bar.log (RAM) before it stops; the file itself is kept under LOG_BYTES
 	var LOG_BYTES = 65536;
 	var SAVER_BACKLIGHT = {dim: 30, low: 10};   // as Lumen's (app.tsx AMBIENT_BACKLIGHT)
 	var SAVED_BACKLIGHT = '/var/lib/homehook/saver-backlight';
@@ -66,7 +66,7 @@
 
 	/** A Luna call. With no answer within CALL_MS, cb(null): on 24 Oct the Homebrew Channel's service stopped answering on the C8, and the bar
 	 *  waited for ever with no tiles, an invisible window that took Home and Back until it timed out. */
-	function call (uri, params, cb) {
+	function call (uri, params, cb, ms) {
 		if (typeof window.PalmServiceBridge !== 'function') { if (cb) cb(null); return; }
 		var bridge = new window.PalmServiceBridge();
 		var done = false;
@@ -75,7 +75,7 @@
 			var list = window.__bridges || [];
 			for (var i = 0; i < list.length; i++) if (list[i] === bridge) { list.splice(i, 1); break; }
 		};
-		timer = window.setTimeout(function () { drop(); if (done) return; done = true; if (cb) cb(null); }, CALL_MS);
+		timer = window.setTimeout(function () { drop(); if (done) return; done = true; if (cb) cb(null); }, ms || CALL_MS);
 		bridge.onservicecallback = function (text) {
 			drop();
 			if (done) return;
@@ -89,17 +89,19 @@
 		// a reference until it answers or times out (the window can stay up for hours with the screensaver: answered ones are dropped)
 		if (!done) (window.__bridges = window.__bridges || []).push(bridge);
 	}
-	function exec (command, cb) {
-		call('luna://org.webosbrew.hbchannel.service/exec', {command: command}, function (r) { cb(r && r.returnValue !== false ? String(r.stdoutString || '') : null); });
+	function exec (command, cb, ms) {
+		call('luna://org.webosbrew.hbchannel.service/exec', {command: command}, function (r) { cb(r && r.returnValue !== false ? String(r.stdoutString || '') : null); }, ms);
 	}
-	/** One line in /tmp/lumen-bar.log (written as root: a link put at that name is removed first, and the file is cut back to its last half once
-	 *  over LOG_BYTES, by rename). At most LOG_MAX lines per window, so a screensaver left up for hours does not keep writing. */
+	/** One line in /tmp/homehook.run/lumen-bar.log, next to the watcher's homehook.log. It is written as root, so only into that folder,
+	 *  which the watcher keeps root's own (mode 700, never a link): a name in /tmp itself could be swapped for a link between any check and
+	 *  the write. Without that folder (no watcher yet), nothing is logged. The file is cut back to its last half once over LOG_BYTES, by
+	 *  rename. At most LOG_MAX lines per window, so a screensaver left up for hours does not keep writing. */
 	function log (text) {
 		if (logged >= LOG_MAX) return;
 		logged++;
-		var f = '/tmp/lumen-bar.log';
-		exec('f=' + f + '; [ -h $f ] && rm -f $f; echo "$(date +%T) ' + String(text).replace(/[^\w .:=>,+-]/g, '') + '" >> $f; '
-			+ 'if [ "$(wc -c < $f)" -gt ' + LOG_BYTES + ' ]; then t=$(mktemp $f.XXXXXX) && tail -c ' + (LOG_BYTES / 2) + ' $f > "$t" && mv -f "$t" $f; fi; true', function () {});
+		exec('d=/tmp/homehook.run; [ -d $d ] && [ ! -h $d ] && [ "$(stat -c %u $d 2>/dev/null)" = "$(id -u 2>/dev/null || echo 0)" ] || exit 0; f=$d/lumen-bar.log; '
+			+ 'echo "$(date +%T) ' + String(text).replace(/[^\w .:=>,+-]/g, '') + '" >> $f; '
+			+ 'if [ "$(stat -c %s $f 2>/dev/null || echo 0)" -gt ' + LOG_BYTES + ' ]; then t=$(mktemp $f.XXXXXX) && tail -c ' + (LOG_BYTES / 2) + ' $f > "$t" && mv -f "$t" $f; fi; true', function () {});
 	}
 	function launch (id) {
 		if (!APP_ID.test(id)) return;
@@ -376,29 +378,40 @@
 		rootQueue.push({command: command, cb: cb});
 		if (!rootBusy) rootNext();
 	}
+	/** How long a queued root command may take before the next one goes anyway. Not CALL_MS: a lowering whose answer is only slow (the
+	 *  Channel busy right after a wake) was still running on the TV when the queue let the restore go, and could land after it. Each Luna
+	 *  call in these commands is bounded by the settings service, so this is only for a Channel that never answers at all. */
+	var SERIAL_MS = 30000;
 	function rootNext () {
 		var job = rootQueue.shift();
 		if (!job) { rootBusy = false; return; }
 		rootBusy = true;
-		exec(job.command, function (out) { if (job.cb) job.cb(out); rootNext(); });
+		exec(job.command, function (out) { if (job.cb) job.cb(out); rootNext(); }, SERIAL_MS);
 	}
-	var BACKLIGHT_GET = "luna-send -n 1 luna://com.webos.settingsservice/getSystemSettings '{\"category\":\"picture\",\"keys\":[\"backlight\"]}' 2>/dev/null"
-		+ " | sed -n 's/.*\"backlight\": *\"\\{0,1\\}\\([0-9][0-9]*\\).*/\\1/p'";
+	// the backlight and the picture mode it belongs to, in one read: "$c" and "$m"
+	var PICTURE_GET = "p=$(luna-send -n 1 luna://com.webos.settingsservice/getSystemSettings '{\"category\":\"picture\",\"keys\":[\"backlight\",\"pictureMode\"]}' 2>/dev/null); "
+		+ "c=$(echo \"$p\" | sed -n 's/.*\"backlight\": *\"\\{0,1\\}\\([0-9][0-9]*\\).*/\\1/p'); "
+		+ "m=$(echo \"$p\" | sed -n 's/.*\"pictureMode\": *\"\\([A-Za-z0-9]*\\)\".*/\\1/p')";
+	/** shell that sets the backlight; true only when the settings service said so */
 	function backlightSet (v) {
-		return "luna-send -n 1 luna://com.webos.settingsservice/setSystemSettings '{\"category\":\"picture\",\"settings\":{\"backlight\":\"'" + v + "'\"}}' >/dev/null 2>&1";
+		return "luna-send -n 1 luna://com.webos.settingsservice/setSystemSettings '{\"category\":\"picture\",\"settings\":{\"backlight\":\"'" + v + "'\"}}' 2>&1 | tr -d ' \\n' | grep -q '\"returnValue\":true'";
 	}
 	/** Lowers the backlight to `level` (never raises it). The value before is kept in SAVED_BACKLIGHT, unless one is there already (a
 	 *  screensaver that never put it back: that one is still the real value). Prints "dimmed" when it did. */
 	function saverDimCommand (level) {
-		return 'f=' + SAVED_BACKLIGHT + '; c=$(' + BACKLIGHT_GET + '); case "$c" in \'\'|*[!0-9]*) exit 0 ;; esac; '
-			+ '[ "$c" -gt ' + level + ' ] || exit 0; [ -f $f ] || { mkdir -p ' + HOMEHOOK + ' && echo "$c" > $f; }; ' + backlightSet(level) + '; '
+		return 'f=' + SAVED_BACKLIGHT + '; ' + PICTURE_GET + '; case "$c" in \'\'|*[!0-9]*) exit 0 ;; esac; '
+			+ '[ "$c" -gt ' + level + ' ] || exit 0; [ -f $f ] || { mkdir -p ' + HOMEHOOK + ' && echo "$c $m" > $f; }; ' + backlightSet(level) + '; '
 			// the screensaver already gone (its flag removed: the watcher closed the bar, and put the backlight back, while this was under way):
 			// put it back here too, or the panel stayed dim with nothing left to undo it
 			+ 'if [ -f /tmp/lumen-ambient-on ]; then echo dimmed; else ' + SAVER_RESTORE + '; fi';
 	}
-	/** Puts back the value in SAVED_BACKLIGHT, if there is one, and removes it. tools/tv/watch.sh saver_backlight_restore does the same. */
-	var SAVER_RESTORE = 'f=' + SAVED_BACKLIGHT + '; c=$(cat $f 2>/dev/null); case "$c" in \'\'|*[!0-9]*) rm -f $f; exit 0 ;; esac; '
-		+ '[ "$c" -le 100 ] && ' + backlightSet('$c') + '; rm -f $f';
+	/** Puts back the value in SAVED_BACKLIGHT ("<backlight> <picture mode>"; older builds wrote the number only), if there is one, and
+	 *  removes it once the settings service took it. Only into the picture mode it came from: with another mode on (an HDR film started)
+	 *  it is left for tools/tv/watch.sh saver_backlight_restore, which does the same and tries again once the mode is back. */
+	var SAVER_RESTORE = 'f=' + SAVED_BACKLIGHT + '; read -r c sm < $f 2>/dev/null; case "$c" in \'\'|*[!0-9]*) rm -f $f; exit 0 ;; esac; '
+		+ '[ "$c" -le 100 ] || { rm -f $f; exit 0; }; case "$sm" in *[!A-Za-z0-9]*) sm="" ;; esac; '
+		+ 'if [ -n "$sm" ]; then ' + PICTURE_GET.replace('c=$(', 'cc=$(') + '; [ -z "$m" ] || [ "$m" = "$sm" ] || exit 0; fi; '
+		+ backlightSet('$c') + ' && rm -f $f';
 	function saverDim (level, live) {
 		serial(saverDimCommand(level), function (out) {
 			if (out && out.indexOf('dimmed') !== -1) {

@@ -27,7 +27,7 @@ function ticks (steps, {nowake = false, wakeuntil = 1090} = {}) {
 
 test('the boot wake window only follows a real boot (uptime under 5 minutes), not a watcher restart', () => {
 	const src = readFileSync(SCRIPT, 'utf8');
-	assert.match(src, /booted=\$\(cut -d\. -f1 "\$\{WATCH_UPTIME:-\/proc\/uptime\}"/);
+	assert.match(src, /booted=\$\(cut -d\. -f1 "\$\{HOMEHOOK_UPTIME:-\/proc\/uptime\}"/);
 	assert.match(src, /"\$booted" -gt 300 \] 2>\/dev\/null && wakeuntil=0/);
 });
 
@@ -66,7 +66,7 @@ test('no-wake-launch, a screen that is not on, or a wake that is over: nothing i
 
 /** a shell that sources watch.sh and runs single_instance against `lock`, printing ok or busy, then holds for `hold` seconds */
 function claim (lock, hold = 0) {
-	return `WATCH_SH_LIB=1 WATCH_LOCK='${lock}' . '${SCRIPT}'; if single_instance; then echo ok; else echo busy; fi; sleep ${hold}; true`;   // "; true": busybox ash would exec a last sleep in place, and the pid would no longer be a watch.sh shell
+	return `WATCH_SH_LIB=1 HOMEHOOK_WATCH_LOCK='${lock}' . '${SCRIPT}'; if single_instance; then echo ok; else echo busy; fi; sleep ${hold}; true`;   // "; true": busybox ash would exec a last sleep in place, and the pid would no longer be a watch.sh shell
 }
 
 test('only one watcher runs: a second copy exits while the first is alive, and takes over once it is gone', async () => {
@@ -97,7 +97,7 @@ function reinject (nows, {hooked = [], bind = true, mark = true, state = '', lay
 	if (state) writeFileSync(join(dir, 'state'), state);
 	writeFileSync(join(dir, 'keybinds.json'), bind ? '{"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}}\n' : '{}\n');
 	const h = nows.map((_, i) => (hooked[i] ? 1 : 0)).join(' ');
-	const sh = [`WATCH_SH_LIB=1 IH_DIR='${ih}' IH_MARK='${join(dir, 'mark')}' IH_STATE='${join(dir, 'state')}' IH_LOG='${join(dir, 'log')}' . '${SCRIPT}'`,
+	const sh = [`WATCH_SH_LIB=1 HOMEHOOK_IH_DIR='${ih}' HOMEHOOK_IH_MARK='${join(dir, 'mark')}' HOMEHOOK_IH_STATE='${join(dir, 'state')}' HOMEHOOK_IH_LOG='${join(dir, 'log')}' . '${SCRIPT}'`,
 		`KEYBINDS='${join(dir, 'keybinds.json')}'`, 'lginput_pid () { echo 4242; }', 'sleep () { :; }',
 		`set -- ${h}; HOOK="$*"`, 'lginput_hooked () { set -- $HOOK; [ "$1" = 1 ]; }', `lginput_traced () { ${traced ? 'true' : 'false'}; }`,
 		...nows.map((n) => `inputhook_check ${n}; set -- $HOOK; shift; HOOK="$*"`)].join('\n');
@@ -152,7 +152,7 @@ test('LG Home shown with no Home key from Input Hook before it is logged as a wa
 	const run = (at) => {
 		if (at) writeFileSync(join(dir, 'at'), String(at)); else writeFileSync(join(dir, 'at'), '');
 		writeFileSync(join(dir, 'log'), '');
-		execFileSync('sh', ['-c', [`WATCH_SH_LIB=1 IH_LOG='${join(dir, 'log')}' HOMEKEY_AT='${join(dir, 'at')}' . '${SCRIPT}'`,
+		execFileSync('sh', ['-c', [`WATCH_SH_LIB=1 HOMEHOOK_IH_LOG='${join(dir, 'log')}' HOMEHOOK_HOMEKEY_AT='${join(dir, 'at')}' . '${SCRIPT}'`,
 			`KEYBINDS='${join(dir, 'keybinds.json')}'`, 'lginput_pid () { echo 4242; }', 'lginput_hooked () { false; }', 'home_key_missed 1000'].join('\n')]);
 		return readFileSync(join(dir, 'log'), 'utf8');
 	};
@@ -190,7 +190,7 @@ function selfUpdate (nows, {pkgWatch, pkgHook, instWatch = WATCH_OK('old'), inst
 		execFileSync('sh', ['-c', `mkdir -p '${dir}/bin' && printf '%s\n' '#!/bin/sh' 'exit 1' > '${dir}/bin/md5sum' && chmod +x '${dir}/bin/md5sum'`]);
 		path = `PATH='${dir}/bin':"$PATH"; `;
 	}
-	const sh = [`${path}WATCH_SH_LIB=1 SELF='${dir}/hh/watch.sh' INIT_HOOK='${dir}/init.d/60-homehook' SU_STATE='${dir}/state' IH_LOG='${dir}/log' . '${SCRIPT}'`,
+	const sh = [`${path}WATCH_SH_LIB=1 HOMEHOOK_SELF='${dir}/hh/watch.sh' HOMEHOOK_INIT_HOOK='${dir}/init.d/60-homehook' HOMEHOOK_SU_STATE='${dir}/state' HOMEHOOK_IH_LOG='${dir}/log' . '${SCRIPT}'`,
 		`APPS='${dir}/apps'; ME='${LUMEN}'`, 'su_reexec () { echo REEXEC; exit 0; }',
 		...nows.flatMap((n, i) => [`self_update ${n}`, between[i] || ':'])].join('\n');
 	const out = execFileSync('sh', ['-c', sh], {encoding: 'utf8', timeout: 15000}).trim();
@@ -286,7 +286,7 @@ test('self-refresh: a re-exec in the first 5 minutes is not a boot (no wake wind
 	const dir = mkdtempSync(join(tmpdir(), 'reexec-boot-'));
 	const lock = join(dir, 'lock');
 	const up = join(dir, 'uptime');
-	const run = (setup, uptime) => execFileSync('sh', ['-c', `${setup}\nprintf '%s\\n' '${uptime}' > '${up}'\nWATCH_LOCK='${lock}' WATCH_UPTIME='${up}' WATCH_SH_LIB=1 . '${SCRIPT}'\necho "$wakeuntil $preloadat"`], {encoding: 'utf8'}).trim();
+	const run = (setup, uptime) => execFileSync('sh', ['-c', `${setup}\nprintf '%s\\n' '${uptime}' > '${up}'\nHOMEHOOK_WATCH_LOCK='${lock}' HOMEHOOK_UPTIME='${up}' WATCH_SH_LIB=1 . '${SCRIPT}'\necho "$wakeuntil $preloadat"`], {encoding: 'utf8'}).trim();
 	const fresh = run(`rm -rf '${lock}'`, '10.00 1.00').split(' ');
 	assert.notEqual(fresh[0], '0');
 	assert.notEqual(fresh[1], '0');
@@ -297,7 +297,7 @@ test('self-refresh: a re-exec in the first 5 minutes is not a boot (no wake wind
 test('self-refresh: re-exec keeps its own single_instance lock instead of dropping it', () => {
 	const lock = join(mkdtempSync(join(tmpdir(), 'ownlock-')), 'lock');
 	const out = execFileSync('sh', ['-c', `
-WATCH_SH_LIB=1 WATCH_LOCK='${lock}' . '${SCRIPT}'
+WATCH_SH_LIB=1 HOMEHOOK_WATCH_LOCK='${lock}' . '${SCRIPT}'
 mkdir -p '${lock}'
 echo $$ > '${lock}/pid'
 ino=$(stat -c %i '${lock}')
@@ -319,7 +319,7 @@ test('self-refresh: re-exec stops the reader that shares its command line, and l
 	writeFileSync(watch, `#!/bin/sh\nread x < '${fifo}'\n`);
 	execFileSync('sh', ['-c', `chmod +x '${watch}'`]);
 	const out = execFileSync('sh', ['-c', `
-WATCH_SH_LIB=1 SELF='${watch}' . '${SCRIPT}'
+WATCH_SH_LIB=1 HOMEHOOK_SELF='${watch}' . '${SCRIPT}'
 /bin/sh '${watch}' >/dev/null 2>&1 &
 hrpid=$!
 i=0
@@ -483,14 +483,19 @@ test('bar_state: open, closed, or unknown when the app manager gives no running 
 
 test('root state and the log live in a folder only root writes (RUN, mode 700), not as names in /tmp a link could take', () => {
 	const src = readFileSync(SCRIPT, 'utf8');
-	for (const v of ['LOG', 'LASTME', 'IH_STATE', 'HOMEKEY_AT', 'BAR_CLOSED_AT', 'WAKEFILE', 'SU_STATE']) assert.match(src, new RegExp(`^${v}=\\$\\{${v}:-\\$(RUN|LOG)`, 'm'), v);
+	for (const v of ['LOG', 'LASTME', 'IH_STATE', 'HOMEKEY_AT', 'BAR_CLOSED_AT', 'WAKEFILE', 'SU_STATE']) assert.match(src, new RegExp(`^${v}=\\$\\{HOMEHOOK_${v}:-\\$(RUN|LOG)`, 'm'), v);
+	// every path the watcher may be pointed elsewhere by is read from a HOMEHOOK_ name only: a generic LOG, RUN or SELF in the environment
+	// root starts it with never moves where root writes
+	const overrides = src.match(/^[A-Z_]+=\$\{[A-Z_]+:-/gm);
+	assert.ok(overrides.length >= 15);
+	for (const o of overrides) assert.match(o, /^([A-Z_]+)=\$\{HOMEHOOK_\1:-/, o);
 	// no root write (> or >>) to a fixed name in /tmp
 	assert.doesNotMatch(src.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n'), />>? *"?\/tmp\//);
 	const dir = mkdtempSync(join(tmpdir(), 'rundir-'));
 	const run = join(dir, 'run');
 	writeFileSync(join(dir, 'victim'), 'keep\n');
 	execFileSync('sh', ['-c', `ln -s '${dir}' '${run}'`]);
-	const out = execFileSync('sh', ['-c', `WATCH_SH_LIB=1 RUN='${run}' . '${SCRIPT}'; run_dir && stat -c '%a' '${run}' && [ ! -h '${run}' ] && echo plain`], {encoding: 'utf8'}).trim();
+	const out = execFileSync('sh', ['-c', `WATCH_SH_LIB=1 HOMEHOOK_RUN='${run}' . '${SCRIPT}'; run_dir && stat -c '%a' '${run}' && [ ! -h '${run}' ] && echo plain`], {encoding: 'utf8'}).trim();
 	assert.equal(out, '700\nplain');
 	assert.equal(readFileSync(join(dir, 'victim'), 'utf8'), 'keep\n');
 });
@@ -523,7 +528,7 @@ function barPictures ({lumen = {}, bar = null, links = [], arg = LUMEN, hook = '
 	const bw = join(apps, 'com.ovsteenb.lumen.bar', 'data', 'wallpapers');
 	if (bar) { mkdirSync(bw, {recursive: true}); Object.entries(bar).forEach(([n, c]) => writeFileSync(join(bw, n), c)); }
 	const log = join(apps, 'log');
-	execFileSync('sh', ['-c', `WATCH_SH_LIB=1 LOG='${log}' . '${SCRIPT}'; APPS='${apps}'\n${hook}\nbar_pictures '${arg}'`]);
+	execFileSync('sh', ['-c', `WATCH_SH_LIB=1 HOMEHOOK_LOG='${log}' . '${SCRIPT}'; APPS='${apps}'\n${hook}\nbar_pictures '${arg}'`]);
 	const ls = execFileSync('sh', ['-c', `ls '${bw}' 2>/dev/null; true`], {encoding: 'utf8'}).trim().split('\n').filter(Boolean);
 	const read = (f) => { try { return readFileSync(f, 'utf8'); } catch { return null; } };
 	return {ls, list: read(join(bw, 'list')), file: (n) => read(join(bw, n)), log: read(log) || '', bw};
@@ -589,19 +594,24 @@ test('bar pictures: a picture swapped for a link while it is copied is not kept,
 	assert.ok(!r.ls.includes('.new'));
 });
 
-/** saver_leftover with the screensaver flag holding `flag` (null: none), a saved backlight `saved` (null: none) and Lumen bar `bar` */
-function leftover ({flag = null, saved = '80', bar = 'closed'} = {}) {
+/** saver_leftover with the screensaver flag holding `flag` (null: none), a saved backlight `saved` (null: none), Lumen bar `bar`, the
+ *  foreground answer `main` and the Lumen build in front `front`; the settings service is in picture mode `mode` and takes a backlight unless
+ *  `refuse`. `runs` calls it that many times, `now` apart by `step` seconds. */
+function leftover ({flag = null, saved = '80', bar = 'closed', main = '{"appId":"org.moonfin.webos"}', front = '', mode = 'cinema', refuse = false, runs = 1, step = 5} = {}) {
 	const dir = mkdtempSync(join(tmpdir(), 'leftover-'));
-	const on = join(dir, 'ambient-on'), sb = join(dir, 'saver-backlight'), calls = join(dir, 'calls');
+	const on = join(dir, 'ambient-on'), sb = join(dir, 'saver-backlight'), calls = join(dir, 'calls'), clock = join(dir, 'clock');
 	if (flag !== null) writeFileSync(on, flag ? flag + '\n' : '');
 	if (saved !== null) writeFileSync(sb, saved + '\n');
-	const sh = [`WATCH_SH_LIB=1 . '${SCRIPT}'`, `AMBIENT_ON='${on}'; SAVER_BACKLIGHT='${sb}'; LOG='${join(dir, 'log')}'`,
-		`bar_state () { echo ${bar}; }`, `lsend () { echo "$*" >> '${calls}'; echo '{"returnValue":true}'; }`, 'saver_leftover'].join('\n');
+	writeFileSync(clock, '1000');
+	const sh = [`WATCH_SH_LIB=1 . '${SCRIPT}'`, `AMBIENT_ON='${on}'; SAVER_BACKLIGHT='${sb}'; LOG='${join(dir, 'log')}'`, `main='${main}'; front='${front}'`,
+		`date () { case "$1" in +%s) cat '${clock}' ;; *) echo 00:00:00 ;; esac; }`,
+		`bar_state () { echo ${bar}; }`,
+		`lsend () { echo "$*" >> '${calls}'; case "$*" in *getSystemSettings*) echo '{"returnValue":true,"settings":{"pictureMode":"${mode}"}}' ;; *) ${refuse ? `echo '{"returnValue":false}'` : `echo '{"returnValue":true}'`} ;; esac; }`,
+		...Array.from({length: runs}, (_, k) => `echo ${1000 + k * step} > '${clock}'; saver_leftover`), 'true'].join('\n');
 	execFileSync('sh', ['-c', sh]);
 	const has = (f) => { try { readFileSync(f); return true; } catch { return false; } };
-	let sent = '';
-	try { sent = readFileSync(calls, 'utf8'); } catch { /* none */ }
-	return {flag: has(on), saved: has(sb), sent};
+	const read = (f) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } };
+	return {flag: has(on), saved: has(sb), sent: read(calls), log: read(join(dir, 'log'))};
 }
 
 test('a backlight Lumen bar\'s screensaver lowered is put back once the bar is closed, also when its "bar" flag was left behind (the TV switched off under it)', () => {
@@ -615,14 +625,44 @@ test('a backlight Lumen bar\'s screensaver lowered is put back once the bar is c
 });
 
 test('the backlight is left as it is while the bar is open or unknown, or Lumen\'s own screensaver holds the flag', () => {
-	for (const c of [{flag: 'bar', bar: 'open'}, {flag: 'bar', bar: 'unknown'}, {bar: 'open'}, {flag: 'lumen'}, {flag: ''}]) {
+	for (const c of [{flag: 'bar', bar: 'open'}, {flag: 'bar', bar: 'unknown'}, {bar: 'open'}, {flag: 'lumen', front: LUMEN}, {flag: '', front: LUMEN}, {flag: 'lumen', main: ''}]) {
 		const r = leftover(c);
 		assert.equal(r.saved, true, JSON.stringify(c));
 		assert.equal(r.flag, c.flag !== undefined, JSON.stringify(c));
 		assert.equal(r.sent, '', JSON.stringify(c));
 	}
-	assert.equal(leftover({flag: 'bar', saved: null}).flag, true, 'nothing saved: nothing to do, not even a running list read');
 	assert.match(readFileSync(SCRIPT, 'utf8'), /\[ \$\(\(ticks % 5\)\) -eq 3 \] && saver_leftover\n/);
+});
+
+test('a leftover flag of Lumen\'s own goes by the same check: no Lumen in front (a real foreground answer) and the bar closed', () => {
+	const r = leftover({flag: 'lumen', saved: null});
+	assert.equal(r.flag, false);
+	assert.match(r.log, /leftover screensaver flag \(lumen\) removed/);
+	assert.equal(leftover({flag: '', saved: null}).flag, false);
+	assert.equal(leftover({flag: 'lumen', saved: null, bar: 'open'}).flag, true);
+	// gone, so the bar's backlight left behind is put back as well
+	assert.equal(leftover({flag: 'lumen'}).saved, false);
+});
+
+test('backlight restore: only into the picture mode it was saved in; then on its way back', () => {
+	const other = leftover({saved: '80 cinema', mode: 'hdrCinema'});
+	assert.equal(other.saved, true);
+	assert.doesNotMatch(other.sent, /setSystemSettings/);
+	assert.match(other.log, /waits for picture mode cinema \(now hdrCinema\)/);
+	const same = leftover({saved: '80 cinema', mode: 'cinema'});
+	assert.equal(same.saved, false);
+	assert.match(same.sent, /setSystemSettings .*"backlight":"80"/);
+});
+
+test('backlight restore: a refused write keeps the value, and the periodic retry backs off (5, 10, 20 s ...), logged once', () => {
+	// every 5 s for a minute: tried at 1000, 1005, 1015, 1035 only
+	const r = leftover({saved: '80', refuse: true, runs: 13});
+	assert.equal(r.saved, true);
+	assert.equal((r.sent.match(/setSystemSettings/g) || []).length, 4);
+	assert.equal((r.log.match(/not put back/g) || []).length, 1);
+	const later = leftover({saved: '80', refuse: true, runs: 200});
+	// capped at 5 minutes: 1000 + 5 + 10 + 20 + 40 + 80 + 160 = 1315, then every 300 s
+	assert.equal((later.sent.match(/setSystemSettings/g) || []).length, 9);
 });
 
 test('bar pictures are copied before the bar\'s screensaver opens, and once at the watcher\'s start', () => {
@@ -637,7 +677,7 @@ test('stop_watch.sh takes our Home bind out with watch.sh\'s own homekey_unbind 
 	const ours = '"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}';
 	writeFileSync(k, `{"1":{"action":"x"},${ours},"2":{"action":"y"}}\n`);
 	const stop = new URL('../../tools/tv/stop_watch.sh', import.meta.url).pathname;
-	const out = execFileSync('sh', [stop], {encoding: 'utf8', env: {...process.env, WATCH_SH: SCRIPT, STOP_KEYBINDS: k}});
+	const out = execFileSync('sh', [stop], {encoding: 'utf8', env: {...process.env, HOMEHOOK_WATCH_SH: SCRIPT, HOMEHOOK_KEYBINDS: k}});
 	assert.match(out, /Home key bind removed/);
 	assert.equal(readFileSync(k, 'utf8'), '{"1":{"action":"x"},"2":{"action":"y"}}\n');
 	assert.doesNotMatch(readFileSync(stop, 'utf8'), /awk/);

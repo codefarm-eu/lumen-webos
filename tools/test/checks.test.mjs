@@ -141,3 +141,30 @@ test('icon paths resolved as root: readlink -f, or cd -P/pwd -P where busybox ha
 		assert.equal(res(join(root, 'out', 'secret'), path), 'no');
 	}
 });
+
+test('backlight: saved with its picture mode and put back only into that mode; a failed write keeps it for the next try', async () => {
+	const t = tv(80);
+	let mode = 'cinema';
+	let fail = false;
+	t.io.mode = () => Promise.resolve(mode);
+	const set = t.io.set;
+	t.io.set = (v) => (fail ? Promise.reject(new Error('no')) : set(v));
+	const b = backlightSaver(t.io);
+	b.dim(30, () => true); await t.flush();
+	assert.deepEqual(t.st.saved, {level: 80, mode: 'cinema'});
+	mode = 'hdrCinema';   // an HDR film came on: its backlight is not touched
+	b.restore(); await t.flush();
+	assert.deepEqual(t.st.sets, [30]);
+	assert.deepEqual(t.st.saved, {level: 80, mode: 'cinema'});
+	mode = 'cinema'; fail = true;
+	b.restore(); await t.flush();
+	assert.deepEqual(t.st.saved, {level: 80, mode: 'cinema'}, 'kept after a failed write');
+	fail = false;
+	b.restore(); await t.flush();
+	assert.deepEqual(t.st.sets, [30, 80]);
+	assert.equal(t.st.saved, null);
+	// an older build's plain number, or a mode that can't be read: put back as before
+	const o = tv(30); o.st.saved = 75; o.io.mode = () => Promise.resolve(null);
+	backlightSaver(o.io).restore(); await o.flush();
+	assert.deepEqual(o.st.sets, [75]);
+});

@@ -4,7 +4,7 @@
 import {isWebOS, lunaCall} from './luna';
 import * as root from './root';
 import {readCache, writeCache} from './boot';
-import {backlightSaver} from './backlightSaver';
+import {backlightSaver, type SavedBacklight} from './backlightSaver';
 
 const AUDIO = 'luna://com.webos.audio/';
 
@@ -172,7 +172,8 @@ const SAVED_BACKLIGHT_KEY = 'lumen-screensaver-backlight-v1';
 const saverBacklight = backlightSaver({
 	read: readBacklight,
 	set: setBacklight,
-	load: () => readCache<number>(SAVED_BACKLIGHT_KEY),
+	mode: () => (isWebOS() ? root.getSetting('pictureMode').then((v) => v || null) : Promise.resolve(null)),
+	load: () => readCache<SavedBacklight>(SAVED_BACKLIGHT_KEY),
 	save: (v) => writeCache(SAVED_BACKLIGHT_KEY, v)
 });
 
