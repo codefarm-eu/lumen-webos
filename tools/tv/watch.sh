@@ -256,39 +256,54 @@ saver_overlay() {
 }
 # Lumen bar's screensaver pictures. They ship only in Lumen (app/public/wallpapers/default-N.jpg). A webOS 4 web app can't load another
 # app's files, so root copies them into the bar's own data/wallpapers/ (bar.js saverFind), with a "list" of their names. $1: the Lumen build
-# (one of ME) to copy from; empty means the first one installed. Only plain files are copied (cp -P, never through a link). A picture whose size
+# (one of ME) to copy from; empty means the first one installed. Only plain files are copied, never through a link. A picture whose size
 # changed is copied again, and one Lumen no longer has is removed. Quiet and quick when nothing changed. (A fresh bar with no copy yet shows
 # black with the clock.)
+# The bar's folder is writable by others on the C8, so a link can be put at data or data/wallpapers between any check and the next step.
+# All the work is therefore done inside data/wallpapers by relative names: each folder is entered with cd -P and must then be where it should
+# be (pwd -P), and the last one must be root's own, so nobody else can add a name in it. A link swapped in later can't move a folder already
+# entered, so root's copies, chmods and removals stay in it. A picture is copied to .new with cp -RP (a link or a fifo is copied as one, never
+# followed or read) and only a plain file is kept. Sizes are read with stat, which opens nothing.
 bar_pictures() {
   bpl=""
   for bpi in $1 $ME; do case " $ME " in *" $bpi "*) [ -d "$APPS/$bpi/wallpapers" ] && { bpl=$bpi; break; } ;; esac; done
-  [ -n "$bpl" ] && [ -d "$APPS/$BAR" ] && [ ! -L "$APPS/$BAR" ] || return 0
-  bpd="$APPS/$BAR/data/wallpapers"
-  [ -L "$APPS/$BAR/data" ] && rm -f "$APPS/$BAR/data"
-  [ -L "$bpd" ] && rm -f "$bpd"
-  mkdir -p "$bpd" 2>/dev/null && chmod 755 "$APPS/$BAR/data" "$bpd" 2>/dev/null || return 0
-  bpn=""; bpc=0
-  for bpf in "$APPS/$bpl"/wallpapers/default-[0-9].jpg "$APPS/$bpl"/wallpapers/default-[0-9][0-9].jpg; do
-    [ -f "$bpf" ] && [ ! -L "$bpf" ] || continue
-    bpb=${bpf##*/}
-    bpn="$bpn$bpb
+  [ -n "$bpl" ] && [ -d "$APPS/$BAR" ] || return 0
+  bpr="$(cd -P "$APPS" 2>/dev/null && pwd -P)/$BAR"
+  ( cd -P "$APPS/$BAR" 2>/dev/null && [ "$(pwd -P)" = "$bpr" ] || exit 0
+    for bpx in data wallpapers; do
+      [ -L "$bpx" ] && rm -f "$bpx"
+      [ "$bpx" = wallpapers ] && [ -d "$bpx" ] && [ "$(stat -c %u "$bpx" 2>/dev/null)" != "$(id -u)" ] && rm -rf "$bpx"
+      mkdir -p "$bpx" 2>/dev/null
+      bpw=$(pwd -P)
+      cd -P "$bpx" 2>/dev/null && [ "$(pwd -P)" = "$bpw/$bpx" ] || exit 0
+      chmod 755 . 2>/dev/null
+    done
+    [ "$(stat -c %u . 2>/dev/null)" = "$(id -u)" ] || exit 0
+    rm -rf .new .list
+    bpn=""; bpc=0
+    for bpf in "$APPS/$bpl"/wallpapers/default-[0-9].jpg "$APPS/$bpl"/wallpapers/default-[0-9][0-9].jpg; do
+      [ -f "$bpf" ] && [ ! -L "$bpf" ] || continue
+      bpb=${bpf##*/}
+      bpn="$bpn$bpb
 "
-    if [ ! -f "$bpd/$bpb" ] || [ -L "$bpd/$bpb" ] || [ "$(wc -c < "$bpf")" != "$(wc -c < "$bpd/$bpb")" ]; then
-      rm -f "$bpd/$bpb"; cp -P "$bpf" "$bpd/$bpb" 2>/dev/null && chmod 644 "$bpd/$bpb" && bpc=$((bpc + 1))
-    fi
-  done
-  for bpf in "$bpd"/*; do
-    bpb=${bpf##*/}
-    [ "$bpb" = list ] && continue
-    case "
+      if [ ! -f "$bpb" ] || [ -L "$bpb" ] || [ "$(stat -c %s "$bpf" 2>/dev/null)" != "$(stat -c %s "$bpb" 2>/dev/null)" ]; then
+        cp -RP "$bpf" .new 2>/dev/null
+        if [ -f .new ] && [ ! -L .new ] && chmod 644 .new && mv -f .new "$bpb"; then bpc=$((bpc + 1)); else rm -rf .new; fi
+      fi
+    done
+    for bpf in *; do
+      [ -e "$bpf" ] || [ -L "$bpf" ] || continue
+      [ "$bpf" = list ] && continue
+      case "
 $bpn" in *"
-$bpb
-"*) ;; *) rm -f "$bpf" ;; esac
-  done
-  if [ "$(cat "$bpd/list" 2>/dev/null)" != "$(printf '%s' "$bpn")" ]; then
-    bpt=$(mktemp "$bpd/list.XXXXXX") && printf '%s' "$bpn" > "$bpt" && chmod 644 "$bpt" && mv -f "$bpt" "$bpd/list"
-    echo "$(date +%T) Lumen bar: screensaver pictures from $bpl ($(printf '%s' "$bpn" | grep -c .) pictures, $bpc copied)" >> "$LOG"
-  fi
+$bpf
+"*) ;; *) rm -rf "$bpf" ;; esac
+    done
+    if [ "$(cat list 2>/dev/null)" != "$(printf '%s' "$bpn")" ]; then
+      printf '%s' "$bpn" > .list && chmod 644 .list && mv -f .list list
+      echo "$(date +%T) Lumen bar: screensaver pictures from $bpl ($(printf '%s' "$bpn" | grep -c .) pictures, $bpc copied)" >> "$LOG"
+    fi
+  )
   return 0
 }
 # prints "open", "closed", or "unknown" when the app manager did not answer (or answered no running list)
@@ -328,6 +343,17 @@ saver_backlight_restore() {
   [ "$c" -le 100 ] || { rm -f "$SAVER_BACKLIGHT"; return 0; }
   r=$(lsend luna://com.webos.settingsservice/setSystemSettings '{"category":"picture","settings":{"backlight":"'"$c"'"}}' </dev/null 2>&1 | tr -d ' \n')
   case "$r" in *'"returnValue":true'*) rm -f "$SAVER_BACKLIGHT"; echo "$(date +%T) screensaver backlight put back to $c" >> "$LOG" ;; esac
+}
+# A backlight Lumen bar's screensaver lowered, with the bar closed some other way (the TV switched off under it, the bar ended without its
+# own close): put back. Its "bar" flag goes too, as ambient_stale would drop it: a closed bar shows no screensaver. That flag is left behind
+# exactly when the bar was closed from outside, and kept, it held this off until LG's next screensaver, so the panel stayed dim meanwhile.
+# Lumen's own flag (or an older build's empty one) is left alone; an unknown running list changes nothing.
+saver_leftover() {
+  [ -f "$SAVER_BACKLIGHT" ] || return 0
+  [ ! -f "$AMBIENT_ON" ] || [ "$(ambient_owner)" = bar ] || return 0
+  [ "$(bar_state)" = closed ] || return 0
+  rm -f "$AMBIENT_ON"
+  saver_backlight_restore
 }
 # closes Lumen bar, and with it its screensaver (which can not clear its flag when closed from here); $1 says why, for the log
 bar_saver_close() {
@@ -964,8 +990,7 @@ while true; do
   ticks=$((ticks + 1))
   [ $((ticks % 5)) -eq 1 ] && { sync_home_key; inputhook_check "$now"; }
   [ $((ticks % 300)) -eq 2 ] && trim_log "$IH_LOG"
-  # a backlight Lumen bar's screensaver lowered, with the bar gone and no screensaver up (the bar was closed some other way): put back
-  if [ $((ticks % 5)) -eq 3 ] && [ -f "$SAVER_BACKLIGHT" ] && [ ! -f "$AMBIENT_ON" ] && [ "$(bar_state)" = closed ]; then saver_backlight_restore; fi
+  [ $((ticks % 5)) -eq 3 ] && saver_leftover
   [ $((ticks % 30)) -eq 15 ] && self_update "$now"
   if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
     # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real

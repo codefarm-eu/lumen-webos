@@ -504,7 +504,7 @@ test('the wake gap is measured over the sleep only: the loop marks the tick just
 
 
 /** runs bar_pictures in a fake apps folder: Lumen's wallpapers/ holds `lumen` (name -> contents), the bar's data/wallpapers/ `bar` */
-function barPictures ({lumen = {}, bar = null, links = [], arg = LUMEN} = {}) {
+function barPictures ({lumen = {}, bar = null, links = [], arg = LUMEN, hook = ''} = {}) {
 	const apps = mkdtempSync(join(tmpdir(), 'watch-pics-'));
 	const lw = join(apps, LUMEN, 'wallpapers');
 	mkdirSync(lw, {recursive: true});
@@ -514,7 +514,7 @@ function barPictures ({lumen = {}, bar = null, links = [], arg = LUMEN} = {}) {
 	const bw = join(apps, 'com.ovsteenb.lumen.bar', 'data', 'wallpapers');
 	if (bar) { mkdirSync(bw, {recursive: true}); Object.entries(bar).forEach(([n, c]) => writeFileSync(join(bw, n), c)); }
 	const log = join(apps, 'log');
-	execFileSync('sh', ['-c', `WATCH_SH_LIB=1 LOG='${log}' . '${SCRIPT}'; APPS='${apps}'; bar_pictures '${arg}'`]);
+	execFileSync('sh', ['-c', `WATCH_SH_LIB=1 LOG='${log}' . '${SCRIPT}'; APPS='${apps}'\n${hook}\nbar_pictures '${arg}'`]);
 	const ls = execFileSync('sh', ['-c', `ls '${bw}' 2>/dev/null; true`], {encoding: 'utf8'}).trim().split('\n').filter(Boolean);
 	const read = (f) => { try { return readFileSync(f, 'utf8'); } catch { return null; } };
 	return {ls, list: read(join(bw, 'list')), file: (n) => read(join(bw, n)), log: read(log) || '', bw};
@@ -545,6 +545,75 @@ test('bar pictures: a link in Lumen\'s folder is never followed, and only a Lume
 	// an id that is not one of ME falls back to the first Lumen installed
 	const other = barPictures({lumen: {'default-0.jpg': 'a'}, arg: '../../etc'});
 	assert.deepEqual(other.ls.sort(), ['default-0.jpg', 'list']);
+});
+
+const modeOf = (p) => execFileSync('sh', ['-c', `stat -c %a '${p}'`], {encoding: 'utf8'}).trim();
+
+test('bar pictures: a link swapped in at data or data/wallpapers after the check is never written through (no copy, chmod or removal there)', () => {
+	for (const at of ['wallpapers', 'data']) {
+		const victim = mkdtempSync(join(tmpdir(), 'watch-victim-'));
+		mkdirSync(join(victim, 'wallpapers'));
+		for (const d of [victim, join(victim, 'wallpapers')]) { writeFileSync(join(d, 'keep'), 'keep'); chmodSync(join(d, 'keep'), 0o600); chmodSync(d, 0o700); }
+		// mkdir as root runs it: the moment after it, a link takes the name (the bar's folder is writable by others on the C8)
+		const to = at === 'data' ? victim : join(victim, 'wallpapers');
+		const hook = `mkdir () { command mkdir "$@"; for a; do case "$a" in ${at}|*/${at}) rm -rf "$a"; ln -s '${to}' "$a" ;; esac; done; }`;
+		barPictures({lumen: {'default-0.jpg': 'a'}, hook});
+		for (const d of [victim, join(victim, 'wallpapers')]) {
+			assert.equal(readFileSync(join(d, 'keep'), 'utf8'), 'keep', `${at}: ${d}/keep removed`);
+			assert.equal(modeOf(join(d, 'keep')), '600', at);
+			assert.equal(modeOf(d), '700', `${at}: ${d} chmodded`);
+			assert.throws(() => readFileSync(join(d, 'default-0.jpg')), undefined, `${at}: picture copied into ${d}`);
+		}
+	}
+});
+
+test('bar pictures: a picture swapped for a link while it is copied is not kept, and its target is never chmodded', () => {
+	const secret = join(mkdtempSync(join(tmpdir(), 'watch-secret-')), 's');
+	writeFileSync(secret, 'secret');
+	chmodSync(secret, 0o600);
+	// cp -P of a link swapped in after the -L check makes a link at the destination
+	const hook = `cp () { command cp "$@"; eval "l=\\\${$#}"; case "$*" in *default-0.jpg*) rm -rf "$l"; ln -s '${secret}' "$l" ;; esac; }`;
+	const r = barPictures({lumen: {'default-0.jpg': 'a', 'default-1.jpg': 'b'}, hook});
+	assert.equal(modeOf(secret), '600');
+	assert.equal(execFileSync('sh', ['-c', `[ -L '${r.bw}/default-0.jpg' ] && echo link || echo none`], {encoding: 'utf8'}).trim(), 'none');
+	assert.equal(r.file('default-1.jpg'), 'b');
+	assert.ok(!r.ls.includes('.new'));
+});
+
+/** saver_leftover with the screensaver flag holding `flag` (null: none), a saved backlight `saved` (null: none) and Lumen bar `bar` */
+function leftover ({flag = null, saved = '80', bar = 'closed'} = {}) {
+	const dir = mkdtempSync(join(tmpdir(), 'leftover-'));
+	const on = join(dir, 'ambient-on'), sb = join(dir, 'saver-backlight'), calls = join(dir, 'calls');
+	if (flag !== null) writeFileSync(on, flag ? flag + '\n' : '');
+	if (saved !== null) writeFileSync(sb, saved + '\n');
+	const sh = [`WATCH_SH_LIB=1 . '${SCRIPT}'`, `AMBIENT_ON='${on}'; SAVER_BACKLIGHT='${sb}'; LOG='${join(dir, 'log')}'`,
+		`bar_state () { echo ${bar}; }`, `lsend () { echo "$*" >> '${calls}'; echo '{"returnValue":true}'; }`, 'saver_leftover'].join('\n');
+	execFileSync('sh', ['-c', sh]);
+	const has = (f) => { try { readFileSync(f); return true; } catch { return false; } };
+	let sent = '';
+	try { sent = readFileSync(calls, 'utf8'); } catch { /* none */ }
+	return {flag: has(on), saved: has(sb), sent};
+}
+
+test('a backlight Lumen bar\'s screensaver lowered is put back once the bar is closed, also when its "bar" flag was left behind (the TV switched off under it)', () => {
+	const stale = leftover({flag: 'bar'});
+	assert.equal(stale.flag, false);
+	assert.equal(stale.saved, false);
+	assert.match(stale.sent, /setSystemSettings .*"backlight":"80"/);
+	const none = leftover();
+	assert.equal(none.saved, false);
+	assert.match(none.sent, /"backlight":"80"/);
+});
+
+test('the backlight is left as it is while the bar is open or unknown, or Lumen\'s own screensaver holds the flag', () => {
+	for (const c of [{flag: 'bar', bar: 'open'}, {flag: 'bar', bar: 'unknown'}, {bar: 'open'}, {flag: 'lumen'}, {flag: ''}]) {
+		const r = leftover(c);
+		assert.equal(r.saved, true, JSON.stringify(c));
+		assert.equal(r.flag, c.flag !== undefined, JSON.stringify(c));
+		assert.equal(r.sent, '', JSON.stringify(c));
+	}
+	assert.equal(leftover({flag: 'bar', saved: null}).flag, true, 'nothing saved: nothing to do, not even a running list read');
+	assert.match(readFileSync(SCRIPT, 'utf8'), /\[ \$\(\(ticks % 5\)\) -eq 3 \] && saver_leftover\n/);
 });
 
 test('bar pictures are copied before the bar\'s screensaver opens, and once at the watcher\'s start', () => {
