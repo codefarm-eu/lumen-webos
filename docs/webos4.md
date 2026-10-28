@@ -64,7 +64,9 @@ bundled logos still win. Everything is cached by path in `launcher-icon-cache-v1
 
 Tested off the TV only: Chromium 53 from `file://` with `--allow-file-access-from-files`, a fake Luna listing 25 apps with webOS 4 paths
 (`/media/cryptofs/apps/usr/palm/applications/<id>/largeIcon.png`, `/usr/palm/applications/<id>/...`) and real files at those paths.
-**Whether a webOS 4 app may read other apps' files as `file://` was not verified.** If it may not, the root read covers it.
+Seen on the C8 (28 Oct 2026): **a webOS 4 web app may not load another app's files as `file://`.** From Lumen, an `<img>` of Lumen bar's
+`icon.png` and an XHR of its `appinfo.json` both failed, while Lumen's own files loaded; from Lumen bar, every one of Lumen's
+`wallpapers/default-N.jpg` failed. The root read covers the icons. Lumen bar's screensaver has its own copy of the pictures (below).
 
 ## Settings > Apps grid
 
@@ -171,6 +173,11 @@ The same settings are used by `com.sammysco.avoverlay`.
   icon paths or from Lumen's bundled icons. It is written again only when a signature in `data/sig` changes, so an update of Lumen bar,
   which empties its folder, is refilled at Lumen's next start. Lumen bar also reads `/var/lib/homehook/recent` and shows up to 4 recent
   apps that are not in the dock, after a divider.
+- **Screensaver** (`{"saver":true}`, the TV's screensaver over another app): Lumen's bundled pictures and a clock, opaque, over the app.
+  `tools/build_bar.sh` puts a copy of `app/public/wallpapers/default-N.jpg` (about 2.4 MB) in the bar's own `wallpapers/`, because the bar
+  can't load Lumen's. In 1.0.9036 it tried only Lumen's folder, so it was black with only the clock (`/tmp/lumen-bar.log`: "saver: open,
+  0 pictures", 28 Oct 2026). Lumen's folder is still tried when the bar has no copy. The picture time and brightness come from
+  `/var/lib/homehook/lumen-config.json`, read as root when the plain read is refused.
 - **Look:** tinted glass. A dark translucent fill with a light rim and a shadow, and no blur: an overlay cannot see the video, so the
   blurred-wallpaper glass cannot be used.
 - **No preload:** the bar is about 10 KB with no framework. It is drawn about 0.4 s after the launch from cold, so it is not preloaded.
