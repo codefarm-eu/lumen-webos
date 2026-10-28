@@ -3,7 +3,7 @@
 
 import {LUNA} from '../config/constants';
 import {isWebOS, lunaCall} from './luna';
-import {IMMICH_BASE, IMMICH_KEY, resolvedPath, safeAppPath, shaCheck} from './checks';
+import {IMMICH_BASE, IMMICH_KEY, resolvedPath, safeAppPath, shaCheck, syncBarResult, syncBarShell} from './checks';
 
 /** The TV-side folder shared with tools/tv/watch.sh (flag files, the log, the settings backup). */
 export const HOMEHOOK = '/var/lib/homehook';
@@ -372,29 +372,26 @@ export interface BarApp { id: string; title: string; color?: string; plain?: boo
 export interface BarStyle { size: number; height: number; gap: number; perRow: number; scale: number }
 /** Fills Lumen bar's data/ folder: copies each app's icon file to data/icons/<id>.<ext> and writes data/bar.json (the dock, Lumen's recent
  *  list, the apps, Lumen's id). Skipped when data/sig already holds `sig` (an app update wipes data/, and then it is written again).
- *  data/wallpapers/ is left alone: it holds the screensaver pictures, which tools/tv/watch.sh bar_pictures copies from Lumen. */
-export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing'> {
+ *  data/wallpapers/ is left alone: it holds the screensaver pictures, which tools/tv/watch.sh bar_pictures copies from Lumen.
+ *  The bar's folder is writable by others, so the write is syncBarShell: relative names after cd -P, a temp file then mv, and a data/
+ *  or icons/ that is not root's own is refused rather than removed. */
+export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused'> {
 	if (!APP_DIR.test(appDir) || !APP_ID.test(lumenId) || !/^[a-z0-9]+$/.test(sig)) return Promise.reject(new Error('refused'));
 	const dir = barDir(appDir);
 	const out: Record<string, {title: string; color?: string; plain?: boolean; icon?: string}> = {};
-	const copies: string[] = [];
+	const icons: {src: string; name: string}[] = [];
 	apps.forEach((a) => {
 		if (!APP_ID.test(a.id)) return;
 		const entry: {title: string; color?: string; plain?: boolean; icon?: string} = {title: a.title, color: a.color, plain: a.plain};
 		if (a.file && safeAppPath(a.file)) {
 			const ext = (/\.(png|jpe?g|svg|webp|gif)$/i.exec(a.file) || ['', 'png'])[1].toLowerCase();
 			entry.icon = `data/icons/${a.id}.${ext}?${sig}`;
-			// the file the path really names (links resolved, still in an app folder), copied as a plain file; -P never follows a link
-			copies.push(`if ${resolvedIcon(a.file)}; then cp -fP "$r" ${dir}/data/icons/${a.id}.${ext} 2>/dev/null; fi`);
+			icons.push({src: a.file, name: `${a.id}.${ext}`});
 		}
 		out[a.id] = entry;
 	});
 	const json = JSON.stringify({v: 1, lumen: lumenId, dock: dock.filter((x) => APP_ID.test(x)), recent: recent.filter((x) => APP_ID.test(x)), apps: out, style});
-	const b64 = toBase64(json);
-	return run(`[ -d ${dir} ] || { echo missing; exit 0; }; [ "$(cat ${dir}/data/sig 2>/dev/null)" = ${sig} ] && { echo same; exit 0; }; `
-		+ `[ -L ${dir}/data ] && rm -f ${dir}/data; rm -rf ${dir}/data/icons ${dir}/data/bar.json ${dir}/data/sig && mkdir -p ${dir}/data/icons; ${copies.join('; ') || 'true'}; `
-		+ `echo ${b64} | base64 -d > ${dir}/data/bar.json && echo ${sig} > ${dir}/data/sig && echo written`, 15000)
-		.then((r) => (r.indexOf('missing') !== -1 ? 'missing' : r.indexOf('same') !== -1 ? 'same' : 'written'));
+	return run(syncBarShell(dir, sig, toBase64(json), icons), 15000).then(syncBarResult);
 }
 
 /** Writes text to one of FILES. The text travels as base64, so nothing in it is ever read by the shell. */

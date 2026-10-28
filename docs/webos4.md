@@ -188,7 +188,11 @@ The same settings are used by `com.sammysco.avoverlay`.
 - **Data:** an app cannot read another app's storage, so Lumen fills `data/` in Lumen bar's folder, as root. `data/bar.json` holds the dock
   (the glass bar's apps), Lumen's recent list, every app's title and colour, and Lumen's id. `data/icons/<id>.png` are copied from the TV
   icon paths or from Lumen's bundled icons. It is written again only when a signature in `data/sig` changes, so an update of Lumen bar,
-  which empties its folder, is refilled at Lumen's next start. Lumen bar also reads `/var/lib/homehook/recent` and shows up to 4 recent
+  which empties its folder, is refilled at Lumen's next start. The bar's folder is writable by others, so this write does not use a full
+  path (a redirect or a recursive remove would follow a link). It enters the bar folder and then `data/` with `cd -P`, and each must be
+  that directory (`pwd -P`). A `data/` or `data/icons/` that is not root's own is left as it is and nothing is written. A link at `data`,
+  `data/icons`, `bar.json` or `sig` is removed or replaced, not written through, and `bar.json` and `sig` are written to a temp file there
+  and moved into place. `data/wallpapers/` is not touched. Lumen bar also reads `/var/lib/homehook/recent` and shows up to 4 recent
   apps that are not in the dock, after a divider.
 - **Screensaver** (`{"saver":true}`, the TV's screensaver over another app): Lumen's bundled pictures and a clock, opaque, over the app.
   The pictures ship only in Lumen. The bar can't load Lumen's folder (in 1.0.9036 it tried, and was black with only the clock: "saver:
