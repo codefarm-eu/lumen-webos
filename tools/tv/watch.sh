@@ -544,41 +544,53 @@ wake_open() {
 # spent in the pass's own long waits (owned: an Input Hook re-injection, a self-refresh, the bar's picture copy). $5 and $6, when both are
 # set, are a monotonic clock (mono_s) at $1 and at $3: it advances while this process runs and stops across suspend, so a slow Luna call
 # (the app manager busy with a launch, the bar's screensaver launch, a hub at its 10 s cutoff) is not a wake, and a suspend inside one is,
-# however short. The sleep counts in full either way. Without that clock, the pass's own work counts only past WAKE_WORK_MAX, which misses a
-# shorter suspend that happened during the work (the power state does not see it either: the process was frozen, so it never sampled the off
-# state, and a return from Screen Saver is not a wake).
-WAKE_WORK_MAX=120   # fallback only, when mono_s can't be read. Each Luna call is cut off at 10 s; a hung pass can still pass this
+# however short. The sleep counts in full either way. The pass's own work counts on its own only past WAKE_WORK_MAX: an awake pass can not
+# take that long (each Luna call is cut off at 10 s), so past it this process was held for most of the pass, whatever the ticks say. The
+# ticks go on when only this process is held and not the kernel (a standby that freezes processes, or no readable /proc/stat), and the
+# power state does not see such a pass either: the process never sampled the off state, and a return from Screen Saver is not a wake.
+# Below WAKE_WORK_MAX, and without the tick clock, a suspend during the work is missed.
+WAKE_WORK_MAX=120   # with no timeout applet a hung Luna call can still take a pass past this
 wake_gap() {
   wg=$(($3 - $2))
   [ "$wg" -lt 0 ] && wg=0
   ww=$(($2 - $1 - $4))
   [ "$ww" -lt 0 ] && ww=0
+  # what the wall clock alone says: the sleep, and the work too once it is past what an awake pass can take
+  [ "$ww" -gt "$WAKE_WORK_MAX" ] && wg=$((wg + ww))
   if [ -n "$5" ] && [ -n "$6" ] && [ "$6" -ge "$5" ] 2>/dev/null; then
     # wall clock ahead of the monotonic clock: the CPU was not running for the difference (suspend, or the clock stepped)
     ws=$(($3 - $1 - ($6 - $5)))
-    [ "$ws" -lt 0 ] && ws=0
-    wex=$((ws - wg))
-    [ "$wex" -gt 0 ] && wg=$((wg + wex))
-  elif [ "$ww" -gt "$WAKE_WORK_MAX" ]; then
-    wg=$((wg + ww))
+    [ "$ws" -gt "$wg" ] && wg=$ws
   fi
   echo "$wg"
 }
-# seconds this CPU has been running, from /proc/stat (user+nice+system+idle+iowait+irq+softirq+steal, per core, at USER_HZ 100).
-# Those ticks stop across suspend; a slow call advances them with the wall clock. Empty when the file can't be read. guest time is left
-# out (it is already inside user). (verify) the C8's ticks pause while the TV is off.
+# seconds this CPU has been running, from /proc/stat: the first core's ticks (user+nice+system+idle+iowait+irq+softirq+steal at USER_HZ
+# 100; guest is already inside user), or the one "cpu" line of a kernel without per-core lines. Those ticks stop across suspend; a slow call
+# advances them with the wall clock. Empty when the file can't be read. One core, not the average over the cores listed: a core the kernel
+# switches off or on between two passes moves that average on its own, and the first core is never switched off. Each count is split as
+# text into whole seconds and the hundredths after them, and the two are added up apart, so no count itself goes through the shell's
+# arithmetic: a busybox built with 32-bit arithmetic holds a core's idle ticks for 248 days, and the sum over four cores for 62.
+# (verify) the C8's ticks pause while the TV is off (the wake line in the log shows wall and ticks).
 mono_s() {
-  ms_n=0; ms_s=""
+  ms_all=""; ms_one=""
   while IFS=' ' read -r ms_name ms_a ms_b ms_c ms_d ms_e ms_f ms_g ms_h _; do
     case "$ms_name" in
-      cpu) ms_s=$((ms_a + ms_b + ms_c + ms_d + ms_e + ms_f + ms_g + ms_h)) ;;
-      cpu[0-9]*) ms_n=$((ms_n + 1)) ;;
+      cpu) ms_all="$ms_a $ms_b $ms_c $ms_d $ms_e $ms_f $ms_g $ms_h" ;;
+      cpu0) ms_one="$ms_a $ms_b $ms_c $ms_d $ms_e $ms_f $ms_g $ms_h"; break ;;
+      cpu[0-9]*) ;;
       *) break ;;
     esac
-  done < /proc/stat
-  [ -n "$ms_s" ] || return 1
-  [ "$ms_n" -gt 0 ] 2>/dev/null || ms_n=1
-  echo $((ms_s / ms_n / 100))
+  done < "${HOMEHOOK_PROC_STAT:-/proc/stat}"
+  [ -n "$ms_one" ] || ms_one=$ms_all
+  [ -n "$ms_one" ] || return 1
+  ms_s=0; ms_r=0
+  for ms_v in $ms_one; do
+    case "$ms_v" in ''|*[!0-9]*) return 1 ;; esac
+    if [ ${#ms_v} -gt 2 ]; then ms_s=$((ms_s + ${ms_v%??})); ms_v=${ms_v#"${ms_v%??}"}; fi
+    ms_v=${ms_v#0}
+    ms_r=$((ms_r + ${ms_v:-0}))
+  done
+  echo $((ms_s + ms_r / 100))
 }
 # 1 when power returning to Active is a wake: the off state was actually seen, and it was not the screensaver ending.
 # Active with the previous sample still Active (or empty, or Screen Saver) is not one. A suspend that froze this process is wake_gap's job:
@@ -589,10 +601,11 @@ wake_edge() {
 # sets $use to 1 when this pass may compare the wall clock to mono_s. $1 wall then, $2 wall now, $3 mono then, $4 mono now.
 # The tick clock is trusted once a pass shows the two moving together (a stuck /proc/stat must not look like a suspend). Before that, a pass
 # whose ticks did move, but far less than the wall clock, is still a suspend: a slow Luna call moves both.
+# Leaves the pass's wall seconds in $wd and its tick seconds in $md (empty without the clock), for the wake line in the log.
 wake_use_mono() {
-  use=0
+  use=0; wd=$(($2 - $1)); md=""
   [ -n "$3" ] && [ -n "$4" ] && [ "$4" -ge "$3" ] 2>/dev/null || return 0
-  wd=$(($2 - $1)); md=$(($4 - $3))
+  md=$(($4 - $3))
   if [ "$wd" -ge 1 ] && [ "$md" -ge 1 ] && [ $((wd - md)) -ge -2 ] && [ $((wd - md)) -le 2 ]; then mono_ok=1; fi
   if [ "$mono_ok" -eq 1 ] || { [ "$md" -ge 1 ] && [ $((wd - md)) -gt 5 ]; }; then use=1; fi
 }
@@ -992,7 +1005,8 @@ mono_ok=0
 
 while true; do
   # wake: the power state was seen leaving Active for standby or off (not the screensaver) and is Active again, or the CPU's ticks
-  # stopped while the wall clock moved (suspended), including inside a Luna call. The sleep alone missing its second counts too.
+  # stopped while the wall clock moved (suspended), including inside a Luna call. The sleep alone missing its second counts too, and
+  # so does a pass's own work past what an awake pass can take (wake_gap).
   now=$(date +%s)
   mono=$(mono_s 2>/dev/null)
   wake_use_mono "$tick" "$now" "$mtick" "$mono"
@@ -1004,11 +1018,15 @@ while true; do
   woke=0
   [ "$gap" -gt 5 ] && woke=1
   [ "$(wake_edge "$pwlast" "$pwstate")" = 1 ] && woke=1
+  pwfrom=$pwlast
   [ -n "$pwstate" ] && pwlast=$pwstate
   if [ "$woke" -eq 1 ]; then
     wakeuntil=$((now + WAKE_SECS)); last=0
     echo "$wakeuntil" > "$WAKEFILE"
-    echo "$(date +%T) wake (gap ${gap}s, power $pwstate)" >> "$LOG"
+    # power: the sample before this one, then this one (an off state seen there means this process ran while the TV was off). wall and
+    # ticks: the pass's wall seconds and the CPU's own. Ticks far behind the wall means they paused while the TV was off (the tick clock
+    # saw the suspend); ticks keeping up with a long wall means only the sleep or the work length saw it
+    echo "$(date +%T) wake (gap ${gap}s, power ${pwfrom:-none} > ${pwstate:-none}, wall ${wd}s, ticks ${md:-none})" >> "$LOG"
     # before the foreground query: right after a wake each query can take seconds
     [ ! -f "$NOWAKE_FLAG" ] && [ "$pwstate" = Active ] && wake_open ""
   fi

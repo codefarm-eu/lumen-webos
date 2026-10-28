@@ -63,10 +63,14 @@ Update Lumen in the Homebrew Channel first (dev build from commit 8e2bd15 or lat
       (e.g. start an HDR film) before dismissing it. The new mode's backlight is left alone; back in the first mode, its old backlight returns
       within a few seconds (`homehook.log`: `waits for picture mode ...`, then `put back to <n>`).
 - [ ] Lumen bar's log is now `/tmp/homehook.run/lumen-bar.log` (verify it is written: "saver: open ..." when the overlay screensaver opens).
-- [ ] Wake gap (verify): switch the TV off with the remote and on again after a minute: Lumen opens (`homehook.log`: `wake (...)`). Do that
-      again while a big app (YouTube, Moonfin) is still launching, and while Lumen bar's screensaver is opening over a paused film: Lumen opens
-      on the way back both times. Then let those two finish without switching the TV off: Lumen never opens over the app or the film, and no
-      `wake (gap ...)` line appears for either.
+- [ ] Wake gap (verify): switch the TV off with the remote and on again after a minute: Lumen opens (`homehook.log`: `wake (gap 61s, power
+      Active > Active, wall 62s, ticks 1)`). `ticks` far below `wall` in that line means the CPU's ticks paused while the TV was off, which is
+      what the new check relies on; `ticks` keeping up with `wall` means they do not pause on this TV (only the sleep and the 120 s rule saw
+      the wake), and the check needs another clock. `power Active Standby > Active` means the watcher kept running while the TV was off and
+      saw the off state itself. Do that again while a big app (YouTube, Moonfin) is still launching, and while Lumen bar's screensaver is
+      opening over a paused film: Lumen opens on the way back both times. Then let those two finish without switching the TV off: Lumen never
+      opens over the app or the film, and no `wake (gap ...)` line appears for either. Also with Quick Start+ on and off, if the C8 has that
+      setting: one of the two may keep the TV's processes running while it is off.
 - [ ] Screensaver backlight across picture modes (verify): with a value still waiting for another mode (`homehook.log`: `waits for picture
       mode X`), Lumen bar's screensaver in the current mode leaves the backlight as it is (the pictures are darkened instead), and after it
       the backlight is where it was.

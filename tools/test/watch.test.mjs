@@ -602,6 +602,12 @@ test('the tick clock tells a slow Luna call from a suspend inside one; the power
 	// without the clock, work under WAKE_WORK_MAX is not a wake (a hung hub, or a suspend the clock could not see)
 	assert.equal(run('wake_gap 1000 1060 1061 0'), '1');
 	assert.equal(run('wake_gap 1000 1900 1901 0'), '901');
+	// work past WAKE_WORK_MAX is a wake with the tick clock too: an awake pass can not take that long, so this process was held while
+	// the kernel (and its ticks) went on. A standby that only freezes processes looks like that, and so does a /proc/stat that never pauses
+	assert.equal(run('wake_gap 1000 1900 1901 0 5000 5901'), '901');
+	assert.equal(run('wake_gap 1000 1120 1121 0 5000 5121'), '1');       // 120 s of slow calls, ticks keeping up: not a wake
+	assert.equal(run('wake_gap 1000 1900 1901 800 5000 5901'), '1');     // 800 of the 900 s owned (a self-refresh wait): not a wake
+	assert.equal(run('wake_gap 1000 1900 1901 0 5000 5100'), '901');     // both the ticks (801 s) and the pass's wall clock (901 s) say so: the larger, once
 	// clocks that move together are trusted; a stuck clock (monotonic not moving) is not, until one pass agrees
 	assert.equal(run('mono_ok=0; wake_use_mono 1000 1040 5000 5000; echo $use $mono_ok'), '0 0');
 	assert.equal(run('mono_ok=0; wake_use_mono 1000 1061 5000 5001; echo $use'), '1');
@@ -614,6 +620,13 @@ if [ "$use" = 1 ]; then gap=$(wake_gap "$tick" "$slept" "$now" 0 "$mtick" "$mono
 	assert.equal(run(pass(61, 61)), 'no');
 	assert.equal(run('mono_ok=0; wake_use_mono 1000 1041 5000 5041; echo $use $mono_ok'), '1 1');
 	assert.equal(run('mono_ok=1; wake_use_mono 1000 1060 5000 5000; echo $use'), '1');
+	// the pass's wall and tick seconds are left for the wake line in the log (ticks empty without the clock), so the log shows which clock saw the wake
+	assert.equal(run('mono_ok=1; wake_use_mono 1000 1060 5000 5002; echo "$wd $md"'), '60 2');
+	assert.equal(run('mono_ok=0; wake_use_mono 1000 1060 "" ""; echo "$use $wd [$md]"'), '0 60 []');
+	const src = readFileSync(SCRIPT, 'utf8');
+	assert.match(src, /wake \(gap \$\{gap\}s, power \$\{pwfrom:-none\} > \$\{pwstate:-none\}, wall \$\{wd\}s, ticks \$\{md:-none\}\)/);
+	// the power state before this sample is kept for that line before the sample replaces it
+	assert.match(src, /pwfrom=\$pwlast\n  \[ -n "\$pwstate" \] && pwlast=\$pwstate/);
 	// power: only a seen transition into Active, never from the screensaver or from a sample that stayed Active
 	for (const [prev, now, want] of [['Suspend', 'Active', '1'], ['Active Standby', 'Active', '1'], ['Screen Off', 'Active', '1'],
 		['Screen Saver', 'Active', '0'], ['Active', 'Active', '0'], ['', 'Active', '0'], ['Suspend', 'Suspend', '0']]) {
@@ -626,6 +639,37 @@ test('mono_s advances while this CPU runs (those ticks are what a suspend would 
 	const [a, b] = out.split(' ').map(Number);
 	assert.ok(a > 0, out);
 	assert.ok(b - a >= 1 && b - a <= 3, out);
+});
+
+test('mono_s: the first core\'s ticks, whole seconds, with counts past 32 bits never put through shell arithmetic; one "cpu" line will do', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'procstat-'));
+	const mono = (text) => {
+		writeFileSync(join(dir, 'stat'), text);
+		return execFileSync('sh', ['-c', `WATCH_SH_LIB=1 HOMEHOOK_PROC_STAT='${join(dir, 'stat')}' . '${SCRIPT}'\nmono_s; echo "rc=$?"`], {encoding: 'utf8'}).trim();
+	};
+	// a core that has run 8 months: its idle count is past 2^31, the four cores' total past 2^32. Both are what a busybox with 32-bit
+	// arithmetic (strtoul: clamped to -1) would get wrong if a count or a sum went through $(( ))
+	const idle = 2n ** 31n + 1234567n, total = 2n ** 32n + 99n;
+	const seconds = Number((idle + 7n + 1200n + 5n + 99n + 1n + 0n + 2n) / 100n);
+	assert.equal(mono(`cpu  ${total} 7 0 0 0 0 0 0 0 0\ncpu0 ${idle} 7 1200 5 99 1 0 2 0 0\ncpu1 ${total - idle} 0 0 0 0 0 0 0 0 0\nintr 1 2 3\nctxt 4\n`), `${seconds}\nrc=0`);
+	// hundredths are added up on their own, and small counts too: 8 x 5 ticks is 0 s, 8 x 15 is 1 s, and a count of exactly 100 is 1 s
+	assert.equal(mono('cpu  5 5 5 5 5 5 5 5\ncpu0 5 5 5 5 5 5 5 5\nintr 0\n'), '0\nrc=0');
+	assert.equal(mono('cpu  15 15 15 15 15 15 15 15\ncpu0 15 15 15 15 15 15 15 15\nintr 0\n'), '1\nrc=0');
+	assert.equal(mono('cpu  100 0 0 0 0 0 0 0\ncpu0 100 0 0 0 0 0 0 0\nintr 0\n'), '1\nrc=0');
+	assert.equal(mono('cpu  105 7 0 0 0 0 0 0\ncpu0 105 7 0 0 0 0 0 0\nintr 0\n'), '1\nrc=0');
+	// the first core alone: a second core switched off by the kernel (its line gone, the total standing still) does not move the clock
+	const four = 'cpu0 100000 0 0 0 0 0 0 0\ncpu1 100000 0 0 0 0 0 0 0\ncpu2 100000 0 0 0 0 0 0 0\ncpu3 100000 0 0 0 0 0 0 0\nintr 0\n';
+	assert.equal(mono('cpu  400000 0 0 0 0 0 0 0\n' + four), '1000\nrc=0');
+	assert.equal(mono('cpu  400100 0 0 0 0 0 0 0\ncpu0 100100 0 0 0 0 0 0 0\nintr 0\n'), '1001\nrc=0');
+	// a kernel without per-core lines: the one "cpu" line
+	assert.equal(mono('cpu  123456 0 99 5 0 0 0 0 0 0\nintr 0\n'), '1235\nrc=0');
+	// a line the kernel does not write like that, or no file: nothing, so the pass falls back to the wall clock rules
+	assert.equal(mono('cpu  1 x 1 1 1 1 1 1\ncpu0 1 x 1 1 1 1 1 1\n'), 'rc=1');
+	assert.equal(mono(''), 'rc=1');
+	assert.equal(execFileSync('sh', ['-c', `WATCH_SH_LIB=1 HOMEHOOK_PROC_STAT='${join(dir, 'none')}' . '${SCRIPT}'\nmono_s 2>/dev/null; echo "rc=$?"`], {encoding: 'utf8'}).trim(), 'rc=1');
+	// no count from the file reaches $(( )) whole: the source splits each one as text first
+	const fn = readFileSync(SCRIPT, 'utf8').match(/\nmono_s\(\) \{\n([\s\S]*?)\n\}\n/)[1];
+	assert.doesNotMatch(fn, /\$\(\([^)]*ms_[a-h]\b/);
 });
 
 /** runs the main loop's wake check for one pass: `work` seconds of Luna calls and `sleep` seconds asleep (the clock is faked).
@@ -645,7 +689,10 @@ test('a pass slowed by its Luna calls (8 s: the app manager busy with a launch) 
 	// the same 60s of work with the tick clock paused is a wake; with it keeping up, it is not
 	assert.equal(wakePass(60, 1, {mono0: 5000, mono1: 5001}), '1');
 	assert.equal(wakePass(60, 1, {mono0: 5000, mono1: 5061}), '0');
-	assert.equal(wakePass(900, 1, {mono0: 5000, mono1: 5901}), '0');
+	// 15 minutes of work with the ticks keeping up: no awake pass takes that long (every call is cut off at 10 s), so this process was
+	// held while the kernel ran. A wake, as without the clock
+	assert.equal(wakePass(900, 1, {mono0: 5000, mono1: 5901}), '1');
+	assert.equal(wakePass(119, 1, {mono0: 5000, mono1: 5120}), '0');
 });
 
 
