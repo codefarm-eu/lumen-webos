@@ -37,10 +37,15 @@ export function backlightSaver (io: BacklightIo) {
 				if (before === null || before <= level || !stillWanted()) return undefined;
 				const saved = io.load();
 				const want = saved === null ? null : modeOf(saved);
-				const ready = saved === null ? mode().then((m) => { io.save({level: before, mode: m}); return true; })
+				// the mode read is another wait. stillWanted is asked again after it, and nothing is saved unless the lowering still happens:
+				// a screensaver that ended during the read must not leave a value behind or drop the panel.
+				let saveNow = false;
+				let modeNow: string | null = null;
+				const ready = saved === null ? mode().then((m) => { saveNow = true; modeNow = m; return true; })
 					: want ? mode().then((m) => m === want) : Promise.resolve(true);
 				return ready.then((ok) => {
-					if (!ok) return undefined;
+					if (!ok || !stillWanted()) return undefined;
+					if (saveNow) io.save({level: before, mode: modeNow});
 					dimmedHere = true;
 					return io.set(level);
 				});

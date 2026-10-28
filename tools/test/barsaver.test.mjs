@@ -3,7 +3,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
+import {chmodSync, mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import vm from 'node:vm';
@@ -289,4 +289,15 @@ test('backlight as root: a value still saved for another picture mode leaves thi
 	r = runRoot(lower, dir, {backlight: 80, mode: 'vivid'});
 	assert.equal(r.tv, '30 vivid');
 	assert.equal(r.saved, '70');
+	// nothing readable in the file (gone between the check and the read, or empty): this mode is saved, then lowered
+	writeFileSync(join(dir, 'saved'), '\n');
+	r = runRoot(lower, dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.tv, '30 cinema');
+	assert.equal(r.saved, '80 cinema');
+	// the file can't be read or replaced: not lowered, so a mode is never dimmed with nothing that can be put back
+	writeFileSync(join(dir, 'saved'), '100 hdrCinema\n');
+	chmodSync(join(dir, 'saved'), 0o000);
+	r = runRoot(lower, dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.tv, '80 cinema');
+	chmodSync(join(dir, 'saved'), 0o644);
 });

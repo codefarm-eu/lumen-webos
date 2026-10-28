@@ -3,7 +3,8 @@
 #  - Only with /var/lib/homehook/home-takeover present (off by default: LG Input Hook owns the Home button on this TV): when LG's own Home has just
 #    come up, opens the launcher instead (polling, because luna-send buffers a subscription's output when it is piped). The launcher's own
 #    "LG Home" button touches /tmp/allow_lg_home first, so LG Home can still be opened on purpose (it then stays until you leave it).
-#  - After the TV wakes (power state back to Active, or a gap in this loop's once-a-second ticks, which means it was suspended) and after a boot
+#  - After the TV wakes (power state seen leaving Active for standby or off, not the screensaver, or the CPU's ticks stopping
+#    while the wall clock moves, including inside a slow Luna call) and after a boot
 #    (from upstream 3f26515): opens Lumen as soon as the screen is on, whatever the TV opened itself (LG Home after the remote's power button,
 #    Live TV after Wake-on-LAN), even without home-takeover. During a wake the loop ticks every 0.5 s and opens Lumen again each tick until it
 #    has stayed in front for WAKE_SETTLE seconds, or WAKE_SECS (90 s after a boot) have passed; then the wake ends (also for the NL_HOME_SHOWN
@@ -119,6 +120,8 @@ launchpid=0
 tick=$(date +%s)
 slept=$tick
 own=0
+mono_ok=0
+mtick=""
 wakeuntil=$((tick + 90))   # a boot counts as a wake; LG Home may take a while to come up
 # but only a boot: a watcher (re)started later (Lumen refreshing it, stop/start by hand) must not open Lumen over the app in front
 booted=$(cut -d. -f1 "${HOMEHOOK_UPTIME:-/proc/uptime}" 2>/dev/null)
@@ -537,16 +540,61 @@ wake_open() {
     echo "$(date +%T) wake: open $target over ${1:-nothing}: $r" >> "$LOG" ) &
   launchpid=$!
 }
-# The seconds of a pass that mean the TV was suspended: $1 the last loop top, $2 when that pass went to sleep, $3 this top, $4 the seconds
-# spent in the pass's own long waits (owned: an Input Hook re-injection waits up to 10 s for ezinject, a self-refresh, the bar's picture copy).
-# The sleep (1 s asked for) counts in full. The pass's own work counts only past WAKE_WORK_MAX: its Luna calls are slow right after an app
-# launch or the bar's screensaver launch, and counted as a wake those opened full Lumen over the app or the paused film. A suspend inside a
-# Luna call (the power state not seen leaving Active first) still counts once it is longer than any awake pass can be.
-WAKE_WORK_MAX=120   # each Luna call is cut off at 10 s (lsend) and a pass makes about a dozen at most
+# The seconds of a pass that mean the TV was suspended. $1 the last loop top, $2 when that pass went to sleep, $3 this top, $4 the seconds
+# spent in the pass's own long waits (owned: an Input Hook re-injection, a self-refresh, the bar's picture copy). $5 and $6, when both are
+# set, are a monotonic clock (mono_s) at $1 and at $3: it advances while this process runs and stops across suspend, so a slow Luna call
+# (the app manager busy with a launch, the bar's screensaver launch, a hub at its 10 s cutoff) is not a wake, and a suspend inside one is,
+# however short. The sleep counts in full either way. Without that clock, the pass's own work counts only past WAKE_WORK_MAX, which misses a
+# shorter suspend that happened during the work (the power state does not see it either: the process was frozen, so it never sampled the off
+# state, and a return from Screen Saver is not a wake).
+WAKE_WORK_MAX=120   # fallback only, when mono_s can't be read. Each Luna call is cut off at 10 s; a hung pass can still pass this
 wake_gap() {
-  wg=$(($3 - $2)); ww=$(($2 - $1 - $4))
-  [ "$ww" -gt "$WAKE_WORK_MAX" ] && wg=$((wg + ww))
-  [ "$wg" -lt 0 ] && wg=0; echo "$wg"
+  wg=$(($3 - $2))
+  [ "$wg" -lt 0 ] && wg=0
+  ww=$(($2 - $1 - $4))
+  [ "$ww" -lt 0 ] && ww=0
+  if [ -n "$5" ] && [ -n "$6" ] && [ "$6" -ge "$5" ] 2>/dev/null; then
+    # wall clock ahead of the monotonic clock: the CPU was not running for the difference (suspend, or the clock stepped)
+    ws=$(($3 - $1 - ($6 - $5)))
+    [ "$ws" -lt 0 ] && ws=0
+    wex=$((ws - wg))
+    [ "$wex" -gt 0 ] && wg=$((wg + wex))
+  elif [ "$ww" -gt "$WAKE_WORK_MAX" ]; then
+    wg=$((wg + ww))
+  fi
+  echo "$wg"
+}
+# seconds this CPU has been running, from /proc/stat (user+nice+system+idle+iowait+irq+softirq+steal, per core, at USER_HZ 100).
+# Those ticks stop across suspend; a slow call advances them with the wall clock. Empty when the file can't be read. guest time is left
+# out (it is already inside user). (verify) the C8's ticks pause while the TV is off.
+mono_s() {
+  ms_n=0; ms_s=""
+  while IFS=' ' read -r ms_name ms_a ms_b ms_c ms_d ms_e ms_f ms_g ms_h _; do
+    case "$ms_name" in
+      cpu) ms_s=$((ms_a + ms_b + ms_c + ms_d + ms_e + ms_f + ms_g + ms_h)) ;;
+      cpu[0-9]*) ms_n=$((ms_n + 1)) ;;
+      *) break ;;
+    esac
+  done < /proc/stat
+  [ -n "$ms_s" ] || return 1
+  [ "$ms_n" -gt 0 ] 2>/dev/null || ms_n=1
+  echo $((ms_s / ms_n / 100))
+}
+# 1 when power returning to Active is a wake: the off state was actually seen, and it was not the screensaver ending.
+# Active with the previous sample still Active (or empty, or Screen Saver) is not one. A suspend that froze this process is wake_gap's job:
+# this never samples the off state, and Screen Saver -> Active is the screensaver ending, not the remote's power button.
+wake_edge() {
+  if [ "$2" = Active ] && [ -n "$1" ] && [ "$1" != Active ] && [ "$1" != "Screen Saver" ]; then echo 1; else echo 0; fi
+}
+# sets $use to 1 when this pass may compare the wall clock to mono_s. $1 wall then, $2 wall now, $3 mono then, $4 mono now.
+# The tick clock is trusted once a pass shows the two moving together (a stuck /proc/stat must not look like a suspend). Before that, a pass
+# whose ticks did move, but far less than the wall clock, is still a suspend: a slow Luna call moves both.
+wake_use_mono() {
+  use=0
+  [ -n "$3" ] && [ -n "$4" ] && [ "$4" -ge "$3" ] 2>/dev/null || return 0
+  wd=$(($2 - $1)); md=$(($4 - $3))
+  if [ "$wd" -ge 1 ] && [ "$md" -ge 1 ] && [ $((wd - md)) -ge -2 ] && [ $((wd - md)) -le 2 ]; then mono_ok=1; fi
+  if [ "$mono_ok" -eq 1 ] || { [ "$md" -ge 1 ] && [ $((wd - md)) -gt 5 ]; }; then use=1; fi
 }
 # runs "$@" and adds the seconds it took to own (see wake_gap)
 owned() { ot0=$(date +%s); "$@"; otr=$?; own=$((own + $(date +%s) - ot0)); return $otr; }
@@ -905,7 +953,9 @@ self_update() {
 # would exit, and nothing would be left to answer Home.
 single_instance() {
   for try in 1 2 3; do
-    if mkdir "$WATCH_LOCK" 2>/dev/null; then echo $$ > "$WATCH_LOCK/pid"; return 0; fi
+    # mode 700 from the start: a 755 lock in sticky /tmp can have a link put inside it, and the takeover below would then
+    # walk that link if it removed the folder with rm -r
+    if mkdir -m 700 "$WATCH_LOCK" 2>/dev/null; then echo $$ > "$WATCH_LOCK/pid"; return 0; fi
     # the lock is a name in /tmp: one that is not this user's own folder was not made by a watcher. It is never read (its pid could name any
     # process called watch.sh, and keep every watcher out) nor removed with rm -r (run_aside), only taken away.
     if [ -h "$WATCH_LOCK" ] || [ ! -d "$WATCH_LOCK" ]; then rm -f "$WATCH_LOCK" 2>/dev/null; continue; fi
@@ -916,7 +966,9 @@ single_instance() {
     if [ -n "$old" ] && [ "$old" = "$$" ]; then return 0; fi
     if [ -n "$old" ] && kill -0 "$old" 2>/dev/null \
       && tr '\0' ' ' < "/proc/$old/cmdline" 2>/dev/null | grep -q 'watch\.sh'; then return 1; fi
-    rm -rf "$WATCH_LOCK"
+    # our own lock, but its owner is gone. Moved aside whole, not rm -r: busybox rm -r walks by name, so a link already inside
+    # (a lock made mode 755 by an older build) would have root delete files elsewhere
+    run_aside "$WATCH_LOCK"
   done
   return 1
 }
@@ -931,17 +983,27 @@ bar_pictures "$(cat "$LASTME" 2>/dev/null)"   # a bar installed before this watc
 echo "$wakeuntil" > "$WAKEFILE"
 home_reader &
 hrpid=$!
+# startup (the picture copy, the lock) is this process's own work, not a sleep. Measured from here, a slow start is not a wake that
+# opens Lumen over the app in front when the watcher was only restarted.
+tick=$(date +%s)
+slept=$tick
+mtick=$(mono_s 2>/dev/null)
+mono_ok=0
 
 while true; do
-  # wake: the power state goes back to Active from standby or off (not from the screensaver), or the loop missed its ticks (suspended)
+  # wake: the power state was seen leaving Active for standby or off (not the screensaver) and is Active again, or the CPU's ticks
+  # stopped while the wall clock moved (suspended), including inside a Luna call. The sleep alone missing its second counts too.
   now=$(date +%s)
-  gap=$(wake_gap "$tick" "$slept" "$now" "$own"); tick=$now; own=0
+  mono=$(mono_s 2>/dev/null)
+  wake_use_mono "$tick" "$now" "$mtick" "$mono"
+  if [ "$use" = 1 ]; then gap=$(wake_gap "$tick" "$slept" "$now" "$own" "$mtick" "$mono"); else gap=$(wake_gap "$tick" "$slept" "$now" "$own"); fi
+  tick=$now; own=0; mtick=$mono
   pw=$(lsend luna://com.webos.service.tvpower/power/getPowerState '{}' </dev/null 2>/dev/null)
   # webOS 25 answers "state": "Active", with a space
   pwstate=$(printf '%s' "$pw" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p')
   woke=0
   [ "$gap" -gt 5 ] && woke=1
-  if [ "$pwstate" = Active ] && [ -n "$pwlast" ] && [ "$pwlast" != Active ] && [ "$pwlast" != "Screen Saver" ]; then woke=1; fi
+  [ "$(wake_edge "$pwlast" "$pwstate")" = 1 ] && woke=1
   [ -n "$pwstate" ] && pwlast=$pwstate
   if [ "$woke" -eq 1 ]; then
     wakeuntil=$((now + WAKE_SECS)); last=0

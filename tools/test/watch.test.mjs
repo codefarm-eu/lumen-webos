@@ -97,7 +97,9 @@ function reinject (nows, {hooked = [], bind = true, mark = true, state = '', lay
 	if (state) writeFileSync(join(dir, 'state'), state);
 	writeFileSync(join(dir, 'keybinds.json'), bind ? '{"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}}\n' : '{}\n');
 	const h = nows.map((_, i) => (hooked[i] ? 1 : 0)).join(' ');
-	const sh = [`WATCH_SH_LIB=1 HOMEHOOK_IH_DIR='${ih}' HOMEHOOK_IH_MARK='${join(dir, 'mark')}' HOMEHOOK_IH_STATE='${join(dir, 'state')}' HOMEHOOK_IH_LOG='${join(dir, 'log')}' . '${SCRIPT}'`,
+	// HOMEHOOK_RUN: ezinject's log is $RUN/ezinject-lginput2.log, and a failed redirect never runs the command. The default
+	// /tmp/homehook.run is not there in a clean test, so these checks were not actually injecting.
+	const sh = [`WATCH_SH_LIB=1 HOMEHOOK_RUN='${dir}' HOMEHOOK_IH_DIR='${ih}' HOMEHOOK_IH_MARK='${join(dir, 'mark')}' HOMEHOOK_IH_STATE='${join(dir, 'state')}' HOMEHOOK_IH_LOG='${join(dir, 'log')}' . '${SCRIPT}'`,
 		`KEYBINDS='${join(dir, 'keybinds.json')}'`, 'lginput_pid () { echo 4242; }', 'sleep () { :; }',
 		`set -- ${h}; HOOK="$*"`, 'lginput_hooked () { set -- $HOOK; [ "$1" = 1 ]; }', `lginput_traced () { ${traced ? 'true' : 'false'}; }`,
 		...nows.map((n) => `inputhook_check ${n}; set -- $HOOK; shift; HOOK="$*"`)].join('\n');
@@ -537,6 +539,25 @@ test('a lock that is not the watcher\'s own folder is never trusted: its pid nam
 	live.kill('SIGKILL');
 });
 
+test('a dead lock is taken over by moving it aside, never by rm -r (a link inside an older 755 lock is not followed)', async () => {
+	const {spawn} = await import('node:child_process');
+	const dir = mkdtempSync(join(tmpdir(), 'watch-dead-'));
+	const lock = join(dir, 'lock'), victim = join(dir, 'victim');
+	writeFileSync(victim, 'keep\n');
+	const holder = spawn('sh', ['-c', claim(lock, 5)]);
+	const started = await new Promise((ok) => holder.stdout.once('data', (d) => ok(String(d).trim())));
+	assert.equal(started, 'ok');
+	holder.kill('SIGKILL');
+	await new Promise((ok) => holder.once('exit', ok));
+	symlinkSync(victim, join(lock, 'sub'));
+	const hook = `rm () { case "$1" in -r*|-*r*) echo "$*" >> '${join(dir, 'rm')}' ;; esac; command rm "$@"; }`;
+	const out = execFileSync('sh', ['-c', `WATCH_SH_LIB=1 HOMEHOOK_WATCH_LOCK='${lock}' . '${SCRIPT}'\n${hook}\nif single_instance; then echo ok; else echo busy; fi
+[ "$(cat '${lock}/pid')" = $$ ] && echo mine; ls -d '${lock}'.old.*/lock/sub >/dev/null && echo aside`], {encoding: 'utf8'}).trim();
+	assert.equal(out, 'ok\nmine\naside');
+	assert.equal(readFileSync(victim, 'utf8'), 'keep\n');
+	assert.throws(() => readFileSync(join(dir, 'rm')), undefined, 'no rm -r ran');
+});
+
 test('the wake gap: the sleep in full, the pass\'s own work (slow Luna calls included) only past what an awake pass can take', () => {
 	const run = (sh) => execFileSync('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'\n${sh}`], {encoding: 'utf8'}).trim();
 	// last top, went to sleep, this top, owned
@@ -556,26 +577,75 @@ test('the wake gap: the sleep in full, the pass\'s own work (slow Luna calls inc
 	assert.equal(run('own=3; date () { echo 5; }; owned false; echo "$? $own"'), '1 3');
 	const src = readFileSync(SCRIPT, 'utf8');
 	const loop = src.slice(src.indexOf('while true; do\n  # wake'));
-	assert.match(loop, /gap=\$\(wake_gap "\$tick" "\$slept" "\$now" "\$own"\); tick=\$now; own=0/);
+	assert.match(loop, /wake_use_mono "\$tick" "\$now" "\$mtick" "\$mono"/);
+	assert.match(loop, /gap=\$\(wake_gap "\$tick" "\$slept" "\$now" "\$own" "\$mtick" "\$mono"\)/);
+	assert.match(loop, /gap=\$\(wake_gap "\$tick" "\$slept" "\$now" "\$own"\)/);
+	assert.match(loop, /\[ "\$\(wake_edge "\$pwlast" "\$pwstate"\)" = 1 \]/);
 	for (const c of ['owned inputhook_check "$now"', 'owned self_update "$now"', 'owned bar_pictures "$target"']) assert.ok(loop.indexOf(c) > 0, c);
 	assert.equal(loop.indexOf('tick=$(date +%s)'), -1);
 	// slept is marked after all the pass's work, just before its sleep
 	const mark = loop.lastIndexOf('slept=$(date +%s)');
 	assert.ok(mark > loop.indexOf('owned self_update') && mark > loop.indexOf('/etc/hosts') && mark < loop.lastIndexOf('usleep 500000'));
+	// startup is not part of the first sleep: the clock is marked again after the picture copy, before the loop
+	const boot = src.slice(src.indexOf('bar_pictures "$(cat "$LASTME"'), src.lastIndexOf('while true; do'));
+	assert.match(boot, /tick=\$\(date \+%s\)\nslept=\$tick\nmtick=\$\(mono_s/);
 });
 
-/** runs the main loop's wake check for one pass: `work` seconds of Luna calls and `sleep` seconds asleep (the clock is faked) */
-function wakePass (work, sleep) {
+test('the tick clock tells a slow Luna call from a suspend inside one; the power state does not see a freeze', () => {
+	const run = (sh) => execFileSync('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'\n${sh}`], {encoding: 'utf8'}).trim();
+	// wall work 60s, monotonic advanced 1s: suspended inside the call. The sleep's own 1s is not the whole gap
+	assert.equal(run('wake_gap 1000 1060 1061 0 5000 5001'), '60');
+	// the same wall time, monotonic kept up: the call was only slow
+	assert.equal(run('wake_gap 1000 1060 1061 0 5000 5061'), '1');
+	// a suspend inside an owned wait (its wall time is subtracted from the work) still shows on the tick clock
+	assert.equal(run('wake_gap 1000 1060 1061 60 5000 5001'), '60');
+	// without the clock, work under WAKE_WORK_MAX is not a wake (a hung hub, or a suspend the clock could not see)
+	assert.equal(run('wake_gap 1000 1060 1061 0'), '1');
+	assert.equal(run('wake_gap 1000 1900 1901 0'), '901');
+	// clocks that move together are trusted; a stuck clock (monotonic not moving) is not, until one pass agrees
+	assert.equal(run('mono_ok=0; wake_use_mono 1000 1040 5000 5000; echo $use $mono_ok'), '0 0');
+	assert.equal(run('mono_ok=0; wake_use_mono 1000 1061 5000 5001; echo $use'), '1');
+	// the two together, before the clock has been trusted: a minute inside the call opens Lumen, a minute of slow calls does not
+	const pass = (wall, mono) => `mono_ok=0; tick=1000; slept=$((1000 + ${wall - 1})); now=${1000 + wall}; mtick=5000; mono=$((5000 + ${mono}))
+wake_use_mono "$tick" "$now" "$mtick" "$mono"
+if [ "$use" = 1 ]; then gap=$(wake_gap "$tick" "$slept" "$now" 0 "$mtick" "$mono"); else gap=$(wake_gap "$tick" "$slept" "$now" 0); fi
+[ "$gap" -gt 5 ] && echo wake || echo no`;
+	assert.equal(run(pass(61, 1)), 'wake');
+	assert.equal(run(pass(61, 61)), 'no');
+	assert.equal(run('mono_ok=0; wake_use_mono 1000 1041 5000 5041; echo $use $mono_ok'), '1 1');
+	assert.equal(run('mono_ok=1; wake_use_mono 1000 1060 5000 5000; echo $use'), '1');
+	// power: only a seen transition into Active, never from the screensaver or from a sample that stayed Active
+	for (const [prev, now, want] of [['Suspend', 'Active', '1'], ['Active Standby', 'Active', '1'], ['Screen Off', 'Active', '1'],
+		['Screen Saver', 'Active', '0'], ['Active', 'Active', '0'], ['', 'Active', '0'], ['Suspend', 'Suspend', '0']]) {
+		assert.equal(run(`wake_edge ${prev === '' ? "''" : `'${prev}'`} '${now}'`), want, `${prev} -> ${now}`);
+	}
+});
+
+test('mono_s advances while this CPU runs (those ticks are what a suspend would stop)', () => {
+	const out = execFileSync('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'\na=$(mono_s); sleep 1; b=$(mono_s); echo "$a $b"`], {encoding: 'utf8'}).trim();
+	const [a, b] = out.split(' ').map(Number);
+	assert.ok(a > 0, out);
+	assert.ok(b - a >= 1 && b - a <= 3, out);
+});
+
+/** runs the main loop's wake check for one pass: `work` seconds of Luna calls and `sleep` seconds asleep (the clock is faked).
+ *  `mono0`/`mono1` are the tick clock at the last top and at this one; without them the pass uses the fallback. */
+function wakePass (work, sleep, {mono0, mono1} = {}) {
+	const mono = mono0 === undefined ? '' : ` ${mono0} ${mono1}`;
 	const sh = `WATCH_SH_LIB=1 . '${SCRIPT}'\ntick=1000; slept=$((1000 + ${work})); own=0; now=$((slept + ${sleep}))
-gap=$(wake_gap "$tick" "$slept" "$now" "$own"); woke=0; [ "$gap" -gt 5 ] && woke=1; echo $woke`;
+gap=$(wake_gap "$tick" "$slept" "$now" "$own"${mono}); woke=0; [ "$gap" -gt 5 ] && woke=1; echo $woke`;
 	return execFileSync('sh', ['-c', sh], {encoding: 'utf8'}).trim();
 }
 
 test('a pass slowed by its Luna calls (8 s: the app manager busy with a launch) does not open Lumen over the app; a suspend does', () => {
 	assert.equal(wakePass(8, 1), '0');
-	assert.equal(wakePass(30, 1), '0');   // three calls timing out
+	assert.equal(wakePass(30, 1), '0');   // three calls timing out, and no tick clock: not a wake
 	assert.equal(wakePass(1, 600), '1');
-	assert.equal(wakePass(900, 1), '1');
+	assert.equal(wakePass(900, 1), '1');  // fallback, when the tick clock can't be read
+	// the same 60s of work with the tick clock paused is a wake; with it keeping up, it is not
+	assert.equal(wakePass(60, 1, {mono0: 5000, mono1: 5001}), '1');
+	assert.equal(wakePass(60, 1, {mono0: 5000, mono1: 5061}), '0');
+	assert.equal(wakePass(900, 1, {mono0: 5000, mono1: 5901}), '0');
 });
 
 

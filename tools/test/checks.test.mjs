@@ -190,3 +190,20 @@ test('backlight: a value still saved for another picture mode leaves this one un
 	assert.deepEqual(n.st.sets, [30]);
 	assert.equal(n.st.saved, 70);
 });
+
+test('backlight: a screensaver that ends while the picture mode is still being read is not lowered, and nothing is saved', async () => {
+	const t = tv(80);
+	let on = true;
+	t.io.mode = () => new Promise((resolve) => t.st.pending.push(() => resolve('cinema')));
+	const b = backlightSaver(t.io);
+	b.dim(30, () => on);
+	await new Promise((r) => setImmediate(r));
+	t.st.pending.shift()();   // the backlight read is back; the mode read is still out
+	await new Promise((r) => setImmediate(r));
+	on = false;
+	t.st.pending.shift()();   // the mode read comes back after the screensaver has gone
+	await t.flush();
+	assert.deepEqual(t.st.sets, []);
+	assert.equal(t.st.saved, null);
+	assert.equal(t.st.level, 80);
+});

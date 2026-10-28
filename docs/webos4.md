@@ -477,20 +477,27 @@ Run workflow does the same by hand. A `v*` tag makes a stable release and `stabl
 
 ## Review follow-ups, part 4 (after #28)
 
-- **Wake gap:** the sleep counts in full; the rest of the pass counts only past `WAKE_WORK_MAX` (120 s). Part 3 counted the whole pass, so
-  Luna calls that were only slow (the app manager busy with a launch, the bar's screensaver launch, a hub timing out at 10 s a call) made a
-  6 s pass a wake, and the watcher opened full Lumen over the app or the paused film. #25 had fixed exactly that. A suspend inside a Luna call
-  still counts once the pass is longer than its calls can take awake. A shorter one is left to the power state (seen leaving Active as the
-  TV goes off) and, with Home takeover, to LG's bar coming up at power on. **(verify)** that a wake from standby still opens Lumen.
+- **Wake gap:** the sleep counts in full. A slow Luna call does not: `/proc/stat`'s CPU ticks (`mono_s`) advance while the process runs and
+  stop across suspend, so a minute's suspend inside a call (an app launching, the bar's screensaver launch) is a wake, and the same minute of
+  the call merely being slow is not. The tick clock is used once a pass has shown it moving with the wall clock, and also on a pass whose ticks
+  did move but far less than the wall clock. Without that file, the pass's own work counts only past `WAKE_WORK_MAX` (120 s), which misses a
+  shorter suspend during the work. The power state does not cover that miss. It fires only when a sample actually saw a state other than Active
+  and other than Screen Saver, and the next sample is Active. A freeze never takes that sample, and coming back from the screensaver
+  (Screen Saver, then Active) is not a wake. **(verify)** on the C8 that those ticks pause while the TV is off: power off for a minute during a
+  slow launch, and Lumen still opens (`homehook.log`: `wake (gap ...)`).
 - **Screensaver backlight across picture modes:** a lowering that finds a value still saved for another mode (or can't read the mode) leaves
   the panel as it is (bar.js and Lumen's `backlightSaver`). Before, the TV switched off under an HDR film's screensaver left "100 hdrCinema"
   waiting, the next screensaver over a cinema film lowered cinema without saving it, and its restore then waited for hdrCinema: cinema
-  stayed dim. The same mode as the saved value, or an older build's plain number, is lowered as before.
+  stayed dim. The same mode as the saved value, or an older build's plain number, is lowered as before. A saved file that can't be read, or
+  whose new value can't be written, is not lowered either. Lumen asks again whether the screensaver is still up after the picture mode comes
+  back, and does not save a value when it has already ended.
 - **Watcher restore:** `c` and the mode are emptied before the saved file is read. A file removed between the check and the read (the bar put
   the backlight back meanwhile) left `c` as another function had set it (`inputhook_check` sets 1 or 2), and that was sent as the backlight.
 - **No `rm -r` on folders other users own:** busybox `rm -r` walks a folder by name, so a link put inside one while root removes it has root
   delete files elsewhere. `bar_pictures` leaves a `data/wallpapers/` that is not root's own as it is and copies nothing (logged). In `/tmp`,
   a folder someone else made at `/tmp/homehook.run` or at the watcher's lock is moved aside whole into a fresh root folder next to it
-  (`run_aside`), and a lock that is not root's own is never read, so its pid can't keep the watcher out.
+  (`run_aside`), and a lock that is not root's own is never read, so its pid can't keep the watcher out. The lock is created mode 700. A dead
+  lock (the watcher was killed) is moved aside the same way, not removed: an older build's lock was mode 755, so another user could already
+  have put a link inside it.
 - **Not changed here:** `root.ts syncBar` still writes `data/icons`, `data/bar.json` and `data/sig` in the bar's folder by full paths, as
   `bar_pictures` did before #27, and reads `data/sig` with `cat`. It is Lumen's root command, not the watcher's, and is left for its own change.

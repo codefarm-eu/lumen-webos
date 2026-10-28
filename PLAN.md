@@ -63,9 +63,10 @@ Update Lumen in the Homebrew Channel first (dev build from commit 8e2bd15 or lat
       (e.g. start an HDR film) before dismissing it. The new mode's backlight is left alone; back in the first mode, its old backlight returns
       within a few seconds (`homehook.log`: `waits for picture mode ...`, then `put back to <n>`).
 - [ ] Lumen bar's log is now `/tmp/homehook.run/lumen-bar.log` (verify it is written: "saver: open ..." when the overlay screensaver opens).
-- [ ] Wake gap (verify): switch the TV off with the remote and on again after a minute: Lumen opens (`homehook.log`: `wake (...)`). Then open a
-      big app (YouTube, Moonfin) from Lumen, and let Lumen bar's screensaver come up over a paused film and dismiss it: Lumen never opens over
-      the app or the film, and no `wake (gap ...)` line appears for either.
+- [ ] Wake gap (verify): switch the TV off with the remote and on again after a minute: Lumen opens (`homehook.log`: `wake (...)`). Do that
+      again while a big app (YouTube, Moonfin) is still launching, and while Lumen bar's screensaver is opening over a paused film: Lumen opens
+      on the way back both times. Then let those two finish without switching the TV off: Lumen never opens over the app or the film, and no
+      `wake (gap ...)` line appears for either.
 - [ ] Screensaver backlight across picture modes (verify): with a value still waiting for another mode (`homehook.log`: `waits for picture
       mode X`), Lumen bar's screensaver in the current mode leaves the backlight as it is (the pictures are darkened instead), and after it
       the backlight is where it was.
