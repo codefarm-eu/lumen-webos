@@ -99,8 +99,8 @@ is still that same plain file afterwards (a symlink, or a file swapped mid-read,
 parse in `sh` and look like the watcher and its hook), moved into place, and the watcher re-execs itself. The re-exec keeps the watcher's
 pid, so its lock stays its own and the boot hook still sees the same command line. It is not a boot: no wake window and no hidden preload,
 including in the first 5 minutes. `home_reader` is stopped first, because it is a fork of the same script and would otherwise handle Home
-a second time. A refresh runs at most once a minute and 5 times a boot. The count is a plain file of the watcher's own in `/tmp` (a symlink
-there is replaced, not followed). Each refresh is logged in `/tmp/homehook.run/homehook.log`. The app folder is world-writable and owned by the
+a second time. A refresh runs at most once a minute and 5 times a boot. The count is a plain file in the watcher's own `/tmp/homehook.run` (root's,
+mode 700). Each refresh is logged in `/tmp/homehook.run/homehook.log`. The app folder is world-writable and owned by the
 developer user on the C8, so the packaged files can't be checked for root ownership. Only the installed copies are checked that way. A boot
 hook that was removed by hand stays removed.
 
@@ -108,7 +108,10 @@ What the refresh checks, and what it can't (trade-off, 28 Oct 2026 review):
 - Only a `com.ovsteenb.lumen` or `com.ovsteenb.lumen.dev` build is a source; an upstream Lumen id is never one.
 - The build writes `homehook/SHA256SUMS` (`app/vite.config.ts`) next to the pair. The watcher refreshes only when both copies match it, and
   Settings > Home opens Lumen does the same check (`lib/root.ts` `setHomeTakeover`). A half-written install, or one file changed on its own,
-  is refused. On a TV without `sha256sum` the watcher does not refresh itself at all (opening Lumen still installs it).
+  is refused. Each file's hash is worked out and compared on its own, with `sha256sum`, or `openssl dgst -sha256` where there is none
+  (never `sha256sum -c`, which a busybox build may leave out). On a TV with neither tool the watcher does not refresh itself at all. Opening
+  Lumen still installs it, because that install starts from the same folder it would check, and checking a folder against itself proves
+  nothing.
 - This is an integrity check, not authentication: `SHA256SUMS` sits in the same developer-writable folder. Real authentication would need a
   signature made by the release workflow (a signing key held as a GitHub secret) and checked on the TV with a public key built into the
   installed watcher, and an `openssl` that can verify it on webOS 4. That was left out: it can't be tested without the TV, and a check that
@@ -116,7 +119,7 @@ What the refresh checks, and what it can't (trade-off, 28 Oct 2026 review):
   Lumen's own code, which runs root commands through the Homebrew Channel whenever Lumen is opened.
 - The watcher's own state and its log are in `/tmp/homehook.run` (made by root, mode 700, re-made if anything else is at that name), so a
   link someone puts in `/tmp` can't make the root watcher write through it. The flags Lumen and Lumen bar write in `/tmp`
-  (`lumen-ambient-on`, `allow_lg_home`) are written by rename (`mktemp` and `mv`), and `lumen-bar.log` drops a link at its name first.
+  (`lumen-ambient-on`, `allow_lg_home`) are written by rename (`mktemp` and `mv`), and Lumen bar's log is `/tmp/homehook.run/lumen-bar.log`, inside the watcher's root-only folder.
 
 Once a second the watcher checks for LG's home and opens Lumen in its place:
 - `com.webos.app.home` or `com.webos.app.launcher` as the foreground app. This covers the Home key (short or long press), Back out of an
@@ -237,7 +240,7 @@ sent through networkinput:
   a click, as keydown 13, or as both: the first one opens the tile and closes the bar (`closing`), so the other is ignored. A keydown 13
   with the pointer on no tile does nothing, because its click decides. There is no appinfo setting for the pointer (`supportTouchMode` is only for
   StanbyME touch screens). Whether webOS 4 sends pointer events to an `overlay` window could not be checked remotely: the bar writes the
-  first `mousemove`, `mouseover`, `click` and `wheel` it gets, the cursor shown/hidden changes and `webOSMouse` to `/tmp/lumen-bar.log`
+  first `mousemove`, `mouseover`, `click` and `wheel` it gets, the cursor shown/hidden changes and `webOSMouse` to `/tmp/homehook.run/lumen-bar.log`
   as `pointer: ...`. Lumen's home screen already handled the pointer (Tile `onMouseEnter`/`onClick`). It could act twice on one OK (the
   click and the Enter key-up; on a folder, the second one opened the folder's first app), so `lib/okClick.ts` now lets only the first of
   the two act within 400 ms. Tests: `tools/test/bar.test.mjs` (pointer cases) and `tools/test/okclick.test.mjs`.
@@ -446,3 +449,26 @@ Run workflow does the same by hand. A `v*` tag makes a stable release and `stabl
 - **Immich key in preview URLs: kept on purpose.** Moving previews to the `x-api-key` header means a root `curl` and a base64 reply through
   Luna for every 1080p photo, which is a heavy load on the C8 that can't be measured without it. The server is now checked
   (`immichServer`) before a URL is built, so the key only goes to the server you configured.
+
+## Review follow-ups, part 3 (after #27)
+
+- **Wake gap:** measured from the top of one loop to the next, minus the loop's own long waits (`owned`: the Input Hook check, the
+  self-refresh, the bar's picture copy). A re-injection wait is not a wake, while a suspend anywhere else in the loop still is (`wake_gap`).
+- **Screensaver backlight:** saved as `<backlight> <picture mode>` and put back only into that mode (bar.js, the watcher, and Lumen's own
+  `backlightSaver`). If an HDR film started meanwhile, its backlight is not touched, and the restore waits until the mode is back. A mode
+  that can't be read doesn't hold it up. The saved value is removed only once the settings service answers `returnValue: true`. After a
+  failure, the watcher's periodic retry backs off (5 s, doubling, up to 5 minutes) and logs once.
+- **Lumen bar's root queue:** a lowering that is only slow (past the 3 s call timeout) no longer lets the restore run beside it. The queue
+  waits up to 30 s for the real answer.
+- **Leftover flags:** `saver_leftover` also removes a leftover flag of Lumen's own, by `ambient_stale`'s rule: no Lumen in front, on a real
+  foreground answer, and the bar closed.
+- **Environment:** every path the watcher can be pointed elsewhere by is read from a `HOMEHOOK_` name only (`HOMEHOOK_RUN`,
+  `HOMEHOOK_LOG`, `HOMEHOOK_SELF`...). A generic `LOG` or `SELF` in the environment the watcher inherits can never move where root writes.
+- **Icon paths as root:** `readlink -f`, or `cd -P` + `pwd -P` (the file itself not a link) where busybox was built without it.
+- **Icon cache:** pruned once per listing, against the icon paths of both lists (the TV's launch points and the system apps). Pruning in
+  each list dropped the other's icons, so every start read them all again as root. A listing that looked nothing up prunes nothing.
+- **Lumen bar's log** moved to `/tmp/homehook.run/lumen-bar.log` and is written only when that folder is root's own. At `/tmp/lumen-bar.log`
+  a link could be put back between the bar's "remove a link" step and its root append. Its size is read with `stat`.
+- **Kept as is:** the log trims (Lumen bar's log, `homehook.log`, Lumen's `lumen.log`) can race a second writer between reading the size and
+  the rename. The worst case is a few lines lost or the file briefly over its cap. Each log is in a folder only root writes, and nothing acts
+  on its contents. The video wallpaper cap (3x the idle time, or 30 minutes with the idle screensaver off) is intentional.

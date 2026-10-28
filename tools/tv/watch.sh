@@ -84,19 +84,21 @@ HOMEKEY_RUN=/var/lib/homehook/watch-key
 HOMEKEY_BIND='"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}'
 # The watcher's own state and its log, written as root: in RUN, a folder only root can write (run_dir), never as a name in /tmp itself, where
 # any user could have put a link first and had root write through it (truncating or appending to a root file).
-RUN=${RUN:-/tmp/homehook.run}
-LOG=${LOG:-$RUN/homehook.log}
-LASTME=${LASTME:-$RUN/lumen-lastme}
+# this watcher's uid (root's 0 on the TV; the tests run it as themselves). A busybox without id: 0, as the watcher only ever runs as root
+MYUID=$(id -u 2>/dev/null || echo 0)
+RUN=${HOMEHOOK_RUN:-/tmp/homehook.run}
+LOG=${HOMEHOOK_LOG:-$RUN/homehook.log}
+LASTME=${HOMEHOOK_LASTME:-$RUN/lumen-lastme}
 # LG Input Hook re-injection (inputhook_check): its service injects lginput2 once per boot only (/tmp/inputhook marks it done), so when
 # lginput2 restarts (seen on the C8 on 24 Oct 2026, 41 min after a boot) the new process has no hook and Home reaches LG's bar again
-IH_DIR=${IH_DIR:-/media/developer/apps/usr/palm/services/org.webosbrew.inputhook.service/inputhook}
-IH_MARK=${IH_MARK:-/tmp/inputhook}
-IH_STATE=${IH_STATE:-$RUN/homehook-reinject}   # one line per re-injection (epoch seconds), so a restarted watcher keeps the limits
+IH_DIR=${HOMEHOOK_IH_DIR:-/media/developer/apps/usr/palm/services/org.webosbrew.inputhook.service/inputhook}
+IH_MARK=${HOMEHOOK_IH_MARK:-/tmp/inputhook}
+IH_STATE=${HOMEHOOK_IH_STATE:-$RUN/homehook-reinject}   # one line per re-injection (epoch seconds), so a restarted watcher keeps the limits
 IH_GAP=60          # at most one re-injection a minute
 IH_MAX=5           # and at most 5 per boot, so a lginput2 crash loop is not fed
-IH_LOG=${IH_LOG:-$LOG}
-HOMEKEY_AT=${HOMEKEY_AT:-$RUN/lumen-homekey-at}   # epoch of the last Home key from Input Hook (home_key)
-BAR_CLOSED_AT=${BAR_CLOSED_AT:-$RUN/lumen-bar-closed-at}   # uptime (centiseconds) when Home last closed Lumen bar (home_key)
+IH_LOG=${HOMEHOOK_IH_LOG:-$LOG}
+HOMEKEY_AT=${HOMEHOOK_HOMEKEY_AT:-$RUN/lumen-homekey-at}   # epoch of the last Home key from Input Hook (home_key)
+BAR_CLOSED_AT=${HOMEHOOK_BAR_CLOSED_AT:-$RUN/lumen-bar-closed-at}   # uptime (centiseconds) when Home last closed Lumen bar (home_key)
 BAR_DEBOUNCE_CS=30     # Home within 0.3 s of the bar window coming up (about 0.5 s after the press) is ignored: a quick double press leaves it open
 BAR_REOPEN_CS=200      # LG's bar showing within 2 s of a Home close does not bring Lumen bar back (on_home_shown)
 ihlast=""         # lginput2 pid found last (lginput_pid tries it first)
@@ -115,22 +117,23 @@ pwlast=""
 mesince=0
 launchpid=0
 tick=$(date +%s)
+own=0
 wakeuntil=$((tick + 90))   # a boot counts as a wake; LG Home may take a while to come up
 # but only a boot: a watcher (re)started later (Lumen refreshing it, stop/start by hand) must not open Lumen over the app in front
-booted=$(cut -d. -f1 "${WATCH_UPTIME:-/proc/uptime}" 2>/dev/null)
+booted=$(cut -d. -f1 "${HOMEHOOK_UPTIME:-/proc/uptime}" 2>/dev/null)
 [ -n "$booted" ] && [ "$booted" -gt 300 ] 2>/dev/null && wakeuntil=0
 preloadat=$((tick + 60))   # once, after the boot rush; 0 when done
 # likewise only after a boot: a watcher that re-execs itself after a Lumen update (self_update) does not start Lumen hidden
 [ "$wakeuntil" -eq 0 ] && preloadat=0
-WATCH_LOCK=${WATCH_LOCK:-/tmp/homehook-watch.lock}
+WATCH_LOCK=${HOMEHOOK_WATCH_LOCK:-/tmp/homehook-watch.lock}
 # self_update re-execs this same pid, which still holds the lock. That is not a boot, even in the first 5 minutes (uptime under
-# 300 would otherwise open Lumen over the app in front and preload again). WATCH_UPTIME is /proc/uptime; tests point it elsewhere.
+# 300 would otherwise open Lumen over the app in front and preload again). HOMEHOOK_UPTIME is /proc/uptime; tests point it elsewhere.
 if [ -f "$WATCH_LOCK/pid" ] && [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null)" = "$$" ]; then wakeuntil=0; preloadat=0; fi
 # makes RUN: a folder of this user's own (root on the TV), mode 700, not a link. Anything else at that name (a link, or a folder another user
 # made first) is removed and the folder made again; mkdir fails if something got there in between, and then the check runs again.
 run_dir() {
   for try in 1 2 3; do
-    if [ -d "$RUN" ] && [ ! -h "$RUN" ] && [ "$(stat -c '%u %a' "$RUN" 2>/dev/null)" = "$(id -u) 700" ]; then return 0; fi
+    if [ -d "$RUN" ] && [ ! -h "$RUN" ] && [ "$(stat -c '%u %a' "$RUN" 2>/dev/null)" = "$MYUID 700" ]; then return 0; fi
     rm -rf "$RUN" 2>/dev/null
     mkdir -m 700 "$RUN" 2>/dev/null
   done
@@ -138,8 +141,8 @@ run_dir() {
 }
 # luna-send with a time limit: a hung Luna hub (seen after an exec restart, 60-homehook) must not stop the loop or the Home key for good.
 # 10 s: right after a wake a launch can take seconds. busybox timeout takes "timeout 10" on newer builds, "timeout -t 10" on older ones; without either, luna-send runs as before.
-if timeout 1 true 2>/dev/null; then LS_TO="timeout ${LUNA_SECS:-10}"
-elif timeout -t 1 true 2>/dev/null; then LS_TO="timeout -t ${LUNA_SECS:-10}"
+if timeout 1 true 2>/dev/null; then LS_TO="timeout ${HOMEHOOK_LUNA_SECS:-10}"
+elif timeout -t 1 true 2>/dev/null; then LS_TO="timeout -t ${HOMEHOOK_LUNA_SECS:-10}"
 else LS_TO=""; fi
 lsend() { $LS_TO luna-send -n 1 "$@"; }
 # prints the newest "LG Home shown" line's timestamp from the surface manager's log (webOS 4), or nothing
@@ -147,7 +150,7 @@ home_shown_stamp() {
   [ -f "$SYSLOG" ] || return 0
   grep -F NL_HOME_SHOWN "$SYSLOG" 2>/dev/null | tail -n 1 | cut -d' ' -f1
 }
-WAKEFILE=${WAKEFILE:-$RUN/lumen-wakeuntil}
+WAKEFILE=${HOMEHOOK_WAKEFILE:-$RUN/lumen-wakeuntil}
 # true while the surface manager's log says LG's home bar is up (its newest _WEBOS_WINDOW_TYPE_HOME line); false when unknown
 home_visible() {
   grep -F _WEBOS_WINDOW_TYPE_HOME "$SYSLOG" 2>/dev/null | tail -n 1 | grep -q '"visible": *true'
@@ -272,13 +275,13 @@ bar_pictures() {
   ( cd -P "$APPS/$BAR" 2>/dev/null && [ "$(pwd -P)" = "$bpr" ] || exit 0
     for bpx in data wallpapers; do
       [ -L "$bpx" ] && rm -f "$bpx"
-      [ "$bpx" = wallpapers ] && [ -d "$bpx" ] && [ "$(stat -c %u "$bpx" 2>/dev/null)" != "$(id -u)" ] && rm -rf "$bpx"
+      [ "$bpx" = wallpapers ] && [ -d "$bpx" ] && [ "$(stat -c %u "$bpx" 2>/dev/null)" != "$MYUID" ] && rm -rf "$bpx"
       mkdir -p "$bpx" 2>/dev/null
       bpw=$(pwd -P)
       cd -P "$bpx" 2>/dev/null && [ "$(pwd -P)" = "$bpw/$bpx" ] || exit 0
       chmod 755 . 2>/dev/null
     done
-    [ "$(stat -c %u . 2>/dev/null)" = "$(id -u)" ] || exit 0
+    [ "$(stat -c %u . 2>/dev/null)" = "$MYUID" ] || exit 0
     rm -rf .new .list
     bpn=""; bpc=0
     for bpf in "$APPS/$bpl"/wallpapers/default-[0-9].jpg "$APPS/$bpl"/wallpapers/default-[0-9][0-9].jpg; do
@@ -335,25 +338,62 @@ bar_saver_up() {
 }
 # The backlight Lumen bar's screensaver lowered (bar.js saverDim keeps the value before in SAVER_BACKLIGHT): put back and the file removed.
 # Done when the watcher closes the bar (bar.js can not, closed from outside) and when it finds the bar gone with the file still there.
-SAVER_BACKLIGHT=${SAVER_BACKLIGHT:-/var/lib/homehook/saver-backlight}
+SAVER_BACKLIGHT=${HOMEHOOK_SAVER_BACKLIGHT:-/var/lib/homehook/saver-backlight}
+sbl_next=0; sbl_wait=5; sbl_said=""
 saver_backlight_restore() {
   [ -f "$SAVER_BACKLIGHT" ] || return 0
-  c=$(cat "$SAVER_BACKLIGHT" 2>/dev/null)
+  sbt=$(date +%s)
+  # the periodic retry (saver_leftover) backs off after a failure: 5 s, then twice as long each time, up to 5 minutes
+  [ "$1" = periodic ] && [ "$sbt" -lt "$sbl_next" ] && return 1
+  read -r c sbm < "$SAVER_BACKLIGHT" 2>/dev/null
   case "$c" in ''|*[!0-9]*) rm -f "$SAVER_BACKLIGHT"; return 0 ;; esac
   [ "$c" -le 100 ] || { rm -f "$SAVER_BACKLIGHT"; return 0; }
+  case "$sbm" in *[!A-Za-z0-9]*) sbm="" ;; esac
+  # the backlight belongs to the picture mode it was read in (bar.js saves "<backlight> <mode>"): put back only into that one. An HDR film
+  # started meanwhile keeps its own backlight, and this waits until the mode is back. A mode that can't be read doesn't hold it up.
+  if [ -n "$sbm" ]; then
+    sbc=$(lsend luna://com.webos.settingsservice/getSystemSettings '{"category":"picture","keys":["pictureMode"]}' </dev/null 2>/dev/null \
+      | sed -n 's/.*"pictureMode": *"\([A-Za-z0-9]*\)".*/\1/p')
+    # not a failure: no back-off (one cheap query per leftover pass), so the backlight is back within seconds of the mode; logged once
+    if [ -n "$sbc" ] && [ "$sbc" != "$sbm" ]; then sbl_note "waits for picture mode $sbm (now $sbc)"; return 1; fi
+  fi
   r=$(lsend luna://com.webos.settingsservice/setSystemSettings '{"category":"picture","settings":{"backlight":"'"$c"'"}}' </dev/null 2>&1 | tr -d ' \n')
-  case "$r" in *'"returnValue":true'*) rm -f "$SAVER_BACKLIGHT"; echo "$(date +%T) screensaver backlight put back to $c" >> "$LOG" ;; esac
+  case "$r" in
+    *'"returnValue":true'*) rm -f "$SAVER_BACKLIGHT"; sbl_next=0; sbl_wait=5; sbl_said=""; echo "$(date +%T) screensaver backlight put back to $c" >> "$LOG"; return 0 ;;
+  esac
+  sbl_backoff "$sbt" "not put back (settings service: ${r:-no answer})"
+  return 1
+}
+# the next periodic try after a failed restore ($1: now, $2: why, logged once until it changes)
+sbl_backoff() {
+  sbl_next=$(($1 + sbl_wait))
+  sbl_wait=$((sbl_wait * 2)); [ "$sbl_wait" -gt 300 ] && sbl_wait=300
+  sbl_note "$2"
+}
+# logs "$1" about the saved backlight once, until the reason changes
+sbl_note() {
+  [ "$1" != "$sbl_said" ] && { sbl_said=$1; echo "$(date +%T) screensaver backlight $1; tried again later" >> "$LOG"; }
+  return 0
 }
 # A backlight Lumen bar's screensaver lowered, with the bar closed some other way (the TV switched off under it, the bar ended without its
 # own close): put back. Its "bar" flag goes too, as ambient_stale would drop it: a closed bar shows no screensaver. That flag is left behind
 # exactly when the bar was closed from outside, and kept, it held this off until LG's next screensaver, so the panel stayed dim meanwhile.
-# Lumen's own flag (or an older build's empty one) is left alone; an unknown running list changes nothing.
+# A leftover flag of Lumen's own (or an older build's empty one) goes by the same check, by ambient_stale's rule: with no Lumen build in
+# front and the bar closed, nothing shows a screensaver (Lumen was closed mid-screensaver, or its remove was lost). Kept, it made the
+# watcher only end LG's screensaver. An unknown running list changes nothing. Every 5 ticks (main loop).
 saver_leftover() {
+  if [ -f "$AMBIENT_ON" ]; then
+    slo=$(ambient_owner)
+    # Lumen's own (or an older build's empty one) is judged on the foreground app ($front), and only on a real answer ($main), so a
+    # foreground query that failed never takes the flag from a screensaver Lumen is showing
+    [ "$slo" = bar ] || case "$main" in *'"appId"'*) ;; *) return 0 ;; esac
+    ambient_stale || return 0
+    rm -f "$AMBIENT_ON"
+    echo "$(date +%T) leftover screensaver flag (${slo:-old build}) removed: nothing shows a screensaver" >> "$LOG"
+  fi
   [ -f "$SAVER_BACKLIGHT" ] || return 0
-  [ ! -f "$AMBIENT_ON" ] || [ "$(ambient_owner)" = bar ] || return 0
   [ "$(bar_state)" = closed ] || return 0
-  rm -f "$AMBIENT_ON"
-  saver_backlight_restore
+  saver_backlight_restore periodic
 }
 # closes Lumen bar, and with it its screensaver (which can not clear its flag when closed from here); $1 says why, for the log
 bar_saver_close() {
@@ -480,6 +520,13 @@ wake_open() {
     echo "$(date +%T) wake: open $target over ${1:-nothing}: $r" >> "$LOG" ) &
   launchpid=$!
 }
+# The seconds between two loop tops that the loop did not account for: $1 the last top, $2 this one, $3 the seconds spent in the loop's own
+# long waits (owned: an Input Hook re-injection waits up to 10 s for ezinject, a self-refresh, the bar's picture copy). Counted as a wake, those
+# opened full Lumen over a paused film. Measured from the top of the loop, so a suspend anywhere else in it (a Luna call the TV froze in)
+# still counts.
+wake_gap() { wg=$(($2 - $1 - $3)); [ "$wg" -lt 0 ] && wg=0; echo "$wg"; }
+# runs "$@" and adds the seconds it took to own (see wake_gap)
+owned() { ot0=$(date +%s); "$@"; otr=$?; own=$((own + $(date +%s) - ot0)); return $otr; }
 # one tick of a wake (uses front, app, now, pwstate): Lumen in front as soon as the screen is on, whatever the TV opened; the TV can still put
 # its own app over Lumen in the first seconds, so the wake ends only once Lumen has stayed up WAKE_SETTLE seconds
 # (this fork) An app other than LG Home or Live TV straight after Lumen was in front was picked in Lumen: the wake ends there too, so an app
@@ -580,7 +627,7 @@ lginput_traced() {
 }
 # true when file $1 is a plain file (not a link) owned by the watcher's own user (root on the TV), so it is not one a non-root app put there
 ih_own() {
-  [ -f "$1" ] && [ ! -h "$1" ] && [ "$(stat -c %u "$1" 2>/dev/null)" = "$(id -u)" ]
+  [ -f "$1" ] && [ ! -h "$1" ] && [ "$(stat -c %u "$1" 2>/dev/null)" = "$MYUID" ]
 }
 # Re-injects LG Input Hook into lginput2 when it lost the hook (lginput2 restarted), as the service does once at boot. Only with our Home bind
 # on, Input Hook installed and its boot injection done (/tmp/inputhook), only when the same unhooked pid is seen on two checks in a row (so
@@ -664,9 +711,9 @@ trim_log() {
 # watcher re-execs itself: the same pid, so the single_instance lock stays its own, and the same command line, so 60-homehook still sees it.
 # home_reader is a fork of this script, so its command line matches too; it has to be gone before the new copy starts, or Home is handled
 # twice (the bar would close and open again). A re-exec is not a boot. A hook-only change updates the hook without a re-exec.
-SELF=${SELF:-/var/lib/homehook/watch.sh}
-INIT_HOOK=${INIT_HOOK:-/var/lib/webosbrew/init.d/60-homehook}
-SU_STATE=${SU_STATE:-$RUN/homehook-selfupdate}   # one line per refresh (epoch seconds)
+SELF=${HOMEHOOK_SELF:-/var/lib/homehook/watch.sh}
+INIT_HOOK=${HOMEHOOK_INIT_HOOK:-/var/lib/webosbrew/init.d/60-homehook}
+SU_STATE=${HOMEHOOK_SU_STATE:-$RUN/homehook-selfupdate}   # one line per refresh (epoch seconds)
 SU_GAP=60
 SU_MAX=5
 SU_MAXSIZE=262144
@@ -736,19 +783,27 @@ su_sum() {
 # append epoch $1 to SU_STATE. A symlink or a file we do not own is replaced by rename, not followed.
 su_note() {
   nt=$(mktemp "$SU_STATE.XXXXXX" 2>/dev/null) || return 1
-  if [ ! -h "$SU_STATE" ] && [ -f "$SU_STATE" ] && [ "$(stat -c %u "$SU_STATE" 2>/dev/null)" = "$(id -u)" ]; then
+  if [ ! -h "$SU_STATE" ] && [ -f "$SU_STATE" ] && [ "$(stat -c %u "$SU_STATE" 2>/dev/null)" = "$MYUID" ]; then
     cat "$SU_STATE" > "$nt" || { rm -f "$nt"; return 1; }
   fi
   printf '%s\n' "$1" >> "$nt" || { rm -f "$nt"; return 1; }
   mv -f "$nt" "$SU_STATE" || { rm -f "$nt"; return 1; }
 }
-# true when file $1's sha256 is the one SHA256SUMS ($3) gives for name $2. No sha256sum on the TV: false (no refresh from here; opening Lumen
-# still installs the watcher, lib/root.ts setHomeTakeover).
+# file $1's sha256: sha256sum, else openssl dgst; nothing (and false) when the TV has neither. Never sha256sum -c, which a busybox build
+# may leave out. The same rule as Lumen's Settings install (app/src/lib/checks.ts shaCheck).
+su_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then ssh_h=$(sha256sum "$1" 2>/dev/null) || return 1; echo "${ssh_h%% *}"
+  elif command -v openssl >/dev/null 2>&1; then ssh_h=$(openssl dgst -sha256 "$1" 2>/dev/null) || return 1; echo "${ssh_h##*= }"
+  else return 1; fi
+}
+# true when file $1's sha256 is the one SHA256SUMS ($3) gives for name $2. With neither tool on the TV: false, so there is no unattended
+# refresh from here. Opening Lumen still installs the watcher (lib/root.ts setHomeTakeover goes ahead there, since that install is
+# started from the same folder it would check).
 su_sha_ok() {
   ssh_want=$(sed -n "s/^\([0-9a-f]\{64\}\)  $2\$/\1/p" "$3" 2>/dev/null | head -n 1)
   [ "${#ssh_want}" -eq 64 ] || return 1
-  ssh_have=$(sha256sum "$1" 2>/dev/null) || return 1
-  [ "${ssh_have%% *}" = "$ssh_want" ]
+  ssh_have=$(su_sha256 "$1") || return 1
+  [ "$ssh_have" = "$ssh_want" ]
 }
 # $1: now (digits; busybox ash exits the whole watcher on arithmetic with anything else)
 self_update() {
@@ -791,7 +846,7 @@ self_update() {
     return 0
   fi
   sun=0; lastsu=0
-  if [ ! -h "$SU_STATE" ] && [ -f "$SU_STATE" ] && [ "$(stat -c %u "$SU_STATE" 2>/dev/null)" = "$(id -u)" ]; then
+  if [ ! -h "$SU_STATE" ] && [ -f "$SU_STATE" ] && [ "$(stat -c %u "$SU_STATE" 2>/dev/null)" = "$MYUID" ]; then
     sun=$(grep -c . "$SU_STATE")
     lastsu=$(tail -n 1 "$SU_STATE")
   fi
@@ -853,7 +908,7 @@ hrpid=$!
 while true; do
   # wake: the power state goes back to Active from standby or off (not from the screensaver), or the loop missed its ticks (suspended)
   now=$(date +%s)
-  gap=$((now - tick)); tick=$now
+  gap=$(wake_gap "$tick" "$now" "$own"); tick=$now; own=0
   pw=$(lsend luna://com.webos.service.tvpower/power/getPowerState '{}' </dev/null 2>/dev/null)
   # webOS 25 answers "state": "Active", with a space
   pwstate=$(printf '%s' "$pw" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p')
@@ -939,7 +994,7 @@ while true; do
           if saver_overlay "$sp"; then
             # over another app: Lumen bar's screensaver, an overlay, so the app stays in front with its player as it was (a full-screen
             # Lumen sent it to the background, and the relaunch back made Moonfin drop its player). Shown at once, without the wait below.
-            bar_pictures "$target"
+            owned bar_pictures "$target"
             r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$BAR\",\"params\":{\"saver\":true,\"lumen\":\"$target\"}}" </dev/null 2>&1)
             echo "$(date +%T) screensaver: Lumen bar over $over: $r" >> "$LOG"
           else
@@ -988,10 +1043,10 @@ while true; do
   fi
   # keep the extra blocked names in /etc/hosts (about every 30 s; the dashboard rewrites the table at boot)
   ticks=$((ticks + 1))
-  [ $((ticks % 5)) -eq 1 ] && { sync_home_key; inputhook_check "$now"; }
+  [ $((ticks % 5)) -eq 1 ] && { sync_home_key; owned inputhook_check "$now"; }
   [ $((ticks % 300)) -eq 2 ] && trim_log "$IH_LOG"
   [ $((ticks % 5)) -eq 3 ] && saver_leftover
-  [ $((ticks % 30)) -eq 15 ] && self_update "$now"
+  [ $((ticks % 30)) -eq 15 ] && owned self_update "$now"
   if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
     # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real
     grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | while IFS= read -r l; do
@@ -999,8 +1054,5 @@ while true; do
     done
   fi
   # faster ticks while a wake is open, so Lumen goes up as soon as the TV lets it (webOS 4's busybox sleep takes whole seconds: usleep)
-  # the gap that means a wake is measured over the sleep only: time spent in this loop (an Input Hook re-injection waits up to 10 s for
-  # ezinject, a slow Luna answer, a self-refresh) is the loop's own doing, and counted as a wake it opened full Lumen over a paused film
-  tick=$(date +%s)
   if [ "$now" -lt "$wakeuntil" ]; then usleep 500000 2>/dev/null || sleep 1; else sleep 1; fi
 done

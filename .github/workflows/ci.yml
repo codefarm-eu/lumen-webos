@@ -27,11 +27,13 @@ jobs:
         # the same command as release.yml and `npm test`; Node 22 needs the files, not the folder
         run: node --test tools/test/*.test.mjs
       - name: Test under busybox ash
-        # the TV's sh is busybox ash; the step above runs the shell tests under dash. Same tests, with sh being busybox (apt, no cost).
+        # the TV's shell and tools are busybox; the step above runs the shell tests under dash and GNU coreutils. Same tests, with sh and
+        # every applet busybox has (stat, cp, mktemp, readlink, timeout, sed, awk ...) taken from busybox first (apt, no cost)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq busybox >/dev/null
-          mkdir -p "$RUNNER_TEMP/ash" && ln -sf "$(command -v busybox)" "$RUNNER_TEMP/ash/sh"
-          PATH="$RUNNER_TEMP/ash:$PATH" node --test tools/test/*.test.mjs
+          mkdir -p "$RUNNER_TEMP/bb"
+          for a in $(busybox --list); do ln -sf "$(command -v busybox)" "$RUNNER_TEMP/bb/$a"; done
+          PATH="$RUNNER_TEMP/bb:$PATH" node --test tools/test/*.test.mjs
       - name: Build Lumen bar
         run: LUMEN_BUILD_DIR=release sh tools/build_bar.sh
       - name: Packages

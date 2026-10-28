@@ -7,9 +7,9 @@ for p in /proc/[0-9]*; do
 done
 # and takes the watcher's Home key bind out of LG Input Hook, so Home reaches LG's home again. The removal is watch.sh's own
 # (homekey_unbind), so there is one copy of it: the installed watcher is sourced for its functions only (WATCH_SH_LIB), not run.
-W=${WATCH_SH:-/var/lib/homehook/watch.sh}
+W=${HOMEHOOK_WATCH_SH:-/var/lib/homehook/watch.sh}
 WATCH_SH_LIB=1 . "$W" 2>/dev/null || { echo "no $W: the Home key bind (if any) is left in Input Hook"; exit 0; }
-K=${STOP_KEYBINDS:-$KEYBINDS}
+K=${HOMEHOOK_KEYBINDS:-$KEYBINDS}
 if [ -f "$K" ] && grep -qF "$HOMEKEY_BIND" "$K"; then
   if command -v homekey_unbind >/dev/null 2>&1; then
     homekey_unbind < "$K" > "$K.tmp" && mv "$K.tmp" "$K" && echo "Home key bind removed"
