@@ -309,7 +309,9 @@
 	}
 	function openSaver () {
 		if (!saverEl) { log('saver: no screensaver in this build'); return; }
-		if (saver.on) return;
+		// already up (the watcher's next {"saver":true}): the flag is written again, as the watcher drops a "bar" flag when it can't see the
+		// bar running (a running list that did not answer), and without it every LG screensaver timer relaunched this window
+		if (saver.on) { exec('echo bar > /tmp/lumen-ambient-on', function () {}); return; }
 		saver.on = true;
 		saver.ends = 0;
 		window.clearTimeout(idleTimer);

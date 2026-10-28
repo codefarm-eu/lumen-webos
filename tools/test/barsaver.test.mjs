@@ -85,3 +85,11 @@ test('the pointer moving does not end the screensaver, a click does', () => {
 	t.fire('click', {target: {}});
 	assert.ok(t.execs().indexOf('rm -f /tmp/lumen-ambient-on') !== -1);
 });
+
+test('{"saver":true} again while the screensaver is up writes the flag again (the watcher may have dropped it)', async () => {
+	const t = start({saver: true});
+	await new Promise((r) => setTimeout(r, 300));   // past the duplicate-relaunch guard (RELAUNCH_DUP_MS)
+	t.fire('webOSRelaunch', {detail: {saver: true}});
+	assert.equal(t.execs().filter((c) => c === 'echo bar > /tmp/lumen-ambient-on').length, 2);
+	assert.match(t.ids.saver.className, /saver--on/);
+});
