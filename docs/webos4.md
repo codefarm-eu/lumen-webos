@@ -191,7 +191,10 @@ The same settings are used by `com.sammysco.avoverlay`.
   The pictures ship only in Lumen. The bar can't load Lumen's folder (in 1.0.9036 it tried, and was black with only the clock: "saver:
   open, 0 pictures", 28 Oct 2026), so the watcher copies Lumen's `wallpapers/default-N.jpg` as root into the bar's own
   `data/wallpapers/`, with a `list` of their names (`watch.sh bar_pictures`). This happens when the watcher starts and again just before each
-  overlay screensaver opens. Only plain files are copied (`cp -P`), a changed picture is copied again, and a dropped one is removed.
+  overlay screensaver opens. Only plain files are copied, a changed picture is copied again, and a dropped one is removed. The bar's
+  folder is writable by others, so the copy works inside `data/wallpapers/` by relative names: each folder is entered with `cd -P` and must
+  then be where it should be (`pwd -P`), `wallpapers/` must be root's own, and a picture is copied with `cp -RP` to `.new` and kept only as a
+  plain file. A link put at `data`, `data/wallpapers` or a picture mid-run can't send root's copy, `chmod` or removal anywhere else.
   `syncBar` leaves `data/wallpapers/` alone. The bar reads the `list`. Without it, the bar tries each `default-N.jpg` and stops after two
   misses in a row. A bar with no copy yet (installed, but no screensaver since the watcher started) shows black with the clock and logs
   "saver: open, no pictures yet". The bar package went from about 2.5 MB to about 70 KB. Over another app this screensaver always shows
