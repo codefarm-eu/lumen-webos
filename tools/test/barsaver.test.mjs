@@ -6,6 +6,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
 const SRC = readFileSync(new URL('../../bar/bar.js', import.meta.url), 'utf8');
+const FLAG_ON = 't=$(mktemp /tmp/lumen-ambient-on.XXXXXX) && echo bar > "$t" && chmod 644 "$t" && mv -f "$t" /tmp/lumen-ambient-on';
 const el = () => ({className: '', style: {}, children: [], textContent: '', innerHTML: '', appendChild (c) { this.children.push(c); return c; }, querySelector () { return null; }});
 
 // the pictures that load: by default only the bar's own copy (a webOS 4 app can't load another app's files)
@@ -32,7 +33,7 @@ function start (launchParams, opts = {}) {
 	const execs = () => calls.filter((c) => c.uri.indexOf('/exec') !== -1).map((c) => c.params.command).filter((c) => c.indexOf('lumen-bar.log') === -1);
 	// runs the timers set for `ms` or less (the screensaver's 30 ms fade-in), once
 	const tick = (ms = 50) => { timers.splice(0).forEach((t) => { if (t.ms <= ms) t.fn(); else timers.push(t); }); };
-	return {ids, fire, calls, execs, tick, closed: () => closed};
+	return {ids, fire, calls, execs, tick, closed: () => closed, ctx};
 }
 
 test('{"saver":true}: an opaque screensaver with Lumen\'s pictures, no bar, and the watcher told it is up', () => {
@@ -40,7 +41,7 @@ test('{"saver":true}: an opaque screensaver with Lumen\'s pictures, no bar, and 
 	assert.match(t.ids.saver.className, /saver--on/);
 	assert.doesNotMatch(t.ids.bar.className, /bar--in/);
 	// the settings backup is read as root here (the test has no XMLHttpRequest, as when the TV refuses the plain read)
-	assert.deepEqual(t.execs(), ['echo bar > /tmp/lumen-ambient-on', 'cat /var/lib/homehook/lumen-config.json 2>/dev/null; true']);
+	assert.deepEqual(t.execs(), [FLAG_ON, 'cat /var/lib/homehook/lumen-config.json 2>/dev/null; true']);
 	const shown = [t.ids.saverA.src, t.ids.saverB.src].filter(Boolean);
 	assert.equal(shown.length, 1);
 	assert.match(shown[0], /^file:\/\/\/media\/developer\/apps\/usr\/palm\/applications\/com\.ovsteenb\.lumen\.bar\/wallpapers\/default-[0-2]\.jpg$/);
@@ -90,6 +91,82 @@ test('{"saver":true} again while the screensaver is up writes the flag again (th
 	const t = start({saver: true});
 	await new Promise((r) => setTimeout(r, 300));   // past the duplicate-relaunch guard (RELAUNCH_DUP_MS)
 	t.fire('webOSRelaunch', {detail: {saver: true}});
-	assert.equal(t.execs().filter((c) => c === 'echo bar > /tmp/lumen-ambient-on').length, 2);
+	assert.equal(t.execs().filter((c) => c === FLAG_ON).length, 2);
 	assert.match(t.ids.saver.className, /saver--on/);
+});
+
+const CONFIG = (c) => (cmd) => (cmd.indexOf('cat /var/lib/homehook/lumen-config.json') === 0 ? JSON.stringify({config: c}) : cmd.indexOf('saver-backlight') !== -1 && cmd.indexOf('getSystemSettings') !== -1 ? 'dimmed' : '');
+
+test('the pointer showing or hiding under the screensaver neither closes it nor arms the bar\'s idle close (Fable H2)', () => {
+	const t = start({saver: true});
+	t.fire('cursorStateChange', {detail: {visibility: true}});
+	t.fire('cursorStateChange', {detail: {visibility: false}});
+	t.tick(20000); t.tick(20000);
+	assert.equal(t.closed(), 0);
+	assert.equal(t.execs().indexOf('rm -f /tmp/lumen-ambient-on'), -1);
+	assert.match(t.ids.saver.className, /saver--on/);
+});
+
+test('Home right after a key ended the screensaver (its fade-out) does not bring the bar up over the app (Fable H3)', () => {
+	const t = start({saver: true});
+	t.fire('keydown', {keyCode: 13});
+	t.fire('webOSRelaunch', {detail: {home: true}});
+	t.fire('webOSRelaunch', {detail: {}});
+	assert.doesNotMatch(t.ids.bar.className, /bar--in/);
+	t.tick(500);
+	assert.equal(t.closed(), 1);
+	// a new screensaver in the fade is still shown
+	const u = start({saver: true});
+	u.fire('keydown', {keyCode: 13});
+	u.fire('webOSRelaunch', {detail: {saver: true}});
+	assert.match(u.ids.saver.className, /saver--on/);
+});
+
+test('only the same relaunch twice is a duplicate: {"home":true} right after {"saver":true} still ends the screensaver', () => {
+	const t = start({});
+	t.fire('webOSRelaunch', {detail: {saver: true}});
+	t.fire('webOSRelaunch', {detail: {saver: true}});   // the C8's double delivery: dropped
+	assert.equal(t.execs().filter((c) => c === FLAG_ON).length, 1);
+	t.fire('webOSRelaunch', {detail: {home: true}});
+	assert.ok(t.execs().indexOf('rm -f /tmp/lumen-ambient-on') !== -1);
+});
+
+test('answered Luna bridges are let go, and the log stops after LOG_MAX lines per window', () => {
+	const t = start({});
+	assert.equal((t.ctx.__bridges || []).length, 0);
+	for (let i = 0; i < 400; i++) t.fire('cursorStateChange', {detail: {visibility: i % 2 === 0}});
+	const logs = t.calls.filter((c) => (c.params.command || '').indexOf('lumen-bar.log') !== -1);
+	assert.ok(logs.length <= 200, String(logs.length));
+	// the log is cut back by rename, and a link at its name is removed first
+	assert.match(logs[0].params.command, /\[ -h \$f \] && rm -f \$f/);
+	assert.match(logs[0].params.command, /mktemp \$f\.XXXXXX/);
+});
+
+test('Brightness Dim lowers the panel (not the pictures) and the old value is put back after, in that order', () => {
+	const t = start({saver: true}, {exec: CONFIG({ambientBrightness: 'dim'})});
+	t.tick();
+	const dim = t.execs().findIndex((c) => c.indexOf('getSystemSettings') !== -1);
+	assert.ok(dim !== -1);
+	assert.match(t.execs()[dim], /"backlight":"'30'"/);
+	assert.doesNotMatch(t.ids.saver.className, /saver--dim/);
+	t.fire('keydown', {keyCode: 13});
+	const restore = t.execs().findIndex((c) => c.indexOf('f=/var/lib/homehook/saver-backlight; c=$(cat $f') === 0);
+	assert.ok(restore > dim);
+});
+
+test('a panel that could not be dimmed: the pictures are made darker instead', () => {
+	const t = start({saver: true}, {exec: (cmd) => (cmd.indexOf('cat /var/lib/homehook/lumen-config.json') === 0 ? JSON.stringify({config: {ambientBrightness: 'low'}}) : '')});
+	t.tick();
+	assert.match(t.ids.saver.className, /saver--low/);
+});
+
+test('Move clock: the clock goes to a place inside the safe area; off, it stays put', () => {
+	const t = start({saver: true});
+	const m = /translate\((-?\d+)px, (-?\d+)px\)/.exec(t.ids.saverClock.style.transform);
+	assert.ok(m, t.ids.saverClock.style.transform);
+	const x = Number(m[1]), y = Number(m[2]);
+	assert.ok(x >= 0 && 96 + x + 340 <= 1824, String(x));
+	assert.ok(850 + y >= 65 && 850 + y + 150 <= 1015, String(y));
+	const off = start({saver: true}, {exec: CONFIG({ambientMove: false})});
+	assert.equal(off.ids.saverClock.style.transform, '');
 });

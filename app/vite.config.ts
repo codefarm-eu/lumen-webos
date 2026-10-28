@@ -1,4 +1,5 @@
-import {cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync} from 'node:fs';
+import {chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {dirname, join, normalize, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {defineConfig, loadEnv, type Plugin} from 'vite';
@@ -161,7 +162,15 @@ function classicScriptTag (): Plugin {
 			writeBundle (opts) {
 				const out = join(opts.dir || join(APP_DIR, 'dist'), 'homehook');
 				mkdirSync(out, {recursive: true});
-				for (const f of ['watch.sh', '60-homehook']) cpSync(join(APP_DIR, '..', 'tools', 'tv', f), join(out, f));
+				// executable (git may hand them over as 644, and 60-homehook only starts a watcher that is), and SHA256SUMS: the watcher's
+				// self-refresh and Settings install only a pair that matches it (tools/tv/watch.sh su_sha_ok, lib/root.ts setHomeTakeover)
+				const sums: string[] = [];
+				for (const f of ['watch.sh', '60-homehook']) {
+					cpSync(join(APP_DIR, '..', 'tools', 'tv', f), join(out, f));
+					chmodSync(join(out, f), 0o755);
+					sums.push(createHash('sha256').update(readFileSync(join(out, f))).digest('hex') + '  ' + f);
+				}
+				writeFileSync(join(out, 'SHA256SUMS'), sums.join('\n') + '\n');
 			}
 		};
 	}

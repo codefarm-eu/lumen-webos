@@ -53,7 +53,7 @@
 # Never spins: reacts only when the app changes, and at most once every 3 s. Does nothing if the app is not installed.
 # ME lists every Lumen build (stable, dev). Home opens the one that was last in front, or the first installed one in this list. The flag files in
 # /var/lib/homehook/ are shared by all of them, which is fine while only one is in front at a time.
-ME="com.ovsteenb.lumen com.ovsteenb.lumen.dev com.samrenfrew.lumen com.samrenfrew.lumen.dev com.ammar027.lumen com.ammar027.lumen.dev"
+ME="com.ovsteenb.lumen com.ovsteenb.lumen.dev"
 FRAME=com.ammar027.lumen.gallery
 BAR=com.ovsteenb.lumen.bar
 BAR_FLAG=/var/lib/homehook/home-bar
@@ -82,17 +82,21 @@ HOMEKEY_SH=/var/lib/homehook/home-key.sh
 HOMEKEY_RUN=/var/lib/homehook/watch-key
 # the bind, exactly as written (and looked for) in keybinds.json
 HOMEKEY_BIND='"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}'
-LASTME=/tmp/lumen-lastme
+# The watcher's own state and its log, written as root: in RUN, a folder only root can write (run_dir), never as a name in /tmp itself, where
+# any user could have put a link first and had root write through it (truncating or appending to a root file).
+RUN=${RUN:-/tmp/homehook.run}
+LOG=${LOG:-$RUN/homehook.log}
+LASTME=${LASTME:-$RUN/lumen-lastme}
 # LG Input Hook re-injection (inputhook_check): its service injects lginput2 once per boot only (/tmp/inputhook marks it done), so when
 # lginput2 restarts (seen on the C8 on 24 Oct 2026, 41 min after a boot) the new process has no hook and Home reaches LG's bar again
 IH_DIR=${IH_DIR:-/media/developer/apps/usr/palm/services/org.webosbrew.inputhook.service/inputhook}
 IH_MARK=${IH_MARK:-/tmp/inputhook}
-IH_STATE=${IH_STATE:-/tmp/homehook-reinject}   # one line per re-injection (epoch seconds), so a restarted watcher keeps the limits
+IH_STATE=${IH_STATE:-$RUN/homehook-reinject}   # one line per re-injection (epoch seconds), so a restarted watcher keeps the limits
 IH_GAP=60          # at most one re-injection a minute
 IH_MAX=5           # and at most 5 per boot, so a lginput2 crash loop is not fed
-IH_LOG=${IH_LOG:-/tmp/homehook.log}
-HOMEKEY_AT=${HOMEKEY_AT:-/tmp/lumen-homekey-at}   # epoch of the last Home key from Input Hook (home_key)
-BAR_CLOSED_AT=${BAR_CLOSED_AT:-/tmp/lumen-bar-closed-at}   # uptime (centiseconds) when Home last closed Lumen bar (home_key)
+IH_LOG=${IH_LOG:-$LOG}
+HOMEKEY_AT=${HOMEKEY_AT:-$RUN/lumen-homekey-at}   # epoch of the last Home key from Input Hook (home_key)
+BAR_CLOSED_AT=${BAR_CLOSED_AT:-$RUN/lumen-bar-closed-at}   # uptime (centiseconds) when Home last closed Lumen bar (home_key)
 BAR_DEBOUNCE_CS=30     # Home within 0.3 s of the bar window coming up (about 0.5 s after the press) is ignored: a quick double press leaves it open
 BAR_REOPEN_CS=200      # LG's bar showing within 2 s of a Home close does not bring Lumen bar back (on_home_shown)
 ihlast=""         # lginput2 pid found last (lginput_pid tries it first)
@@ -122,12 +126,28 @@ WATCH_LOCK=${WATCH_LOCK:-/tmp/homehook-watch.lock}
 # self_update re-execs this same pid, which still holds the lock. That is not a boot, even in the first 5 minutes (uptime under
 # 300 would otherwise open Lumen over the app in front and preload again). WATCH_UPTIME is /proc/uptime; tests point it elsewhere.
 if [ -f "$WATCH_LOCK/pid" ] && [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null)" = "$$" ]; then wakeuntil=0; preloadat=0; fi
+# makes RUN: a folder of this user's own (root on the TV), mode 700, not a link. Anything else at that name (a link, or a folder another user
+# made first) is removed and the folder made again; mkdir fails if something got there in between, and then the check runs again.
+run_dir() {
+  for try in 1 2 3; do
+    if [ -d "$RUN" ] && [ ! -h "$RUN" ] && [ "$(stat -c '%u %a' "$RUN" 2>/dev/null)" = "$(id -u) 700" ]; then return 0; fi
+    rm -rf "$RUN" 2>/dev/null
+    mkdir -m 700 "$RUN" 2>/dev/null
+  done
+  return 1
+}
+# luna-send with a time limit: a hung Luna hub (seen after an exec restart, 60-homehook) must not stop the loop or the Home key for good.
+# 10 s: right after a wake a launch can take seconds. busybox timeout takes "timeout 10" on newer builds, "timeout -t 10" on older ones; without either, luna-send runs as before.
+if timeout 1 true 2>/dev/null; then LS_TO="timeout ${LUNA_SECS:-10}"
+elif timeout -t 1 true 2>/dev/null; then LS_TO="timeout -t ${LUNA_SECS:-10}"
+else LS_TO=""; fi
+lsend() { $LS_TO luna-send -n 1 "$@"; }
 # prints the newest "LG Home shown" line's timestamp from the surface manager's log (webOS 4), or nothing
 home_shown_stamp() {
   [ -f "$SYSLOG" ] || return 0
   grep -F NL_HOME_SHOWN "$SYSLOG" 2>/dev/null | tail -n 1 | cut -d' ' -f1
 }
-WAKEFILE=/tmp/lumen-wakeuntil
+WAKEFILE=${WAKEFILE:-$RUN/lumen-wakeuntil}
 # true while the surface manager's log says LG's home bar is up (its newest _WEBOS_WINDOW_TYPE_HOME line); false when unknown
 home_visible() {
   grep -F _WEBOS_WINDOW_TYPE_HOME "$SYSLOG" 2>/dev/null | tail -n 1 | grep -q '"visible": *true'
@@ -135,8 +155,8 @@ home_visible() {
 # closes LG's home bar with a Back key (network input service), only while it is up
 hide_home() {
   home_visible || return 0
-  r=$(luna-send -n 1 luna://com.webos.service.networkinput/sendSpecialKey '{"key":"BACK"}' </dev/null 2>&1 | tr -d ' \n')
-  echo "$(date +%T) LG Home bar closed with Back ($1): $r" >> /tmp/homehook.log
+  r=$(lsend luna://com.webos.service.networkinput/sendSpecialKey '{"key":"BACK"}' </dev/null 2>&1 | tr -d ' \n')
+  echo "$(date +%T) LG Home bar closed with Back ($1): $r" >> "$LOG"
 }
 # one new NL_HOME_SHOWN line ($1): answer it as the main loop would (home-takeover, or the wake window; not when LG Home was asked for)
 on_home_shown() {
@@ -144,7 +164,7 @@ on_home_shown() {
   # home_reader is a fork made before the main loop ran, so its own lastme is always empty: the main loop's choice is in LASTME
   lastme=$(cat "$LASTME" 2>/dev/null)
   fg=$(printf '%s' "$1" | sed -n 's/.*"foregroundId": *"\([^"]*\)".*/\1/p')
-  echo "$(date +%T) LG Home shown (over ${fg:-?})" >> /tmp/homehook.log
+  echo "$(date +%T) LG Home shown (over ${fg:-?})" >> "$LOG"
   home_key_missed "$now"
   t=0
   [ -f "$TAKEOVER_FLAG" ] && t=1
@@ -159,7 +179,7 @@ on_home_shown() {
   [ "$t" -eq 1 ] || return 0
   if [ -f "$FLAG" ]; then
     age=$((now - $(stat -c %Y "$FLAG")))
-    [ "$age" -ge 0 ] && [ "$age" -lt 30 ] && { echo "$(date +%T) left alone (asked for from Lumen)" >> /tmp/homehook.log; return 0; }
+    [ "$age" -ge 0 ] && [ "$age" -lt 30 ] && { echo "$(date +%T) left alone (asked for from Lumen)" >> "$LOG"; return 0; }
   fi
   target=$(me_target) || return 0
   if me_in_front "\"appId\":\"$fg\"" >/dev/null; then
@@ -179,12 +199,12 @@ on_home_shown() {
     hide_home "for Lumen bar"
     i=0
     while [ "$i" -lt 8 ] && home_visible; do usleep 100000 2>/dev/null || sleep 1; i=$((i + 1)); done
-    r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$BAR\"}" </dev/null 2>&1 | tr -d ' \n')
-    echo "$(date +%T) LG Home -> $BAR over ${fg:-?}: $r" >> /tmp/homehook.log
+    r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$BAR\"}" </dev/null 2>&1 | tr -d ' \n')
+    echo "$(date +%T) LG Home -> $BAR over ${fg:-?}: $r" >> "$LOG"
     return 0
   fi
-  r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d ' \n')
-  echo "$(date +%T) LG Home -> $target: $r" >> /tmp/homehook.log
+  r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d ' \n')
+  echo "$(date +%T) LG Home -> $target: $r" >> "$LOG"
   i=0
   while [ "$i" -lt 6 ]; do
     usleep 250000 2>/dev/null || sleep 1
@@ -234,9 +254,15 @@ saver_overlay() {
   [ -f "$NOSAVEROVERLAY_FLAG" ] && return 1
   grep -q 'id="saver"' "$APPS/$BAR/index.html" 2>/dev/null
 }
-# true while Lumen bar is open (its screensaver may be up)
+# prints "open", "closed", or "unknown" when the app manager did not answer (or answered no running list)
+bar_state() {
+  bsr=$(lsend luna://com.webos.applicationManager/running '{}' </dev/null 2>/dev/null)
+  case "$bsr" in *'"running"'*) ;; *) echo unknown; return 0 ;; esac
+  if printf '%s' "$bsr" | grep -q '"id": *"'$BAR'"'; then echo open; else echo closed; fi
+}
+# true while Lumen bar is open (its screensaver may be up); an unknown answer counts as open, so nothing is undone on a hiccup
 bar_running() {
-  luna-send -n 1 luna://com.webos.applicationManager/running '{}' </dev/null 2>/dev/null | grep -q '"id": *"'$BAR'"'
+  [ "$(bar_state)" != closed ]
 }
 # AMBIENT_ON names who set it: "bar" (Lumen bar's screensaver, bar.js) or "lumen" (Lumen's, lib/root.ts; empty from older builds)
 ambient_owner() { cat "$AMBIENT_ON" 2>/dev/null; }
@@ -247,21 +273,32 @@ ambient_owner() { cat "$AMBIENT_ON" 2>/dev/null; }
 ambient_stale() {
   [ -f "$AMBIENT_ON" ] || return 1
   case "$(ambient_owner)" in
-    bar) ! bar_running ;;
-    *) [ -z "$front" ] && ! bar_running ;;
+    bar) [ "$(bar_state)" = closed ] ;;
+    *) [ -z "$front" ] && [ "$(bar_state)" = closed ] ;;
   esac
 }
 # true while Lumen bar's screensaver is up (its flag, and the bar open)
 bar_saver_up() {
-  [ "$(ambient_owner)" = bar ] && [ -d "$APPS/$BAR" ] && bar_running
+  [ "$(ambient_owner)" = bar ] && [ -d "$APPS/$BAR" ] && [ "$(bar_state)" = open ]
+}
+# The backlight Lumen bar's screensaver lowered (bar.js saverDim keeps the value before in SAVER_BACKLIGHT): put back and the file removed.
+# Done when the watcher closes the bar (bar.js can not, closed from outside) and when it finds the bar gone with the file still there.
+SAVER_BACKLIGHT=${SAVER_BACKLIGHT:-/var/lib/homehook/saver-backlight}
+saver_backlight_restore() {
+  [ -f "$SAVER_BACKLIGHT" ] || return 0
+  c=$(cat "$SAVER_BACKLIGHT" 2>/dev/null)
+  case "$c" in ''|*[!0-9]*) rm -f "$SAVER_BACKLIGHT"; return 0 ;; esac
+  [ "$c" -le 100 ] || { rm -f "$SAVER_BACKLIGHT"; return 0; }
+  r=$(lsend luna://com.webos.settingsservice/setSystemSettings '{"category":"picture","settings":{"backlight":"'"$c"'"}}' </dev/null 2>&1 | tr -d ' \n')
+  case "$r" in *'"returnValue":true'*) rm -f "$SAVER_BACKLIGHT"; echo "$(date +%T) screensaver backlight put back to $c" >> "$LOG" ;; esac
 }
 # closes Lumen bar, and with it its screensaver (which can not clear its flag when closed from here); $1 says why, for the log
 bar_saver_close() {
-  r=$(luna-send -n 1 luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$BAR\"}" </dev/null 2>&1 | tr -d ' \n')
+  r=$(lsend luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$BAR\"}" </dev/null 2>&1 | tr -d ' \n')
   case "$r" in
-    *'"returnValue":true'*) rm -f "$AMBIENT_ON"; echo "$(date +%T) $1: Lumen bar's screensaver closed" >> /tmp/homehook.log; return 0 ;;
+    *'"returnValue":true'*) rm -f "$AMBIENT_ON"; saver_backlight_restore; echo "$(date +%T) $1: Lumen bar's screensaver closed" >> "$LOG"; return 0 ;;
   esac
-  echo "$(date +%T) $1: Lumen bar's screensaver close failed ($r)" >> /tmp/homehook.log
+  echo "$(date +%T) $1: Lumen bar's screensaver close failed ($r)" >> "$LOG"
   return 1
 }
 # prints the Lumen build Home should open: the last one in front if still installed, else the first installed one
@@ -310,6 +347,7 @@ bar_just_closed() {
 # the Home key, from LG Input Hook (home-key.sh -> watch-key): LG's bar never came up, so only Lumen bar or Lumen has to be opened
 home_key() {
   export PATH="/bin:/sbin:/usr/bin:/usr/sbin:$PATH"
+  run_dir
   t0=$(up)
   now=$(date +%s)
   echo "$now" > "$HOMEKEY_AT"
@@ -320,11 +358,11 @@ home_key() {
   [ ! -f "$NOWAKE_FLAG" ] && [ -n "$wu" ] && [ "$now" -lt "$wu" ] 2>/dev/null && t=1
   if [ "$t" -eq 0 ] || ! target=$(me_target); then
     # takeover off (the bind is about to go) or no Lumen installed: LG's own Home, through networkinput, which Input Hook does not see
-    luna-send -n 1 luna://com.webos.service.networkinput/sendSpecialKey '{"key":"HOME"}' </dev/null >/dev/null 2>&1
-    echo "$(date +%T) Home key [$t0] -> LG Home (takeover off)" >> /tmp/homehook.log
+    lsend luna://com.webos.service.networkinput/sendSpecialKey '{"key":"HOME"}' </dev/null >/dev/null 2>&1
+    echo "$(date +%T) Home key [$t0] -> LG Home (takeover off)" >> "$LOG"
     return 0
   fi
-  main=$(luna-send -n 1 luna://com.webos.applicationManager/getForegroundAppInfo '{}' </dev/null 2>/dev/null | sed 's/": *"/":"/g')
+  main=$(lsend luna://com.webos.applicationManager/getForegroundAppInfo '{}' </dev/null 2>/dev/null | sed 's/": *"/":"/g')
   fg=$(printf '%s' "$main" | sed -n 's/.*"appId":"\([^"]*\)".*/\1/p')
   # a real Home press is never the power-on Home, so the wake window does not apply to the bar here
   bar=0
@@ -335,9 +373,16 @@ home_key() {
     up_cs > "$BAR_CLOSED_AT"
     return 0
   fi
+  # Lumen's own screensaver (full screen, Lumen in front): Home leaves it for Lumen's home screen, bar or not. A plain launch is a relaunch
+  # with no "view", which app.tsx answers with the home screen (with the bar on, the bar used to come up over the photos instead).
+  if [ -f "$AMBIENT_ON" ] && [ "$(ambient_owner)" != bar ] && f=$(me_in_front "$main"); then
+    r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$f\"}" </dev/null 2>&1 | tr -d ' \n')
+    echo "$(date +%T) Home key [$t0] over Lumen's screensaver -> $f home screen: $r" >> "$LOG"
+    return 0
+  fi
   if [ "$bar" -eq 0 ] && me_in_front "$main" >/dev/null; then
     # no bar: as before, Home over Lumen closed LG's bar and left Lumen as it was
-    echo "$(date +%T) Home key [$t0] over $fg: nothing to do" >> /tmp/homehook.log
+    echo "$(date +%T) Home key [$t0] over $fg: nothing to do" >> "$LOG"
     return 0
   fi
   # Lumen bar up (an overlay, so it is never the app in front; the surface manager's log says): Home closes it, as Back does. Closed from
@@ -345,31 +390,31 @@ home_key() {
   # Within BAR_DEBOUNCE_CS of it coming up the press is ignored. If the close fails (the log was stale), the bar is launched as below.
   if [ "$bar" -eq 1 ] && shown=$(bar_shown_at) && n=$(up_cs); then
     if [ $((n - shown)) -ge 0 ] && [ $((n - shown)) -lt "$BAR_DEBOUNCE_CS" ]; then
-      echo "$(date +%T) Home key [$t0] over ${fg:-?}: Lumen bar came up $((n - shown))0 ms ago, ignored" >> /tmp/homehook.log
+      echo "$(date +%T) Home key [$t0] over ${fg:-?}: Lumen bar came up $((n - shown))0 ms ago, ignored" >> "$LOG"
       return 0
     fi
-    r=$(luna-send -n 1 luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$BAR\"}" </dev/null 2>&1 | tr -d ' \n')
+    r=$(lsend luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$BAR\"}" </dev/null 2>&1 | tr -d ' \n')
     case "$r" in
       *'"returnValue":true'*)
         up_cs > "$BAR_CLOSED_AT"
         # the bar may have been showing its screensaver, which can not clear its flag when closed from here
-        me_in_front "$main" >/dev/null || rm -f "$AMBIENT_ON"
-        echo "$(date +%T) Home key [$t0] over ${fg:-?}: Lumen bar closed [$(up)]: $r" >> /tmp/homehook.log
+        me_in_front "$main" >/dev/null || { rm -f "$AMBIENT_ON"; saver_backlight_restore; }
+        echo "$(date +%T) Home key [$t0] over ${fg:-?}: Lumen bar closed [$(up)]: $r" >> "$LOG"
         return 0 ;;
     esac
-    echo "$(date +%T) Home key [$t0]: Lumen bar close failed ($r), launching it" >> /tmp/homehook.log
+    echo "$(date +%T) Home key [$t0]: Lumen bar close failed ($r), launching it" >> "$LOG"
   fi
   # with the bar, over any app and over Lumen itself. {"home":true}: a relaunch while the bar is up (the log above unknown) closes it (bar.js)
   if [ "$bar" -eq 1 ]; then id=$BAR; launch='{"id":"'$BAR'","params":{"home":true}}'; else id=$target; launch='{"id":"'$target'"}'; fi
-  r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "$launch" </dev/null 2>&1 | tr -d ' \n')
-  echo "$(date +%T) Home key [$t0] over ${fg:-?} -> $id [$(up)]: $r" >> /tmp/homehook.log
+  r=$(lsend luna://com.webos.applicationManager/launch "$launch" </dev/null 2>&1 | tr -d ' \n')
+  echo "$(date +%T) Home key [$t0] over ${fg:-?} -> $id [$(up)]: $r" >> "$LOG"
 }
 # opens Lumen without waiting (a launch can take seconds right after a wake), unless the last one is still in flight; $1 is the app in front
 wake_open() {
   [ "$launchpid" -gt 0 ] && [ -d "/proc/$launchpid" ] && return 0
   target=$(me_target) || return 0
-  ( r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d '\n')
-    echo "$(date +%T) wake: open $target over ${1:-nothing}: $r" >> /tmp/homehook.log ) &
+  ( r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d '\n')
+    echo "$(date +%T) wake: open $target over ${1:-nothing}: $r" >> "$LOG" ) &
   launchpid=$!
 }
 # one tick of a wake (uses front, app, now, pwstate): Lumen in front as soon as the screen is on, whatever the TV opened; the TV can still put
@@ -383,14 +428,14 @@ wake_tick() {
   if [ -z "$front" ] && [ "$wasme" -gt 0 ] && [ -n "$app" ] && [ "$app" != "$LIVETV" ] && ! lg_home_in "\"appId\":\"$app\""; then
     wakeuntil=0
     echo 0 > "$WAKEFILE"
-    echo "$(date +%T) wake ended: $app opened from Lumen" >> /tmp/homehook.log
+    echo "$(date +%T) wake ended: $app opened from Lumen" >> "$LOG"
     return 0
   fi
   if [ -n "$front" ]; then
     if [ $((now - mesince)) -ge "$WAKE_SETTLE" ]; then
       wakeuntil=0
       echo 0 > "$WAKEFILE"
-      echo "$(date +%T) wake settled: $front in front" >> /tmp/homehook.log
+      echo "$(date +%T) wake settled: $front in front" >> "$LOG"
     fi
   else
     wake_open "$app"
@@ -420,12 +465,12 @@ sync_home_key() {
     else
       new=$(printf '%s' "$cur" | awk -v b="$HOMEKEY_BIND" 'BEGIN { d = 0 } { if (!d && (i = index($0, "{")) > 0) { $0 = substr($0, 1, i) b "," substr($0, i + 1); d = 1 } print }')
     fi
-    printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind added (LG Input Hook)" >> /tmp/homehook.log
+    printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind added (LG Input Hook)" >> "$LOG"
   elif [ "$have" -eq 1 ]; then
     new=$(printf '%s' "$cur" | awk -v b="$HOMEKEY_BIND" '{ while ((i = index($0, b ",")) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
       while ((i = index($0, "," b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
       while ((i = index($0, b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b)); print }')
-    printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind removed" >> /tmp/homehook.log
+    printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind removed" >> "$LOG"
   fi
 }
 
@@ -488,7 +533,7 @@ inputhook_check() {
   if [ -f "$IH_DIR/libinputhookpp.so" ]; then
     set -- "$1" "$IH_DIR/libinputhookpp.so"
     ih_own "$IH_DIR/ezinject" && ih_own "$2" || { ih_refuse "$p"; return 0; }
-    set -- "$1" -l /tmp/lginput-hook-lginput2.log "$p" "$2"
+    set -- "$1" -l "$RUN/lginput-hook-lginput2.log" "$p" "$2"
   else
     c=1; [ -e /usr/lib/libcrypt.so.2 ] && c=2
     set -- "$1" "$IH_DIR/libcrypt$c/libphp.so" "$IH_DIR/lginput-hook.php"
@@ -510,7 +555,7 @@ inputhook_check() {
   shift
   # Input Hook's service makes ezinject mode 777 at each start; take write away from others before root runs it
   chmod go-w "$IH_DIR/ezinject" 2>/dev/null
-  "$IH_DIR/ezinject" "$@" > /tmp/ezinject-lginput2.log 2>&1 </dev/null &
+  "$IH_DIR/ezinject" "$@" > "$RUN/ezinject-lginput2.log" 2>&1 </dev/null &
   e=$!
   i=0
   while kill -0 "$e" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
@@ -518,7 +563,7 @@ inputhook_check() {
     r="ezinject still running after 10 s, left alone"
   else
     wait "$e"; rc=$?
-    if lginput_hooked "$p"; then r=ok; else r="failed (ezinject $rc, see /tmp/ezinject-lginput2.log)"; fi
+    if lginput_hooked "$p"; then r=ok; else r="failed (ezinject $rc, see $RUN/ezinject-lginput2.log)"; fi
   fi
   echo "$(date +%T) Input Hook re-injected into lginput2 (pid $p): $r" >> "$IH_LOG"
   ihpid=""
@@ -531,7 +576,8 @@ ih_refuse() {
 # keeps the log in /tmp (RAM) under about 512 KB: the last 2000 lines are kept
 trim_log() {
   [ "$(stat -c %s "$1" 2>/dev/null || echo 0)" -gt 524288 ] || return 0
-  tail -n 2000 "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+  tl=$(mktemp "$1.XXXXXX") || return 0
+  tail -n 2000 "$1" > "$tl" && mv -f "$tl" "$1" || rm -f "$tl"
 }
 
 # Self-refresh after a Homebrew Channel update of Lumen (Lumen itself only refreshes the watcher when it is opened). About every 30 s:
@@ -553,7 +599,7 @@ trim_log() {
 # twice (the bar would close and open again). A re-exec is not a boot. A hook-only change updates the hook without a re-exec.
 SELF=${SELF:-/var/lib/homehook/watch.sh}
 INIT_HOOK=${INIT_HOOK:-/var/lib/webosbrew/init.d/60-homehook}
-SU_STATE=${SU_STATE:-/tmp/homehook-selfupdate}   # one line per refresh (epoch seconds)
+SU_STATE=${SU_STATE:-$RUN/homehook-selfupdate}   # one line per refresh (epoch seconds)
 SU_GAP=60
 SU_MAX=5
 SU_MAXSIZE=262144
@@ -564,6 +610,7 @@ hrpid=""       # home_reader's pid, stopped before a re-exec
 # prints the packaged homehook/ folder of the Lumen build Home opens; false when there is none (or it is reached through a symlink)
 su_src() {
   sut=$(me_target) || return 1
+  case "$sut" in com.ovsteenb.lumen|com.ovsteenb.lumen.dev) ;; *) return 1 ;; esac
   [ -d "$APPS/$sut/homehook" ] && [ ! -h "$APPS/$sut" ] && [ ! -h "$APPS/$sut/homehook" ] || return 1
   echo "$APPS/$sut/homehook"
 }
@@ -628,19 +675,33 @@ su_note() {
   printf '%s\n' "$1" >> "$nt" || { rm -f "$nt"; return 1; }
   mv -f "$nt" "$SU_STATE" || { rm -f "$nt"; return 1; }
 }
+# true when file $1's sha256 is the one SHA256SUMS ($3) gives for name $2. No sha256sum on the TV: false (no refresh from here; opening Lumen
+# still installs the watcher, lib/root.ts setHomeTakeover).
+su_sha_ok() {
+  ssh_want=$(sed -n "s/^\([0-9a-f]\{64\}\)  $2\$/\1/p" "$3" 2>/dev/null | head -n 1)
+  [ "${#ssh_want}" -eq 64 ] || return 1
+  ssh_have=$(sha256sum "$1" 2>/dev/null) || return 1
+  [ "${ssh_have%% *}" = "$ssh_want" ]
+}
 # $1: now (digits; busybox ash exits the whole watcher on arithmetic with anything else)
 self_update() {
   [ "$sugaveup" -eq 1 ] && return 0
   case "$1" in ''|*[!0-9]*) return 0 ;; esac
   ih_own "$SELF" || return 0
   sud=$(su_src) || return 0
-  su_plain "$sud/watch.sh" && su_plain "$sud/60-homehook" || return 0
+  su_plain "$sud/watch.sh" && su_plain "$sud/60-homehook" && su_plain "$sud/SHA256SUMS" || return 0
   # root's own copies, read once; everything from here on looks only at them
   nw=$(mktemp "$SELF.new.XXXXXX" 2>/dev/null) || return 0
   nh=$(mktemp "$SELF.hook.XXXXXX" 2>/dev/null) || { rm -f "$nw"; return 0; }
-  if ! su_snap "$sud/watch.sh" "$nw" || ! su_snap "$sud/60-homehook" "$nh"; then
-    rm -f "$nw" "$nh"; return 0
+  ns=$(mktemp "$SELF.sums.XXXXXX" 2>/dev/null) || { rm -f "$nw" "$nh"; return 0; }
+  if ! su_snap "$sud/watch.sh" "$nw" || ! su_snap "$sud/60-homehook" "$nh" || ! su_snap "$sud/SHA256SUMS" "$ns"; then
+    rm -f "$nw" "$nh" "$ns"; return 0
   fi
+  # the pair must match the SHA256SUMS the build put next to it (app/vite.config.ts), read the same way: a half-written install, or one file
+  # changed on its own, is never installed as root. This proves the pair is the one the build made, not who made the build: the app folder is
+  # writable by the developer user, and anything that can write it can also run root commands through the Homebrew Channel (docs/webos4.md).
+  su_sha_ok "$nw" watch.sh "$ns" && su_sha_ok "$nh" 60-homehook "$ns"; sushaok=$?
+  rm -f "$ns"
   # the boot hook is replaced only where it is installed as root's own plain file (removed by hand: left removed)
   suhook=0
   ih_own "$INIT_HOOK" && suhook=1
@@ -651,6 +712,11 @@ self_update() {
   if [ "$susum" = "$sufail" ]; then rm -f "$nw" "$nh"; return 0; fi
   # an install may still be writing the files: only a pair read the same twice in a row is taken
   if [ "$susum" != "$supend" ]; then supend=$susum; rm -f "$nw" "$nh"; return 0; fi
+  if [ "$sushaok" -ne 0 ]; then
+    sufail=$susum; supend=""; rm -f "$nw" "$nh"
+    su_log "the watcher packaged in $sud does not match its SHA256SUMS (or this TV has no sha256sum), not installed; opening Lumen installs it"
+    return 0
+  fi
   if ! sh -n "$nw" 2>/dev/null || ! sh -n "$nh" 2>/dev/null || [ "$(head -n 1 "$nw")" != '#!/bin/sh' ] || [ "$(head -n 1 "$nh")" != '#!/bin/sh' ] \
     || ! grep -q '^single_instance()' "$nw" || ! grep -q '^home_key()' "$nw" || ! grep -qF '/var/lib/homehook/watch.sh' "$nh"; then
     sufail=$susum; supend=""; rm -f "$nw" "$nh"
@@ -709,7 +775,8 @@ single_instance() {
 case "$0" in */watch-key) home_key; exit 0 ;; esac
 # tools/test/watch.test.mjs sources this file for its functions only
 [ -n "$WATCH_SH_LIB" ] && return 0
-single_instance || { echo "$(date +%T) watcher: another copy is running, this one exits" >> /tmp/homehook.log; exit 0; }
+run_dir || exit 0
+single_instance || { echo "$(date +%T) watcher: another copy is running, this one exits" >> "$LOG"; exit 0; }
 
 echo "$wakeuntil" > "$WAKEFILE"
 home_reader &
@@ -719,7 +786,7 @@ while true; do
   # wake: the power state goes back to Active from standby or off (not from the screensaver), or the loop missed its ticks (suspended)
   now=$(date +%s)
   gap=$((now - tick)); tick=$now
-  pw=$(luna-send -n 1 luna://com.webos.service.tvpower/power/getPowerState '{}' </dev/null 2>/dev/null)
+  pw=$(lsend luna://com.webos.service.tvpower/power/getPowerState '{}' </dev/null 2>/dev/null)
   # webOS 25 answers "state": "Active", with a space
   pwstate=$(printf '%s' "$pw" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p')
   woke=0
@@ -729,14 +796,14 @@ while true; do
   if [ "$woke" -eq 1 ]; then
     wakeuntil=$((now + WAKE_SECS)); last=0
     echo "$wakeuntil" > "$WAKEFILE"
-    echo "$(date +%T) wake (gap ${gap}s, power $pwstate)" >> /tmp/homehook.log
+    echo "$(date +%T) wake (gap ${gap}s, power $pwstate)" >> "$LOG"
     # before the foreground query: right after a wake each query can take seconds
     [ ! -f "$NOWAKE_FLAG" ] && [ "$pwstate" = Active ] && wake_open ""
   fi
   # the foreground app ("appId"), and with extraInfo every foreground window (webOS 4 lists the launcher bar there while it overlays an app);
   # spaces after the colons dropped, as luna-send prints them on some firmware and not on others
-  main=$(luna-send -n 1 luna://com.webos.applicationManager/getForegroundAppInfo '{}' </dev/null 2>/dev/null | sed 's/": *"/":"/g')
-  extra=$(luna-send -n 1 luna://com.webos.applicationManager/getForegroundAppInfo '{"extraInfo":true}' </dev/null 2>/dev/null | sed 's/": *"/":"/g')
+  main=$(lsend luna://com.webos.applicationManager/getForegroundAppInfo '{}' </dev/null 2>/dev/null | sed 's/": *"/":"/g')
+  extra=$(lsend luna://com.webos.applicationManager/getForegroundAppInfo '{"extraInfo":true}' </dev/null 2>/dev/null | sed 's/": *"/":"/g')
   case "$extra" in *'"returnValue":true'*|*'"returnValue": true'*) ;; *) extra="" ;; esac
   out=$main
   front=$(me_in_front "$main") && lastme=$front
@@ -774,8 +841,8 @@ while true; do
       [ -f "$TAKEOVER_FLAG" ] && takeover=1
       if [ "$takeover" -eq 1 ] && [ "$okhome" -eq 0 ] && target=$(me_target) && { [ $((now - last)) -ge 3 ] || [ $((now - last)) -lt 0 ]; }; then
         last=$now
-        r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d '\n')
-        echo "$(date +%T) LG Home -> $target: $r" >> /tmp/homehook.log
+        r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$target\"}" </dev/null 2>&1 | tr -d '\n')
+        echo "$(date +%T) LG Home -> $target: $r" >> "$LOG"
       fi
       prev=$LGHOME
       ;;
@@ -786,16 +853,16 @@ while true; do
   if [ -f "$VIDEO_FLAG" ] && [ -n "$front" ]; then vid=1; fi
   if [ "$vid" -eq 1 ]; then
     case "$pw" in
-      *'"Screen Saver"'*) luna-send -n 1 luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1; echo "$(date +%T) ended screensaver (video wallpaper)" >> /tmp/homehook.log ;;
+      *'"Screen Saver"'*) lsend luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1; echo "$(date +%T) ended screensaver (video wallpaper)" >> "$LOG" ;;
     esac
   elif [ -f "$AMBIENT_FLAG" ] && target=$(me_target); then
     # Lumen's ambient screen (your photos) instead of LG's screensaver. While it is up, LG's screensaver still starts after its timer (nothing
     # is pressed), so it is only ended, not answered by opening Lumen again.
     case "$pw" in
       *'"Screen Saver"'*)
-        [ "$pwprev" != "saver" ] && ambient_stale && rm -f "$AMBIENT_ON"
+        [ "$pwprev" != "saver" ] && ambient_stale && { rm -f "$AMBIENT_ON"; saver_backlight_restore; }
         if [ -f "$AMBIENT_ON" ] && { [ -n "$front" ] || bar_running; }; then
-          luna-send -n 1 luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1
+          lsend luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1
         elif [ "$pwprev" != "saver" ] && [ $((now - saverlast)) -ge 5 ]; then
           saverlast=$now
           # the app in front (LG's screensaver is not an app), unless LG's bar is up over it
@@ -804,14 +871,14 @@ while true; do
           if saver_overlay "$sp"; then
             # over another app: Lumen bar's screensaver, an overlay, so the app stays in front with its player as it was (a full-screen
             # Lumen sent it to the background, and the relaunch back made Moonfin drop its player). Shown at once, without the wait below.
-            r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$BAR\",\"params\":{\"saver\":true,\"lumen\":\"$target\"}}" </dev/null 2>&1)
-            echo "$(date +%T) screensaver: Lumen bar over $over: $r" >> /tmp/homehook.log
+            r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$BAR\",\"params\":{\"saver\":true,\"lumen\":\"$target\"}}" </dev/null 2>&1)
+            echo "$(date +%T) screensaver: Lumen bar over $over: $r" >> "$LOG"
           else
-            r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\",\"params\":$sp}" </dev/null 2>&1)
-            echo "$(date +%T) screensaver: ambient ($target, over ${over:-nothing}): $r" >> /tmp/homehook.log
+            r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$target\",\"params\":$sp}" </dev/null 2>&1)
+            echo "$(date +%T) screensaver: ambient ($target, over ${over:-nothing}): $r" >> "$LOG"
             sleep 1
           fi
-          luna-send -n 1 luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1
+          lsend luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1
         fi
         pwprev="saver"
         ;;
@@ -824,12 +891,12 @@ while true; do
           now=$(date +%s)
           if [ $((now - saverlast)) -ge 5 ]; then
             saverlast=$now
-            echo "$(date +%T) screensaver seen; foreground: $out" >> /tmp/homehook.log
+            echo "$(date +%T) screensaver seen; foreground: $out" >> "$LOG"
             case "$out" in
               *'"appId":"'$FRAME'"'*) ;;
-              *) r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$FRAME\",\"params\":{\"mode\":\"screensaver\"}}" </dev/null 2>&1); echo "$(date +%T) launch Frame: $r" >> /tmp/homehook.log; sleep 1 ;;
+              *) r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$FRAME\",\"params\":{\"mode\":\"screensaver\"}}" </dev/null 2>&1); echo "$(date +%T) launch Frame: $r" >> "$LOG"; sleep 1 ;;
             esac
-            luna-send -n 1 luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1
+            lsend luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1
           fi
         fi
         pwprev="saver"
@@ -841,12 +908,12 @@ while true; do
   if [ "$preloadat" -gt 0 ] && [ "$now" -ge "$preloadat" ] && [ "$pwstate" = Active ]; then
     preloadat=0
     if [ ! -f "$NOPRELOAD_FLAG" ] && target=$(me_target); then
-      run=$(luna-send -n 1 luna://com.webos.applicationManager/running '{}' </dev/null 2>/dev/null)
+      run=$(lsend luna://com.webos.applicationManager/running '{}' </dev/null 2>/dev/null)
       open=0
       for id in $ME; do case "$run" in *'"id":"'$id'"'*) open=1 ;; esac; done
       if [ "$open" -eq 0 ]; then
-        r=$(luna-send -n 1 luna://com.webos.applicationManager/launch "{\"id\":\"$target\",\"preload\":\"full\"}" </dev/null 2>&1)
-        echo "$(date +%T) boot preload ($target): $r" >> /tmp/homehook.log
+        r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$target\",\"preload\":\"full\"}" </dev/null 2>&1)
+        echo "$(date +%T) boot preload ($target): $r" >> "$LOG"
       fi
     fi
   fi
@@ -854,6 +921,8 @@ while true; do
   ticks=$((ticks + 1))
   [ $((ticks % 5)) -eq 1 ] && { sync_home_key; inputhook_check "$now"; }
   [ $((ticks % 300)) -eq 2 ] && trim_log "$IH_LOG"
+  # a backlight Lumen bar's screensaver lowered, with the bar gone and no screensaver up (the bar was closed some other way): put back
+  if [ $((ticks % 5)) -eq 3 ] && [ -f "$SAVER_BACKLIGHT" ] && [ ! -f "$AMBIENT_ON" ] && [ "$(bar_state)" = closed ]; then saver_backlight_restore; fi
   [ $((ticks % 30)) -eq 15 ] && self_update "$now"
   if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
     # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real
@@ -862,5 +931,8 @@ while true; do
     done
   fi
   # faster ticks while a wake is open, so Lumen goes up as soon as the TV lets it (webOS 4's busybox sleep takes whole seconds: usleep)
+  # the gap that means a wake is measured over the sleep only: time spent in this loop (an Input Hook re-injection waits up to 10 s for
+  # ezinject, a slow Luna answer, a self-refresh) is the loop's own doing, and counted as a wake it opened full Lumen over a paused film
+  tick=$(date +%s)
   if [ "$now" -lt "$wakeuntil" ]; then usleep 500000 2>/dev/null || sleep 1; else sleep 1; fi
 done

@@ -4,6 +4,7 @@
 import {isWebOS, lunaCall} from './luna';
 import * as root from './root';
 import {readCache, writeCache} from './boot';
+import {backlightSaver} from './backlightSaver';
 
 const AUDIO = 'luna://com.webos.audio/';
 
@@ -168,28 +169,26 @@ export function setBacklight (level: number): Promise<void> {
 
 /** The backlight before the screensaver lowered it, kept until it is put back, so a launch after a crash can still put it back. */
 const SAVED_BACKLIGHT_KEY = 'lumen-screensaver-backlight-v1';
-let dimmedHere = false;
+const saverBacklight = backlightSaver({
+	read: readBacklight,
+	set: setBacklight,
+	load: () => readCache<number>(SAVED_BACKLIGHT_KEY),
+	save: (v) => writeCache(SAVED_BACKLIGHT_KEY, v)
+});
 
 /** Lowers the backlight to `level` for the screensaver (never raises it), keeping the old value to put back. */
 export function dimForScreensaver (level: number, stillWanted: () => boolean): void {
-	readBacklight().then((before) => {
-		if (before === null || before <= level || !stillWanted()) return;
-		if (readCache<number>(SAVED_BACKLIGHT_KEY) === null) writeCache(SAVED_BACKLIGHT_KEY, before);
-		dimmedHere = true;
-		return setBacklight(level);
-	}).catch(() => undefined);
+	saverBacklight.dim(level, stillWanted);
 }
 
-/** Puts back the backlight the screensaver lowered, if it did. Safe to call at any time. */
+/** Puts back the backlight the screensaver lowered, if it did (after a lowering still under way). Safe to call at any time. */
 export function restoreBacklight (): void {
-	const before = readCache<number>(SAVED_BACKLIGHT_KEY);
-	if (before === null) return;
-	setBacklight(before).then(() => { writeCache(SAVED_BACKLIGHT_KEY, null); dimmedHere = false; }).catch(() => undefined);
+	saverBacklight.restore();
 }
 
 /** At start-up: a backlight left low by a screensaver that never ended (Lumen closed or crashed) is put back, unless this launch dimmed it. */
 export function restoreLeftoverBacklight (): void {
-	if (!dimmedHere) restoreBacklight();
+	saverBacklight.restoreLeftover();
 }
 
 export function setEyeComfort (on: boolean): Promise<void> {

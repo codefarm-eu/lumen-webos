@@ -3,6 +3,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -65,7 +66,7 @@ test('no-wake-launch, a screen that is not on, or a wake that is over: nothing i
 
 /** a shell that sources watch.sh and runs single_instance against `lock`, printing ok or busy, then holds for `hold` seconds */
 function claim (lock, hold = 0) {
-	return `WATCH_SH_LIB=1 WATCH_LOCK='${lock}' . '${SCRIPT}'; if single_instance; then echo ok; else echo busy; fi; sleep ${hold}`;
+	return `WATCH_SH_LIB=1 WATCH_LOCK='${lock}' . '${SCRIPT}'; if single_instance; then echo ok; else echo busy; fi; sleep ${hold}; true`;   // "; true": busybox ash would exec a last sleep in place, and the pid would no longer be a watch.sh shell
 }
 
 test('only one watcher runs: a second copy exits while the first is alive, and takes over once it is gone', async () => {
@@ -137,7 +138,7 @@ test('Input Hook: nothing without our Home bind, or before its own boot injectio
 test('Input Hook 1.5.0 (inputhookpp): re-injected with the service\'s own command', () => {
 	const r = reinject([1000, 1005], {hooked: [false, false], layout: 'pp'});
 	assert.equal(r.calls.length, 1);
-	assert.match(r.calls[0], /^-l \/tmp\/lginput-hook-lginput2\.log 4242 .*\/libinputhookpp\.so$/);
+	assert.match(r.calls[0], /^-l \S*\/lginput-hook-lginput2\.log 4242 .*\/libinputhookpp\.so$/);
 });
 
 test('Input Hook: nothing while lginput2 is being traced (an injection under way), or when Input Hook\'s files are missing', () => {
@@ -164,13 +165,19 @@ test('LG Home shown with no Home key from Input Hook before it is logged as a wa
 
 /** sources watch.sh with a Lumen build in a temp app folder (packaged homehook/) and installed copies next to it, then runs self_update at
  *  each of `nows`; `between` (optional) is shell run after the check of that index. su_reexec is a stub that prints REEXEC and stops. */
-function selfUpdate (nows, {pkgWatch, pkgHook, instWatch = WATCH_OK('old'), instHook = HOOK_OK('old'), state = '', between = {}, hook = true, link = false, md5fail = false, stateLink = false, fifo = false} = {}) {
+function selfUpdate (nows, {pkgWatch, pkgHook, instWatch = WATCH_OK('old'), instHook = HOOK_OK('old'), state = '', between = {}, hook = true, link = false, md5fail = false, stateLink = false, fifo = false, sums = 'good'} = {}) {
 	const dir = mkdtempSync(join(tmpdir(), 'selfupdate-'));
 	const app = join(dir, 'apps', LUMEN, 'homehook');
 	execFileSync('sh', ['-c', `mkdir -p '${app}' '${dir}/hh' '${dir}/init.d'`]);
 	writeFileSync(join(app, '60-homehook'), pkgHook ?? HOOK_OK('new'));
 	if (link) execFileSync('sh', ['-c', `printf '%s' '${WATCH_OK('new')}' > '${dir}/elsewhere' && ln -s '${dir}/elsewhere' '${app}/watch.sh'`]);
 	else writeFileSync(join(app, 'watch.sh'), pkgWatch ?? WATCH_OK('new'));
+	// SHA256SUMS as the build writes it (app/vite.config.ts); 'bad': the watcher's line does not match; 'none': no file
+	if (sums !== 'none') {
+		const sha = (t) => createHash('sha256').update(t).digest('hex');
+		const w = sums === 'bad' ? sha('something else') : sha(link ? WATCH_OK('new') : (pkgWatch ?? WATCH_OK('new')));
+		writeFileSync(join(app, 'SHA256SUMS'), `${w}  watch.sh\n${sha(pkgHook ?? HOOK_OK('new'))}  60-homehook\n`);
+	}
 	if (fifo) execFileSync('sh', ['-c', `rm -f '${join(app, 'watch.sh')}' && mkfifo '${join(app, 'watch.sh')}'`]);
 	writeFileSync(join(dir, 'hh', 'watch.sh'), instWatch);
 	if (hook) writeFileSync(join(dir, 'init.d', '60-homehook'), instHook);
@@ -399,7 +406,7 @@ function stale (owner, {front = false, bar = false} = {}) {
 	const dir = mkdtempSync(join(tmpdir(), 'ambient-'));
 	const flag = join(dir, 'ambient-on');
 	if (owner !== null) writeFileSync(flag, owner ? owner + '\n' : '');
-	const sh = [`WATCH_SH_LIB=1 . '${SCRIPT}'`, `AMBIENT_ON='${flag}'; front='${front ? LUMEN : ''}'`, `bar_running () { ${bar ? 'true' : 'false'}; }`,
+	const sh = [`WATCH_SH_LIB=1 . '${SCRIPT}'`, `AMBIENT_ON='${flag}'; front='${front ? LUMEN : ''}'`, `bar_state () { echo ${bar === null ? 'unknown' : bar ? 'open' : 'closed'}; }`,
 		'if ambient_stale; then echo stale; else echo kept; fi'].join('\n');
 	return execFileSync('sh', ['-c', sh], {encoding: 'utf8'}).trim();
 }
@@ -437,3 +444,61 @@ test('LG Home seen in the log (home_reader) opens the Lumen build last in front,
 	execFileSync('sh', ['-c', sh], {encoding: 'utf8', env: {...process.env, PATH: `${bin}:${process.env.PATH}`}});
 	assert.deepEqual(readFileSync(join(dir, 'launches'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)), [{id: LUMEN + '.dev'}]);
 });
+
+test('self-refresh: a packaged pair that does not match its SHA256SUMS, or has none, is never installed', () => {
+	for (const sums of ['bad', 'none']) {
+		const r = selfUpdate([1000, 1030, 1090], {sums});
+		assert.equal(r.out, '', sums);
+		assert.equal(r.watch, WATCH_OK('old'), sums);
+		assert.equal(r.hook, HOOK_OK('old'), sums);
+	}
+	assert.equal((selfUpdate([1000, 1030, 1090, 1150], {sums: 'bad'}).log.match(/SHA256SUMS/g) || []).length, 1, 'logged once');
+});
+
+test('self-refresh: only from a com.ovsteenb Lumen build (an upstream id in ME is never a source)', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'susrc-'));
+	execFileSync('sh', ['-c', `mkdir -p '${dir}/com.samrenfrew.lumen/homehook' '${dir}/${LUMEN}/homehook'`]);
+	const src = (me) => execFileSync('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'; APPS='${dir}'; ME='${me}'; lastme=''; su_src || echo none`], {encoding: 'utf8'}).trim();
+	assert.equal(src('com.samrenfrew.lumen'), 'none');
+	assert.equal(src(LUMEN), `${dir}/${LUMEN}/homehook`);
+});
+
+test('a running list that did not answer is not read as "Lumen bar closed": its screensaver flag is kept', () => {
+	assert.equal(stale('bar', {bar: null}), 'kept');
+	assert.equal(stale('', {bar: null}), 'kept');
+});
+
+test('bar_state: open, closed, or unknown when the app manager gives no running list', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'barstate-'));
+	const st = (answer) => {
+		writeFileSync(join(dir, 'luna-send'), `#!/bin/sh\necho '${answer}'\n`);
+		chmodSync(join(dir, 'luna-send'), 0o755);
+		return execFileSync('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'; bar_state`], {encoding: 'utf8', env: {...process.env, PATH: `${dir}:${process.env.PATH}`}}).trim();
+	};
+	assert.equal(st('{"returnValue": true, "running": [{"id": "com.ovsteenb.lumen.bar"}]}'), 'open');
+	assert.equal(st('{"returnValue": true, "running": [{"id": "com.ovsteenb.lumen"}]}'), 'closed');
+	assert.equal(st(''), 'unknown');
+	assert.equal(st('{"returnValue": false, "errorText": "x"}'), 'unknown');
+});
+
+test('root state and the log live in a folder only root writes (RUN, mode 700), not as names in /tmp a link could take', () => {
+	const src = readFileSync(SCRIPT, 'utf8');
+	for (const v of ['LOG', 'LASTME', 'IH_STATE', 'HOMEKEY_AT', 'BAR_CLOSED_AT', 'WAKEFILE', 'SU_STATE']) assert.match(src, new RegExp(`^${v}=\\$\\{${v}:-\\$(RUN|LOG)`, 'm'), v);
+	// no root write (> or >>) to a fixed name in /tmp
+	assert.doesNotMatch(src.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n'), />>? *"?\/tmp\//);
+	const dir = mkdtempSync(join(tmpdir(), 'rundir-'));
+	const run = join(dir, 'run');
+	writeFileSync(join(dir, 'victim'), 'keep\n');
+	execFileSync('sh', ['-c', `ln -s '${dir}' '${run}'`]);
+	const out = execFileSync('sh', ['-c', `WATCH_SH_LIB=1 RUN='${run}' . '${SCRIPT}'; run_dir && stat -c '%a' '${run}' && [ ! -h '${run}' ] && echo plain`], {encoding: 'utf8'}).trim();
+	assert.equal(out, '700\nplain');
+	assert.equal(readFileSync(join(dir, 'victim'), 'utf8'), 'keep\n');
+});
+
+test('the wake gap is measured over the sleep only: the loop marks the tick just before it sleeps, after the Input Hook check', () => {
+	const src = readFileSync(SCRIPT, 'utf8');
+	const loop = src.slice(src.indexOf('while true; do\n  # wake'));
+	const ih = loop.indexOf('inputhook_check "$now"'), mark = loop.lastIndexOf('tick=$(date +%s)'), sleep = loop.lastIndexOf('usleep 500000');
+	assert.ok(ih > 0 && mark > ih && sleep > mark, 'tick is set after the checks and right before the sleep');
+});
+

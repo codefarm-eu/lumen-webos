@@ -70,6 +70,16 @@ test('a screensaver flag left by a closed bar, or owned by Lumen, does not stop 
 	assert.deepEqual(homeKey('youtube.leanback.v4', {bar: false, installed: true, saver: 'lumen'}), [{id: 'com.ovsteenb.lumen'}]);
 });
 
+test('Home over Lumen\'s own screensaver (its flag, Lumen in front) opens Lumen\'s home screen, with the bar on or off', () => {
+	for (const bar of [true, false]) {
+		assert.deepEqual(homeKey('com.ovsteenb.lumen', {bar, saver: 'lumen', running: false}), [{id: 'com.ovsteenb.lumen'}], String(bar));
+		// the unnamed flag of an older Lumen build too
+		assert.deepEqual(homeKey('com.ovsteenb.lumen', {bar, saver: '', running: false}), [{id: 'com.ovsteenb.lumen'}], String(bar));
+	}
+	// Lumen in front with no screensaver: as before (the bar, or nothing)
+	assert.deepEqual(homeKey('com.ovsteenb.lumen', {bar: false}), []);
+});
+
 /** runs bar.js in a vm with a fake DOM and clock; returns helpers to fire events and read the bar's state */
 function bar () {
 	const el = () => ({className: '', style: {}, children: [], textContent: '', innerHTML: '', parentNode: null,

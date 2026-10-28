@@ -3,6 +3,7 @@
 
 import {LUNA} from '../config/constants';
 import {isWebOS, lunaCall} from './luna';
+import {APP_ROOTS_CASE, IMMICH_BASE, IMMICH_KEY, safeAppPath} from './checks';
 
 /** The TV-side folder shared with tools/tv/watch.sh (flag files, the log, the settings backup). */
 export const HOMEHOOK = '/var/lib/homehook';
@@ -12,8 +13,9 @@ export function shellQuote (value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Plain absolute paths only: quotes, spaces, control characters and shell syntax are refused rather than passed on. */
-const SAFE_PATH = /^\/[A-Za-z0-9._\/+@-]+$/;
+/** Shell: the icon path `p` resolved through every link (readlink -f) into $r, true only when that is a plain file still under one of the app
+ *  folders (lib/checks.ts APP_ROOTS), so a link in an app's folder can not have root read or copy a file elsewhere. `p` has passed safeAppPath. */
+const resolvedIcon = (p: string) => `r=$(readlink -f ${shellQuote(p)} 2>/dev/null) && case "$r" in ${APP_ROOTS_CASE}) [ -f "$r" ] ;; *) false ;; esac`;
 const BASE64 = /^[A-Za-z0-9+\/]*={0,2}$/;
 
 /** The settings Lumen reads or changes, and the values it may set. A key not listed here never reaches the shell. */
@@ -86,9 +88,8 @@ export function appInfo (id: string): Promise<{folderPath?: string; icon?: strin
 	});
 }
 
-/** Never offered for uninstalling: every Lumen build (this fork's, Lumen bar and the dev copies included: com.ovsteenb.lumen*, and the
- *  upstream ids the watcher also knows), LG Home and system apps, and the Homebrew Channel, which every root command runs through. */
-export const KEEP_INSTALLED = /^(com\.ovsteenb\.lumen|com\.samrenfrew\.lumen|com\.ammar027\.lumen|com\.webos\.|com\.palm\.|com\.lge\.|org\.webosbrew\.hbchannel$)/;
+/** Never offered for uninstalling: every Lumen build (this fork's, Lumen bar and the dev copies included: com.ovsteenb.lumen*), LG Home and system apps, and the Homebrew Channel, which every root command runs through. */
+export const KEEP_INSTALLED = /^(com\.ovsteenb\.lumen|com\.webos\.|com\.palm\.|com\.lge\.|org\.webosbrew\.hbchannel$)/;
 
 export function canUninstall (id: string): boolean {
 	return APP_ID.test(id) && !KEEP_INSTALLED.test(id);
@@ -106,7 +107,7 @@ export function uninstallApp (id: string): Promise<boolean> {
 /** Icons as "<index> <base64>" lines, one per path; paths that are not plain absolute paths are skipped (their line is missing). */
 export function readIcons (paths: string[]): Promise<string> {
 	const script = paths
-		.map((p, i) => SAFE_PATH.test(p) ? `printf '%d ' ${i}; base64 ${shellQuote(p)} 2>/dev/null | tr -d '\\n'; echo` : '')
+		.map((p, i) => safeAppPath(p) ? `if ${resolvedIcon(p)}; then printf '%d ' ${i}; base64 "$r" 2>/dev/null | tr -d '\\n'; echo; fi` : '')
 		.filter(Boolean)
 		.join('; ');
 	return script ? run(script, 15000) : Promise.resolve('');
@@ -262,20 +263,19 @@ export function setAmbientFlag (on: boolean): Promise<void> {
 }
 
 const AMBIENT_ON = '/tmp/lumen-ambient-on';
+/** Shell: writes `text` (a fixed word) to a file in /tmp as root by rename: a link someone put at that name is replaced, never written through. */
+export const tmpWrite = (file: string, text: string) => `t=$(mktemp ${file}.XXXXXX) && echo ${text} > "$t" && chmod 644 "$t" && mv -f "$t" ${file}`;
 /** While the ambient screen is up, watch.sh only ends LG's screensaver (which starts again after its timer, as nothing is pressed) instead of
  *  opening Lumen again. The file names its owner ("lumen"; Lumen bar's screensaver writes "bar"), and off never removes the bar's. */
 export function setAmbientShowing (on: boolean): Promise<void> {
-	return run(on ? `echo lumen > ${AMBIENT_ON}` : `[ "$(cat ${AMBIENT_ON} 2>/dev/null)" = bar ] || rm -f ${AMBIENT_ON}`, 4000).then(() => undefined);
+	return run(on ? tmpWrite(AMBIENT_ON, 'lumen') : `[ "$(cat ${AMBIENT_ON} 2>/dev/null)" = bar ] || rm -f ${AMBIENT_ON}`, 4000).then(() => undefined);
 }
 
 /** With the Home watcher running, LG Home would bounce straight back to Lumen: this flag lets it open once. */
 export function allowLgHome (): Promise<void> {
-	return run('touch /tmp/allow_lg_home', 4000).then(() => undefined);
+	return run(tmpWrite('/tmp/allow_lg_home', 'lumen'), 4000).then(() => undefined);
 }
 
-/** An Immich server's address (scheme, host and port only) and an API key, as checked before either reaches the shell. */
-const IMMICH_BASE = /^https?:\/\/[A-Za-z0-9.-]+(:\d{1,5})?$/;
-const IMMICH_KEY = /^[A-Za-z0-9_-]{16,128}$/;
 /** The only Immich paths Lumen asks for. */
 const IMMICH_PATHS = [
 	/^\/api\/server\/version$/,
@@ -307,12 +307,15 @@ export function immichStackIds (base: string, key: string): Promise<string> {
 }
 
 /** Lumen's own install folder: the only place the app may read files from, and the only one copyFontIn writes to. */
-const APP_DIR = /^\/media\/developer\/apps\/usr\/palm\/applications\/com\.(ovsteenb|samrenfrew)\.lumen(\.dev)?$/;
+const APP_DIR = /^\/media\/developer\/apps\/usr\/palm\/applications\/com\.ovsteenb\.lumen(\.dev)?$/;
 
 /** Copies the SF font that tools/push_sf_font.sh put on the TV into the app's folder (each Channel update replaces the folder). True when copied. */
 export function copyFontIn (appDir: string): Promise<boolean> {
 	if (!APP_DIR.test(appDir)) return Promise.reject(new Error('refused: app folder'));
-	return run(`[ -f ${HOMEHOOK}/fonts/sf.woff2 ] && mkdir -p ${appDir}/fonts && cp ${HOMEHOOK}/fonts/sf.woff2 ${appDir}/fonts/sf.woff2 && echo ok; true`).then((out) => out.trim() === 'ok');
+	// Lumen bar too, when it is installed: it can not load Lumen's copy (a webOS 4 app may not read another app's files)
+	const bar = barDir(appDir);
+	return run(`[ -f ${HOMEHOOK}/fonts/sf.woff2 ] && mkdir -p ${appDir}/fonts && cp ${HOMEHOOK}/fonts/sf.woff2 ${appDir}/fonts/sf.woff2 && echo ok; `
+		+ `[ -f ${HOMEHOOK}/fonts/sf.woff2 ] && [ -d ${bar} ] && mkdir -p ${bar}/fonts && cp ${HOMEHOOK}/fonts/sf.woff2 ${bar}/fonts/sf.woff2; true`).then((out) => out.trim() === 'ok');
 }
 
 const INIT_D = '/var/lib/webosbrew/init.d';
@@ -330,12 +333,16 @@ export function setHomeTakeover (appDir: string, on: boolean, livetv: boolean): 
 	const src = `${appDir}/homehook`;
 	const flags = `mkdir -p ${HOMEHOOK} && touch ${HOMEHOOK}/home-takeover && rm -f ${HOMEHOOK}/no-wake-launch && ${livetv ? `touch ${HOMEHOOK}/livetv-to-lumen` : `rm -f ${HOMEHOOK}/livetv-to-lumen`}`;
 	const running = `for p in /proc/[0-9]*; do case "$(tr '\\0' ' ' < $p/cmdline 2>/dev/null)" in "/bin/sh ${HOMEHOOK}/watch.sh"*|"sh ${HOMEHOOK}/watch.sh"*) echo run; break ;; esac; done`;
-	return run(`[ -f ${src}/watch.sh ] && [ -f ${src}/60-homehook ] || { echo missing; exit 0; }; ${flags}; `
+	// homehook/SHA256SUMS (made by the build, app/vite.config.ts) must match both files: a half-written or partly replaced pair is not
+	// installed as root. Only where the TV has sha256sum; this is a check that the pair is whole, not a signature (docs/webos4.md).
+	const sums = `if command -v sha256sum >/dev/null 2>&1; then [ -f ${src}/SHA256SUMS ] && ( cd ${src} && sha256sum -c SHA256SUMS ) >/dev/null 2>&1 || { echo badsum; exit 0; }; fi`;
+	return run(`[ -f ${src}/watch.sh ] && [ -f ${src}/60-homehook ] || { echo missing; exit 0; }; ${sums}; ${flags}; `
 		+ `if cmp -s ${src}/watch.sh ${HOMEHOOK}/watch.sh && cmp -s ${src}/60-homehook ${INIT_D}/60-homehook && [ -n "$(${running})" ]; then echo same; exit 0; fi; `
 		+ `[ -f ${HOMEHOOK}/watch.sh ] && w=updated || w=installed; mkdir -p ${INIT_D} && cp ${src}/watch.sh ${HOMEHOOK}/watch.sh && cp ${src}/60-homehook ${INIT_D}/60-homehook `
 		+ `&& chmod 755 ${HOMEHOOK}/watch.sh ${INIT_D}/60-homehook && { ${RESTART_WATCHER}; } >/dev/null 2>&1; echo $w`, 10000).then((out) => {
 		const r = out.trim().split('\n').pop() || '';
 		if (r === 'missing') throw new Error('watcher not in this build');
+		if (r === 'badsum') throw new Error('the watcher in this build does not match its SHA256SUMS');
 		return r;
 	});
 }
@@ -366,10 +373,11 @@ export function syncBar (appDir: string, lumenId: string, dock: string[], recent
 	apps.forEach((a) => {
 		if (!APP_ID.test(a.id)) return;
 		const entry: {title: string; color?: string; plain?: boolean; icon?: string} = {title: a.title, color: a.color, plain: a.plain};
-		if (a.file && SAFE_PATH.test(a.file)) {
+		if (a.file && safeAppPath(a.file)) {
 			const ext = (/\.(png|jpe?g|svg|webp|gif)$/i.exec(a.file) || ['', 'png'])[1].toLowerCase();
 			entry.icon = `data/icons/${a.id}.${ext}?${sig}`;
-			copies.push(`cp -f ${shellQuote(a.file)} ${dir}/data/icons/${a.id}.${ext} 2>/dev/null`);
+			// the file the path really names (links resolved, still in an app folder), copied as a plain file; -P never follows a link
+			copies.push(`if ${resolvedIcon(a.file)}; then cp -fP "$r" ${dir}/data/icons/${a.id}.${ext} 2>/dev/null; fi`);
 		}
 		out[a.id] = entry;
 	});

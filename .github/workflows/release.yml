@@ -19,6 +19,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   release:
+    # Run workflow publishes only from main (or a tag): a branch run by hand would put an unreviewed build on the dev channel
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +29,20 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: app/package-lock.json
+      - name: Tag matches appinfo.json and is above every dev build
+        # a stable 1.0.10 would sort below the 1.0.9xxx dev builds and never be offered to a TV on dev: a tag must be newer than all of them
+        # (bump the minor, e.g. 1.1.0), and name the version appinfo.json carries
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref_name }}
+        run: |
+          V=$(python3 -c "import json; print(json.load(open('app/public/appinfo.json'))['version'])")
+          [ "v$V" = "${REF%%-*}" ] || { echo "::error::tag $REF does not match appinfo.json version $V"; exit 1; }
+          TOP=$(gh release view dev --json assets -q '.assets[].name' 2>/dev/null | sed -n 's/^com\.ovsteenb\.lumen_\([0-9.]*\)_.*\.ipk$/\1/p' | sort -V | tail -n 1)
+          if [ -n "$TOP" ] && [ "$(printf '%s\n%s\n' "$TOP" "$V" | sort -V | tail -n 1)" != "$V" -o "$TOP" = "$V" ]; then
+            echo "::error::$V is not above the newest dev build $TOP"; exit 1
+          fi
       - name: Version
         # dev builds get a rising patch number (1.0.9 -> 1.0.9xxx, from the run number) so the Homebrew Channel offers each one as an update;
         # a tagged release keeps the version in appinfo.json
@@ -75,6 +91,8 @@ jobs:
           fi
           echo "TAG=$TAG" >> "$GITHUB_ENV"
       - name: Homebrew Channel repository
+        # a prerelease tag (v1.1.0-rc.1) is a GitHub prerelease only: it would replace the dev index with a build lower than the dev builds
+        if: github.ref_type != 'tag' || !contains(github.ref_name, '-')
         # The Channel reads the index with XHR, so it is served from raw.githubusercontent.com (CORS allowed) on the hbc-repo branch:
         #   dev builds:     https://raw.githubusercontent.com/<repo>/hbc-repo/dev/apps.json
         #   tagged release: https://raw.githubusercontent.com/<repo>/hbc-repo/stable/apps.json
@@ -82,7 +100,6 @@ jobs:
         #   https://<owner>.github.io/<repo>/dev/apps.json and .../stable/apps.json
         run: |
           CHANNEL=stable; [ "$TAG" = dev ] && CHANNEL=dev
-          case "$TAG" in *-*) CHANNEL=dev ;; esac
           BASE="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/hbc-repo/$CHANNEL"
           ARGS=""
           for f in release/com.ovsteenb.lumen_*.ipk release/com.ovsteenb.lumen.bar_*.ipk; do
@@ -92,4 +109,5 @@ jobs:
           git fetch origin hbc-repo && git worktree add hbc origin/hbc-repo || { git worktree add --detach hbc && git -C hbc checkout --orphan hbc-repo && git -C hbc rm -rfq .; }
           rm -rf "hbc/$CHANNEL"
           python3 tools/gen_hbc_repo.py "hbc/$CHANNEL" "$BASE" $ARGS
-          cd hbc && git add -A && git commit -qm "$CHANNEL: $TAG ${GITHUB_SHA:0:7}" && git push origin HEAD:hbc-repo
+          # a re-run of the same build changes nothing: no empty commit, which failed the step
+          cd hbc && git add -A && if git diff --cached --quiet; then echo "hbc-repo already up to date"; else git commit -qm "$CHANNEL: $TAG ${GITHUB_SHA:0:7}" && git push origin HEAD:hbc-repo; fi

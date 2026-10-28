@@ -17,12 +17,12 @@ REPAIR_SECS=180
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 ls1() { luna-send -n 1 "$@" </dev/null 2>/dev/null; }
 # an LG toast; Lumen is named as the source because the notification service wants an installed app id
-toast() { ls1 luna://com.webos.notification/createToast "{\"sourceId\":\"com.samrenfrew.lumen\",\"message\":\"$1\"}" >/dev/null; }
+toast() { ls1 luna://com.webos.notification/createToast "{\"sourceId\":\"com.ovsteenb.lumen\",\"message\":\"$1\"}" >/dev/null; }
 # an LG alert stays up until closed, so it is the one place that says what to do; LG's own toasts already cover connect and disconnect
 alert_id=""
 alert() {
   close_alert
-  alert_id=$(ls1 luna://com.webos.notification/createAlert "{\"sourceId\":\"com.samrenfrew.lumen\",\"title\":\"$1\",\"message\":\"$2\",\"buttons\":[{\"label\":\"OK\"}]}" \
+  alert_id=$(ls1 luna://com.webos.notification/createAlert "{\"sourceId\":\"com.ovsteenb.lumen\",\"title\":\"$1\",\"message\":\"$2\",\"buttons\":[{\"label\":\"OK\"}]}" \
     | sed -n 's/.*"alertId": *"\([^"]*\)".*/\1/p')
 }
 close_alert() {
