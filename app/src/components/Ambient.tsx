@@ -1,7 +1,6 @@
 import {useEffect, useLayoutEffect, useRef, useState} from 'preact/hooks';
 import {Status} from './Status';
 import {cachedServer, loadServer, nextAsset, picturePosition, previewUrls, type ImmichServer} from '../lib/immich';
-import {setAmbientShowing} from '../lib/system';
 import {readCache, writeCache} from '../lib/boot';
 import {dimForScreensaver, restoreBacklight} from '../lib/tvcontrols';
 import type {Weather} from '../lib/weather';
@@ -117,7 +116,6 @@ export function Ambient ({source, builtin, seconds = 30, backlight, weather, sho
 	useEffect(() => {
 		const s = state.current;
 		s.alive = true;
-		setAmbientShowing(true);
 		let server: ImmichServer | null = builtin ? null : cachedServer();
 		// the bundled picture on screen: the one the home screen showed, if it is one of them
 		if (builtin && opening) { const f = builtin.filter((b) => opening.urls.some((u) => u.slice(-b.length) === b)); if (f.length) s.shown = f[0]; }
@@ -178,7 +176,6 @@ export function Ambient ({source, builtin, seconds = 30, backlight, weather, sho
 			window.clearTimeout(s.timer);
 			window.removeEventListener('keydown', exit, true);
 			window.removeEventListener('mousedown', exit, true);
-			setAmbientShowing(false);
 		};
 	}, [source, seconds, builtin ? builtin.join('|') : '']);
 

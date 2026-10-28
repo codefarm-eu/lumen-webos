@@ -141,6 +141,8 @@ hide_home() {
 # one new NL_HOME_SHOWN line ($1): answer it as the main loop would (home-takeover, or the wake window; not when LG Home was asked for)
 on_home_shown() {
   now=$(date +%s)
+  # home_reader is a fork made before the main loop ran, so its own lastme is always empty: the main loop's choice is in LASTME
+  lastme=$(cat "$LASTME" 2>/dev/null)
   fg=$(printf '%s' "$1" | sed -n 's/.*"foregroundId": *"\([^"]*\)".*/\1/p')
   echo "$(date +%T) LG Home shown (over ${fg:-?})" >> /tmp/homehook.log
   home_key_missed "$now"
@@ -148,6 +150,12 @@ on_home_shown() {
   [ -f "$TAKEOVER_FLAG" ] && t=1
   wu=$(cat "$WAKEFILE" 2>/dev/null)
   [ ! -f "$NOWAKE_FLAG" ] && [ -n "$wu" ] && [ "$now" -lt "$wu" ] 2>/dev/null && t=1
+  # Home over Lumen bar's screensaver, with Home shows the bar off: the screensaver ends, as any key ends it (with the bar on, the bar's
+  # relaunch below ends it). Done whatever the takeover says, since the watcher put the screensaver there.
+  if [ ! -f "$BAR_FLAG" ] && bar_saver_up && bar_saver_close "LG Home shown"; then
+    [ "$t" -eq 1 ] && hide_home "Lumen bar's screensaver closed"
+    return 0
+  fi
   [ "$t" -eq 1 ] || return 0
   if [ -f "$FLAG" ]; then
     age=$((now - $(stat -c %Y "$FLAG")))
@@ -230,6 +238,32 @@ saver_overlay() {
 bar_running() {
   luna-send -n 1 luna://com.webos.applicationManager/running '{}' </dev/null 2>/dev/null | grep -q '"id": *"'$BAR'"'
 }
+# AMBIENT_ON names who set it: "bar" (Lumen bar's screensaver, bar.js) or "lumen" (Lumen's, lib/root.ts; empty from older builds)
+ambient_owner() { cat "$AMBIENT_ON" 2>/dev/null; }
+# true when AMBIENT_ON is left over, its owner showing no screensaver (its remove never reached the TV: the Homebrew Channel hung, or Lumen
+# was closed mid-screensaver). Left there, it made the watcher only end LG's screensaver, so with Lumen in front no screensaver ever showed.
+# Lumen bar's is stale once the bar is closed, whatever is in front (it is only ever shown over another app). Lumen's only when Lumen is not
+# in front either ($front); Lumen in front clears its own when it starts and when it leaves the screensaver.
+ambient_stale() {
+  [ -f "$AMBIENT_ON" ] || return 1
+  case "$(ambient_owner)" in
+    bar) ! bar_running ;;
+    *) [ -z "$front" ] && ! bar_running ;;
+  esac
+}
+# true while Lumen bar's screensaver is up (its flag, and the bar open)
+bar_saver_up() {
+  [ "$(ambient_owner)" = bar ] && [ -d "$APPS/$BAR" ] && bar_running
+}
+# closes Lumen bar, and with it its screensaver (which can not clear its flag when closed from here); $1 says why, for the log
+bar_saver_close() {
+  r=$(luna-send -n 1 luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$BAR\"}" </dev/null 2>&1 | tr -d ' \n')
+  case "$r" in
+    *'"returnValue":true'*) rm -f "$AMBIENT_ON"; echo "$(date +%T) $1: Lumen bar's screensaver closed" >> /tmp/homehook.log; return 0 ;;
+  esac
+  echo "$(date +%T) $1: Lumen bar's screensaver close failed ($r)" >> /tmp/homehook.log
+  return 1
+}
 # prints the Lumen build Home should open: the last one in front if still installed, else the first installed one
 me_target() {
   if [ -n "$lastme" ] && [ -d "$APPS/$lastme" ]; then echo "$lastme"; return 0; fi
@@ -295,6 +329,12 @@ home_key() {
   # a real Home press is never the power-on Home, so the wake window does not apply to the bar here
   bar=0
   [ -f "$BAR_FLAG" ] && [ -f "$TAKEOVER_FLAG" ] && [ -d "$APPS/$BAR" ] && bar=1
+  # Lumen bar's screensaver is shown over an app whether or not Home shows the bar. With the bar off, Home used to launch Lumen under that
+  # opaque overlay; it ends the screensaver instead, as any key does, and the app is in front as it was. (With the bar on, see below.)
+  if [ "$bar" -eq 0 ] && bar_saver_up && bar_saver_close "Home key [$t0] over ${fg:-?}"; then
+    up_cs > "$BAR_CLOSED_AT"
+    return 0
+  fi
   if [ "$bar" -eq 0 ] && me_in_front "$main" >/dev/null; then
     # no bar: as before, Home over Lumen closed LG's bar and left Lumen as it was
     echo "$(date +%T) Home key [$t0] over $fg: nothing to do" >> /tmp/homehook.log
@@ -753,8 +793,7 @@ while true; do
     # is pressed), so it is only ended, not answered by opening Lumen again.
     case "$pw" in
       *'"Screen Saver"'*)
-        # a flag left by Lumen bar's screensaver when the bar was closed some other way (neither Lumen in front nor the bar open): gone
-        [ -f "$AMBIENT_ON" ] && [ -z "$front" ] && [ "$pwprev" != "saver" ] && ! bar_running && rm -f "$AMBIENT_ON"
+        [ "$pwprev" != "saver" ] && ambient_stale && rm -f "$AMBIENT_ON"
         if [ -f "$AMBIENT_ON" ] && { [ -n "$front" ] || bar_running; }; then
           luna-send -n 1 luna://com.webos.service.tvpower/power/turnOnScreen '{}' </dev/null >/dev/null 2>&1
         elif [ "$pwprev" != "saver" ] && [ $((now - saverlast)) -ge 5 ]; then

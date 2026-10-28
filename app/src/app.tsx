@@ -26,9 +26,9 @@ import {resized, setLiveBlur, setPicks, setWallpaper, shownWallpaper} from './li
 import {restoreLeftoverBacklight} from './lib/tvcontrols';
 import {albums as immichAlbums, cachedServer, IMMICH_SOURCES, loadServer} from './lib/immich';
 import {Ambient} from './components/Ambient';
-import {returnTo, screensaverSource} from './lib/screensaver';
-import {setVideoChoice, setVideoPaused, setVideoWallpaper, VIDEO_PLACES} from './lib/wallpaperVideo';
-import {resyncFlags, setAmbientFlag, setVideoFlag, startScreensaver} from './lib/system';
+import {returnTo, screensaverSource, videoStandsIn} from './lib/screensaver';
+import {getCurrentClip, setVideoChoice, setVideoPaused, setVideoWallpaper, VIDEO_PLACES} from './lib/wallpaperVideo';
+import {resyncFlags, setAmbientFlag, setAmbientShowing, setVideoFlag, startScreensaver} from './lib/system';
 import {setFpsCounter} from './lib/fps';
 import {ControlCenter, prefetchControls, type CenterAction} from './components/ControlCenter';
 import {CITIES, COUNTRIES} from './config/cities';
@@ -314,6 +314,14 @@ export function App () {
 	const videoOn = config.videoWallpaper && videoTime;
 	const videoOnRef = useRef(videoOn);
 	videoOnRef.current = videoOn;
+	// a clip is on screen (lib/wallpaperVideo.ts announces each one, and null once it gives up)
+	const [clipPlaying, setClipPlaying] = useState(() => !!getCurrentClip());
+	useEffect(() => {
+		const update = () => setClipPlaying(!!getCurrentClip());
+		window.addEventListener('lumen-clip', update);
+		return () => window.removeEventListener('lumen-clip', update);
+	}, []);
+	const videoActive = videoStandsIn(videoOn, clipPlaying, screen);
 	// the wallpaper the screensaver opens on when started from the home screen; none when the TV's screensaver opens it
 	const ambientOpening = useRef<ReturnType<typeof shownWallpaper>>(null);
 	/** The app the TV's screensaver came up over (watch.sh's launch parameter "back"), or null: the screensaver was Lumen's own, or over Lumen. */
@@ -339,6 +347,8 @@ export function App () {
 		root.toggle('focus-strong', config.focusStrength === 'strong');
 	}, [config.focusStrength]);
 	useEffect(() => { setAmbientFlag(config.ambientOn); }, [config.ambientOn]);
+	// also at start: a flag left by a Lumen that was closed mid-screensaver goes
+	useEffect(() => { setAmbientShowing(screen === 'ambient'); }, [screen === 'ambient']);
 	// the watcher's flag files again each time Lumen comes to the front, in case a write was lost (lib/flagSync.ts)
 	useEffect(() => {
 		const onVisibility = () => { if (!document.hidden) resyncFlags(); };
@@ -378,7 +388,7 @@ export function App () {
 
 	// idle screensaver: after the chosen time on the home screen without a key press or pointer move, while the launcher is in front
 	useEffect(() => {
-		if (!config.idleSeconds || videoOn || screen !== 'home' || controls) return;   // no screensaver of our own while the video plays
+		if (!config.idleSeconds || videoActive || screen !== 'home' || controls) return;   // no screensaver of our own while the video plays
 		let timer = 0;
 		const arm = () => {
 			window.clearTimeout(timer);
@@ -388,8 +398,8 @@ export function App () {
 		const events = ['keydown', 'mousemove', 'click'];
 		events.forEach((e) => window.addEventListener(e, arm));
 		return () => { window.clearTimeout(timer); events.forEach((e) => window.removeEventListener(e, arm)); };
-	}, [config.idleSeconds, videoOn, screen, controls]);
-	useEffect(() => { setVideoFlag(videoOn); }, [videoOn]);
+	}, [config.idleSeconds, videoActive, screen, controls]);
+	useEffect(() => { setVideoFlag(videoActive); }, [videoActive]);
 
 	// ----- derived rows -----
 	const shownApps = useMemo(() => pickInOrder(allApps, config.appIds, (a) => a.id), [allApps, config.appIds]);

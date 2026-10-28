@@ -53,3 +53,13 @@ test('no app, or one that has been closed since: Lumen stays on its home screen'
 	assert.equal(returnTo('', null), null);
 	assert.equal(returnTo('org.moonfin.webos', ['com.ovsteenb.lumen']), null);
 });
+
+test('the video wallpaper holds the screensavers off only while a clip plays on the home screen', async () => {
+	const {videoStandsIn} = await import('data:text/javascript,' + encodeURIComponent(js));
+	assert.equal(videoStandsIn(true, true, 'home'), true);
+	// a video that could not play (it gave up after a few tries) leaves a still picture: screensavers as usual
+	assert.equal(videoStandsIn(true, false, 'home'), false);
+	// Settings, the Guide and the screensaver hold the video
+	for (const screen of ['settings', 'guide', 'ambient']) assert.equal(videoStandsIn(true, true, screen), false, screen);
+	assert.equal(videoStandsIn(false, true, 'home'), false);
+});

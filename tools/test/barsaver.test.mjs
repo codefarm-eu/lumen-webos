@@ -40,7 +40,7 @@ test('{"saver":true}: an opaque screensaver with Lumen\'s pictures, no bar, and 
 	assert.match(t.ids.saver.className, /saver--on/);
 	assert.doesNotMatch(t.ids.bar.className, /bar--in/);
 	// the settings backup is read as root here (the test has no XMLHttpRequest, as when the TV refuses the plain read)
-	assert.deepEqual(t.execs(), ['touch /tmp/lumen-ambient-on', 'cat /var/lib/homehook/lumen-config.json 2>/dev/null; true']);
+	assert.deepEqual(t.execs(), ['echo bar > /tmp/lumen-ambient-on', 'cat /var/lib/homehook/lumen-config.json 2>/dev/null; true']);
 	const shown = [t.ids.saverA.src, t.ids.saverB.src].filter(Boolean);
 	assert.equal(shown.length, 1);
 	assert.match(shown[0], /^file:\/\/\/media\/developer\/apps\/usr\/palm\/applications\/com\.ovsteenb\.lumen\.bar\/wallpapers\/default-[0-2]\.jpg$/);

@@ -17,7 +17,7 @@
  * this app's own wallpapers/, put there by tools/build_bar.sh: this window can't load Lumen's) and a clock,
  * full screen and opaque, in this overlay window, so the app underneath (a film paused in Moonfin or YouTube) stays in front with its player
  * as it was: it is never sent to the background or relaunched, which made Moonfin drop its player. Any key or click closes it, and the remote
- * is the app's again. /tmp/lumen-ambient-on is set while it is up, so the watcher only ends LG's screensaver when its timer fires again. */
+ * is the app's again. /tmp/lumen-ambient-on holds "bar" while it is up, so the watcher only ends LG's screensaver when its timer fires again. */
 (function () {
 	'use strict';
 	var IDLE_MS = 10000;
@@ -318,7 +318,8 @@
 		barEl.className = 'bar';
 		openedAt = Date.now();
 		try { if (sys && sys.activate) sys.activate(); } catch (e) { /* older firmware */ }
-		exec('touch /tmp/lumen-ambient-on', function () {});
+		// "bar": the watcher knows the flag is this window's, and drops it once the bar is closed (tools/tv/watch.sh ambient_stale)
+		exec('echo bar > /tmp/lumen-ambient-on', function () {});
 		saverClock();
 		saver.clockTimer = window.setInterval ? window.setInterval(saverClock, 10000) : 0;
 		// black at once, over the app: the settings (possibly read as root) and the pictures are found meanwhile, and the first picture

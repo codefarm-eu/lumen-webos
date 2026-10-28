@@ -12,25 +12,28 @@ const SCRIPT = new URL('../../tools/tv/watch.sh', import.meta.url).pathname;
 const BAR_SRC = readFileSync(new URL('../../bar/bar.js', import.meta.url), 'utf8');
 
 /** runs home_key once with `fg` in front; a fake luna-send records each launch's JSON. Prints the launches. */
-function homeKey (fg, {bar = true, syslog = null, uptime = '20000.00', close = 'true'} = {}) {
+function homeKey (fg, {bar = true, installed = bar, saver = null, running = saver !== null, syslog = null, uptime = '20000.00', close = 'true'} = {}) {
 	const dir = mkdtempSync(join(tmpdir(), 'homekey-'));
 	const bin = join(dir, 'bin');
 	const apps = join(dir, 'apps');
 	mkdirSync(bin); mkdirSync(join(apps, 'com.ovsteenb.lumen'), {recursive: true});
-	if (bar) mkdirSync(join(apps, 'com.ovsteenb.lumen.bar'));
+	if (installed) mkdirSync(join(apps, 'com.ovsteenb.lumen.bar'));
 	writeFileSync(join(bin, 'luna-send'), `#!/bin/sh
 case "$3" in
   */getForegroundAppInfo) echo '{"returnValue":true,"appId":"${fg}"}' ;;
   */launch) echo "$4" >> '${dir}/launches'; echo '{"returnValue":true}' ;;
   */closeByAppId) echo "$4" | sed 's/^/CLOSE /' >> '${dir}/launches.close'; echo '{"returnValue": ${close}}' ;;
+  */running) echo '{"returnValue": true, "running": [${running ? '{"id": "com.ovsteenb.lumen.bar"}' : ''}]}' ;;
 esac
 `);
 	chmodSync(join(bin, 'luna-send'), 0o755);
 	if (syslog !== null) writeFileSync(join(dir, 'messages'), syslog);
+	// the screensaver flag (/tmp/lumen-ambient-on) with its owner, "bar" for Lumen bar's screensaver
+	if (saver !== null) writeFileSync(join(dir, 'ambient-on'), saver + '\n');
 	writeFileSync(join(dir, 'takeover'), '');
 	if (bar) writeFileSync(join(dir, 'home-bar'), '');
 	const sh = [`WATCH_SH_LIB=1 HOMEKEY_AT='${join(dir, 'at')}' . '${SCRIPT}'`,
-		`SYSLOG='${join(dir, 'messages')}'; BAR_CLOSED_AT='${join(dir, 'closed-at')}'`, `up () { echo '${uptime}'; }`,
+		`SYSLOG='${join(dir, 'messages')}'; BAR_CLOSED_AT='${join(dir, 'closed-at')}'; AMBIENT_ON='${join(dir, 'ambient-on')}'`, `up () { echo '${uptime}'; }`,
 		`APPS='${apps}'; TAKEOVER_FLAG='${join(dir, 'takeover')}'; BAR_FLAG='${join(dir, 'home-bar')}'; WAKEFILE='${join(dir, 'wu')}'; LASTME='${join(dir, 'lastme')}'`,
 		'home_key'].join('\n');
 	// home_key puts /bin, /usr/bin... first; there is no luna-send there off the TV, so the fake one in front of PATH is the one found
@@ -55,6 +58,16 @@ test('Home over full Lumen opens the bar too', () => {
 test('without the bar: Home over an app opens Lumen, over Lumen it does nothing (as before)', () => {
 	assert.deepEqual(homeKey('youtube.leanback.v4', {bar: false}), [{id: 'com.ovsteenb.lumen'}]);
 	assert.deepEqual(homeKey('com.ovsteenb.lumen', {bar: false}), []);
+});
+
+test('Home with Lumen bar\'s screensaver up and "Home shows the bar" off: the screensaver closes, Lumen is not opened under it', () => {
+	assert.deepEqual(homeKey('youtube.leanback.v4', {bar: false, installed: true, saver: 'bar'}), ['CLOSE {"id":"com.ovsteenb.lumen.bar"}']);
+	assert.match(homeKey.closedAt, /^\d+$/);
+});
+
+test('a screensaver flag left by a closed bar, or owned by Lumen, does not stop Home opening Lumen', () => {
+	assert.deepEqual(homeKey('youtube.leanback.v4', {bar: false, installed: true, saver: 'bar', running: false}), [{id: 'com.ovsteenb.lumen'}]);
+	assert.deepEqual(homeKey('youtube.leanback.v4', {bar: false, installed: true, saver: 'lumen'}), [{id: 'com.ovsteenb.lumen'}]);
 });
 
 /** runs bar.js in a vm with a fake DOM and clock; returns helpers to fire events and read the bar's state */

@@ -27,6 +27,14 @@ export function lastPictureFits (id: string, builtin?: string[]): boolean {
 	return builtin ? builtin.indexOf(id) !== -1 : /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 }
 
+/** Whether the video wallpaper stands in for a screensaver: no screensaver of Lumen's own, and the watcher ends LG's (the video-wallpaper flag).
+ *  Only while a clip really plays on the home screen. The setting alone is not enough: a video that can't play (no network, a dead link)
+ *  stops after a few tries and leaves the still wallpaper, and Settings, the Guide and the screensaver hold the video, so with the setting on
+ *  an OLED kept a still picture for hours with every screensaver suppressed. */
+export function videoStandsIn (videoOn: boolean, playing: boolean, screen: string): boolean {
+	return videoOn && playing && screen === 'home';
+}
+
 /** Where dismissing a screensaver that the TV started over another app goes (tools/tv/watch.sh passes that app as `back`): back to it when it is
  *  still open, so it comes forward as it was (a paused film stays paused where it was), rather than a cold start. `running` is the app manager's
  *  running list, or null when it could not be read; then the app is launched anyway, as a relaunch of an app that is still open resumes it.
