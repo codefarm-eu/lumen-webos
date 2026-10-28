@@ -261,3 +261,32 @@ test('backlight as root: saved with its picture mode, put back only into that mo
 	assert.equal(r.tv, '70 vivid');
 	assert.equal(r.saved, null);
 });
+
+test('backlight as root: a value still saved for another picture mode leaves this mode undimmed, so it is never left dim with nothing saved', () => {
+	const t = start({saver: true}, {exec: CONFIG({ambientBrightness: 'dim'})});
+	t.tick();
+	const dim = t.execs().find((c) => c.indexOf('echo "$c $m"') !== -1);
+	t.fire('keydown', {keyCode: 13});
+	const restore = t.execs().find((c) => c.indexOf('f=/var/lib/homehook/saver-backlight; read -r c sm') === 0);
+	const dir = mkdtempSync(join(tmpdir(), 'bar-bl-'));
+	writeFileSync(join(dir, 'flag'), 'bar');
+	const lower = dim.split('/tmp/lumen-ambient-on').join(join(dir, 'flag'));
+	// the TV went off under an HDR film's screensaver: its value waits for hdrCinema (the watcher); now a screensaver over a cinema film
+	writeFileSync(join(dir, 'saved'), '100 hdrCinema\n');
+	let r = runRoot(lower, dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.tv, '80 cinema', 'cinema not lowered');
+	assert.equal(r.saved, '100 hdrCinema');
+	r = runRoot(restore, dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.tv, '80 cinema');
+	// the mode can't be read: not lowered either
+	r = runRoot(lower, dir, {backlight: 80, mode: ''});
+	assert.equal(r.tv, '80');
+	// the same mode as the saved value (its restore never landed), or an older build's number: lowered, the saved value kept
+	r = runRoot(lower, dir, {backlight: 90, mode: 'hdrCinema'});
+	assert.equal(r.tv, '30 hdrCinema');
+	assert.equal(r.saved, '100 hdrCinema');
+	writeFileSync(join(dir, 'saved'), '70\n');
+	r = runRoot(lower, dir, {backlight: 80, mode: 'vivid'});
+	assert.equal(r.tv, '30 vivid');
+	assert.equal(r.saved, '70');
+});

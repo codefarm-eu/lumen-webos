@@ -29,11 +29,18 @@ export function backlightSaver (io: BacklightIo) {
 	const queue = (fn: () => Promise<unknown> | void) => { chain = chain.then(fn).catch(() => undefined); return chain; };
 	const mode = () => (io.mode ? io.mode().catch(() => null) : Promise.resolve(null));
 	return {
-		/** Lowers the backlight to `level` (never raises it), keeping the old value to put back. `stillWanted` is asked again once the read is back. */
+		/** Lowers the backlight to `level` (never raises it), keeping the old value to put back. `stillWanted` is asked again once the read is back.
+		 *  A value still saved for another picture mode (or with the mode now unreadable) leaves the backlight as it is: lowered, this mode
+		 *  would have nothing saved to come back to, and stay dim. */
 		dim (level: number, stillWanted: () => boolean): Promise<unknown> {
 			return queue(() => io.read().then((before) => {
 				if (before === null || before <= level || !stillWanted()) return undefined;
-				return (io.load() === null ? mode().then((m) => io.save({level: before, mode: m})) : Promise.resolve()).then(() => {
+				const saved = io.load();
+				const want = saved === null ? null : modeOf(saved);
+				const ready = saved === null ? mode().then((m) => { io.save({level: before, mode: m}); return true; })
+					: want ? mode().then((m) => m === want) : Promise.resolve(true);
+				return ready.then((ok) => {
+					if (!ok) return undefined;
 					dimmedHere = true;
 					return io.set(level);
 				});
