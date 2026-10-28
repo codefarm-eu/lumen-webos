@@ -8,7 +8,10 @@ import vm from 'node:vm';
 const SRC = readFileSync(new URL('../../bar/bar.js', import.meta.url), 'utf8');
 const el = () => ({className: '', style: {}, children: [], textContent: '', innerHTML: '', appendChild (c) { this.children.push(c); return c; }, querySelector () { return null; }});
 
-function start (launchParams) {
+// the pictures that load: by default only the bar's own copy (a webOS 4 app can't load another app's files)
+const BAR_PICS = /\/com\.ovsteenb\.lumen\.bar\/wallpapers\/default-[0-2]\.jpg$/;
+function start (launchParams, opts = {}) {
+	const loads = opts.loads || BAR_PICS;
 	const ids = {bar: el(), view: el(), track: el(), tiles: el(), label: el(), saver: el(), saverA: el(), saverB: el(), saverClock: el()};
 	const handlers = {};
 	const calls = [];
@@ -16,9 +19,9 @@ function start (launchParams) {
 	const ctx = {
 		location: {pathname: '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen.bar/index.html'},
 		document: {getElementById: (id) => ids[id], createElement: el, addEventListener (type, fn) { (handlers[type] = handlers[type] || []).push(fn); }},
-		PalmServiceBridge: function () { this.call = (uri, params) => { calls.push({uri, params: JSON.parse(params)}); this.onservicecallback(JSON.stringify({returnValue: true, stdoutString: ''})); }; },
+		PalmServiceBridge: function () { this.call = (uri, params) => { calls.push({uri, params: JSON.parse(params)}); this.onservicecallback(JSON.stringify({returnValue: true, stdoutString: opts.exec ? opts.exec(JSON.parse(params).command || '') : ''})); }; },
 		PalmSystem: {launchParams: JSON.stringify(launchParams || {})},
-		Image: function () { const img = this; Object.defineProperty(img, 'src', {set (v) { img._src = v; (/default-[0-2]\.jpg$/.test(v) ? img.onload : img.onerror)(); }}); },
+		Image: function () { const img = this; Object.defineProperty(img, 'src', {set (v) { img._src = v; (loads.test(v) ? img.onload : img.onerror)(); }}); },
 		setTimeout: (fn) => { fn.pending = true; return 1; }, clearTimeout () {}, setInterval: () => 1, clearInterval () {},
 		close () { closed++; }, decodeURIComponent, JSON, Math, String, RegExp, Date
 	};
@@ -33,10 +36,24 @@ test('{"saver":true}: an opaque screensaver with Lumen\'s pictures, no bar, and 
 	const t = start({saver: true, lumen: 'com.ovsteenb.lumen'});
 	assert.match(t.ids.saver.className, /saver--on/);
 	assert.doesNotMatch(t.ids.bar.className, /bar--in/);
-	assert.deepEqual(t.execs(), ['touch /tmp/lumen-ambient-on']);
+	// the settings backup is read as root here (the test has no XMLHttpRequest, as when the TV refuses the plain read)
+	assert.deepEqual(t.execs(), ['touch /tmp/lumen-ambient-on', 'cat /var/lib/homehook/lumen-config.json 2>/dev/null; true']);
 	const shown = [t.ids.saverA.src, t.ids.saverB.src].filter(Boolean);
 	assert.equal(shown.length, 1);
-	assert.match(shown[0], /^file:\/\/\/media\/developer\/apps\/usr\/palm\/applications\/com\.ovsteenb\.lumen\/wallpapers\/default-[0-2]\.jpg$/);
+	assert.match(shown[0], /^file:\/\/\/media\/developer\/apps\/usr\/palm\/applications\/com\.ovsteenb\.lumen\.bar\/wallpapers\/default-[0-2]\.jpg$/);
+});
+
+test('a bar with no pictures of its own falls back to Lumen\'s folder, where the firmware lets it load them', () => {
+	const t = start({saver: true, lumen: 'com.ovsteenb.lumen'}, {loads: /\/com\.ovsteenb\.lumen\/wallpapers\/default-[0-2]\.jpg$/});
+	const shown = [t.ids.saverA.src, t.ids.saverB.src].filter(Boolean);
+	assert.equal(shown.length, 1);
+	assert.match(shown[0], /\/com\.ovsteenb\.lumen\/wallpapers\/default-[0-2]\.jpg$/);
+});
+
+test('picture time and brightness come from Lumen\'s settings backup, read as root when a plain read is refused', () => {
+	const t = start({saver: true}, {exec: (c) => (c.indexOf('cat /var/lib/homehook/lumen-config.json') === 0 ? JSON.stringify({config: {ambientSeconds: 60, ambientBrightness: 'low'}}) : '')});
+	assert.ok(t.calls.some((c) => (c.params.command || '').indexOf('cat /var/lib/homehook/lumen-config.json') === 0));
+	assert.match(t.ids.saver.className, /saver--low/);
 });
 
 test('any key closes the screensaver and nothing else: no app is launched, the window closes, the flag goes', () => {
