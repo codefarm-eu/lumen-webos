@@ -7,7 +7,7 @@ const require = createRequire(new URL('../../app/package.json', import.meta.url)
 const {transformSync} = require('esbuild');
 const src = readFileSync(new URL('../../app/src/lib/screensaver.ts', import.meta.url), 'utf8');
 const js = transformSync(src, {loader: 'ts', format: 'esm'}).code;
-const {screensaverSource, nextBuiltin, returnTo} = await import('data:text/javascript,' + encodeURIComponent(js));
+const {screensaverSource, nextBuiltin, returnTo, leaveAmbientFlow, idleDelay, VIDEO_CAP_S} = await import('data:text/javascript,' + encodeURIComponent(js));
 
 test('Immich off or not set up: the bundled pictures, never Immich', () => {
 	assert.deepEqual(screensaverSource({ambientOn: false, ambient: 'immich:recent'}, false), {kind: 'builtin'});
@@ -62,4 +62,54 @@ test('the video wallpaper holds the screensavers off only while a clip plays on 
 	// Settings, the Guide and the screensaver hold the video
 	for (const screen of ['settings', 'guide', 'ambient']) assert.equal(videoStandsIn(true, true, screen), false, screen);
 	assert.equal(videoStandsIn(false, true, 'home'), false);
+});
+
+/** runs leaveAmbientFlow with fake deps; `later` timers only run when fired by the test */
+function leave (back, running, launchResult = 'ok') {
+	const order = [];
+	const timers = [];
+	const p = leaveAmbientFlow(back, {
+		running: () => { order.push('running'); return running instanceof Error ? Promise.reject(running) : Promise.resolve(running); },
+		launch: (id) => { order.push('launch ' + id); return launchResult === 'ok' ? Promise.resolve() : Promise.reject(new Error('x')); },
+		home: () => order.push('home'),
+		later: (fn) => timers.push(fn)
+	});
+	return {p, order, timers};
+}
+
+test('leaving the screensaver over an app: the running list first, the app forward, and Lumen\'s home only after (no flash)', async () => {
+	const t = leave('org.moonfin.webos', ['org.moonfin.webos']);
+	assert.deepEqual(t.order, ['running']);
+	await t.p;
+	assert.deepEqual(t.order, ['running', 'launch org.moonfin.webos', 'home']);
+	t.timers.forEach((fn) => fn());   // the fallback timer firing late does not show home twice
+	assert.deepEqual(t.order, ['running', 'launch org.moonfin.webos', 'home']);
+});
+
+test('leaving the screensaver: home straight away with no app, home once the app is gone, and home after a failed launch', async () => {
+	const none = leave(null, []);
+	assert.deepEqual(none.order, ['home']);
+	const gone = leave('org.moonfin.webos', ['youtube.leanback.v4']);
+	await gone.p;
+	assert.deepEqual(gone.order, ['running', 'home']);
+	const failed = leave('org.moonfin.webos', new Error('no answer'), 'fail');
+	await failed.p;
+	assert.deepEqual(failed.order, ['running', 'launch org.moonfin.webos', 'home']);
+});
+
+test('leaving the screensaver: a running list that never comes shows Lumen\'s home after the wait', () => {
+	const order = [];
+	let fire;
+	leaveAmbientFlow('org.moonfin.webos', {running: () => new Promise(() => {}), launch: () => Promise.resolve(), home: () => order.push('home'), later: (fn) => { fire = fn; }});
+	assert.deepEqual(order, []);
+	fire();
+	assert.deepEqual(order, ['home']);
+});
+
+test('the video wallpaper holds off Lumen\'s screensaver only up to a long cap (3x the idle time, or 30 min with it off)', () => {
+	assert.equal(idleDelay(300, false), 300000);
+	assert.equal(idleDelay(0, false), 0);
+	assert.equal(idleDelay(300, true), 900000);
+	assert.equal(idleDelay(0, true), VIDEO_CAP_S * 1000);
+	assert.equal(VIDEO_CAP_S, 1800);
 });

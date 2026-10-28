@@ -44,3 +44,28 @@ export function returnTo (back: string | null | undefined, running: string[] | n
 	if (running && running.indexOf(back) === -1) return null;
 	return back;
 }
+
+/** Leaving a screensaver the TV started over another app (`back`): the running list is read first and the app comes forward straight from
+ *  the screensaver. Lumen's home is shown only when there is nothing to return to, or after the launch settles, so it does not flash
+ *  before the app comes forward. If the running list hasn't arrived after `waitMs`, Lumen's home is shown anyway and the app is still
+ *  launched when the list arrives. */
+export function leaveAmbientFlow (back: string | null, deps: {running: () => Promise<string[] | null>; launch: (id: string) => Promise<unknown>; home: () => void; later?: (fn: () => void, ms: number) => unknown}, waitMs = 1500): Promise<void> {
+	if (!back) { deps.home(); return Promise.resolve(); }
+	let homeShown = false;
+	const home = () => { if (!homeShown) { homeShown = true; deps.home(); } };
+	(deps.later || ((fn: () => void, ms: number) => setTimeout(fn, ms)))(home, waitMs);
+	return deps.running().then((ids) => ids, () => null).then((ids) => {
+		const to = returnTo(back, ids);
+		if (!to) { home(); return; }
+		return deps.launch(to).then(() => undefined, () => undefined).then(home);
+	});
+}
+
+/** The idle screensaver's delay in ms on the home screen, or 0 for none. While the video wallpaper stands in for a screensaver, a still
+ *  home screen (tiles, clock) over a looping clip must not stay up for hours on an OLED, so Lumen's own screensaver still opens after a long
+ *  cap: 3x the idle time, or VIDEO_CAP_S when the idle screensaver is off. */
+export const VIDEO_CAP_S = 1800;
+export function idleDelay (idleSeconds: number, videoActive: boolean): number {
+	if (!videoActive) return idleSeconds > 0 ? idleSeconds * 1000 : 0;
+	return (idleSeconds > 0 ? idleSeconds * 3 : VIDEO_CAP_S) * 1000;
+}

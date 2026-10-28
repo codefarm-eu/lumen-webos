@@ -66,7 +66,7 @@ Tested off the TV only: Chromium 53 from `file://` with `--allow-file-access-fro
 (`/media/cryptofs/apps/usr/palm/applications/<id>/largeIcon.png`, `/usr/palm/applications/<id>/...`) and real files at those paths.
 Seen on the C8 (28 Oct 2026): **a webOS 4 web app may not load another app's files as `file://`.** From Lumen, an `<img>` of Lumen bar's
 `icon.png` and an XHR of its `appinfo.json` both failed, while Lumen's own files loaded; from Lumen bar, every one of Lumen's
-`wallpapers/default-N.jpg` failed. The root read covers the icons. Lumen bar's screensaver has its own copy of the pictures (below).
+`wallpapers/default-N.jpg` failed. The root read covers the icons. Lumen bar's screensaver gets a root copy of the pictures in its own data folder (below).
 
 ## Settings > Apps grid
 
@@ -188,9 +188,15 @@ The same settings are used by `com.sammysco.avoverlay`.
   which empties its folder, is refilled at Lumen's next start. Lumen bar also reads `/var/lib/homehook/recent` and shows up to 4 recent
   apps that are not in the dock, after a divider.
 - **Screensaver** (`{"saver":true}`, the TV's screensaver over another app): Lumen's bundled pictures and a clock, opaque, over the app.
-  `tools/build_bar.sh` puts a copy of `app/public/wallpapers/default-N.jpg` (about 2.4 MB) in the bar's own `wallpapers/`, because the bar
-  can't load Lumen's. In 1.0.9036 it tried only Lumen's folder, so it was black with only the clock (`/tmp/lumen-bar.log`: "saver: open,
-  0 pictures", 28 Oct 2026). Lumen's folder is still tried when the bar has no copy. The picture time and brightness come from
+  The pictures ship only in Lumen. The bar can't load Lumen's folder (in 1.0.9036 it tried, and was black with only the clock: "saver:
+  open, 0 pictures", 28 Oct 2026), so the watcher copies Lumen's `wallpapers/default-N.jpg` as root into the bar's own
+  `data/wallpapers/`, with a `list` of their names (`watch.sh bar_pictures`). This happens when the watcher starts and again just before each
+  overlay screensaver opens. Only plain files are copied (`cp -P`), a changed picture is copied again, and a dropped one is removed.
+  `syncBar` leaves `data/wallpapers/` alone. The bar reads the `list`. Without it, the bar tries each `default-N.jpg` and stops after two
+  misses in a row. A bar with no copy yet (installed, but no screensaver since the watcher started) shows black with the clock and logs
+  "saver: open, no pictures yet". The bar package went from about 2.5 MB to about 70 KB. Over another app this screensaver always shows
+  Lumen's pictures, even with Use my photos on; the Settings text says so. Immich in the overlay would need the bar to list and fetch
+  album assets itself, which can't be checked without the TV and the server. The picture time and brightness come from
   `/var/lib/homehook/lumen-config.json`, read as root when the plain read is refused.
 - **Look:** tinted glass. A dark translucent fill with a light rim and a shadow, and no blur: an overlay cannot see the video, so the
   blurred-wallpaper glass cannot be used.
@@ -422,3 +428,18 @@ version). `tools/gen_hbc_repo.py` takes several .ipk files and reads each one's 
 `.github/workflows/release.yml` builds the public `.ipk` and updates the Channel index on the `hbc-repo` branch, which GitHub Pages serves.
 A push to `main` (pull requests are checked by `ci.yml` and publish nothing) adds a dev build (`1.0.9xxx`) to the rolling `dev` release, which keeps the last five; Actions > release >
 Run workflow does the same by hand. A `v*` tag makes a stable release and `stable/apps.json`.
+
+## Review follow-ups, part 2
+
+- **Leaving the screensaver over an app** (`lib/screensaver.ts leaveAmbientFlow`): Lumen reads the running list first and brings the app
+  forward straight from the screensaver. Lumen's home is shown only after the launch settles, or when there is nothing to return to, or after
+  1.5 s without an answer. Before, Lumen's home flashed in between.
+- **Video wallpaper:** it stands in for a screensaver only up to a long cap (`idleDelay`), which is 3x the idle time, or 30 minutes when the
+  idle screensaver is off. Then Lumen's own screensaver opens, so tiles over a looping clip don't stay up for hours.
+- **Icon cache:** only the icons of the apps installed now are kept (`checks.ts keepOnly`).
+- **One copy of shared shell:** `stop_watch.sh` sources the installed watcher for `homekey_unbind`. `root.ts` builds both of its watcher
+  scans with `forEachWatcher`. `60-homehook` keeps its own short `/proc` loop: it runs at boot, before anything else, and sharing a sourced file
+  with it is a boot-path change that can't be checked without the TV.
+- **Immich key in preview URLs: kept on purpose.** Moving previews to the `x-api-key` header means a root `curl` and a base64 reply through
+  Luna for every 1080p photo, which is a heavy load on the C8 that can't be measured without it. The server is now checked
+  (`immichServer`) before a URL is built, so the key only goes to the server you configured.

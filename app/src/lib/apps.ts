@@ -11,6 +11,7 @@ import {APP_CATALOG, type CatalogApp} from '../config/catalog';
 import {APP_ID} from '../config/constants';
 import {isWebOS} from './luna';
 import {appInfo, listLaunchPoints, readIcons} from './root';
+import {keepOnly} from './checks';
 import {lunaCall} from './luna';
 import {appExists} from './launch';
 import {ICON_PACK} from '../config/iconpack';
@@ -212,16 +213,21 @@ const ICON_BATCH = 8;
  *  not read as a file is read as root through the Homebrew Channel (`root`), a few at a time, as a data URI. Icons are requested by *index*,
  *  so app IDs never reach the shell. A tile whose icon still fails to draw shows its letter (components/Tile.tsx). */
 function loadIcons (points: LaunchPoint[], root: boolean): Promise<Record<string, string>> {
-	const cache = readIconCache();
+	const read = readIconCache();
+	const live: string[] = [];
 	const result: Record<string, string> = {};
 	const missing: {id: string; path: string}[] = [];
 	for (const p of points) {
 		const path = bestIcon(p);
 		if (!path || !/^\/[A-Za-z0-9._\/+@-]+$/.test(path)) continue;
-		if (cache[path]) result[p.id] = cache[path];
+		live.push(path);
+		if (read[path]) result[p.id] = read[path];
 		else missing.push({id: p.id, path});
 	}
-	if (!missing.length) return Promise.resolve(result);
+	// only the icons of the apps installed now are kept
+	const kept = keepOnly(read, live);
+	const cache = kept.cache;
+	if (!missing.length) { if (kept.changed) writeIconCache(cache); return Promise.resolve(result); }
 
 	return Promise.all(missing.map((m) => probeFile(m.path))).then((urls) => {
 		const unread: {id: string; path: string}[] = [];

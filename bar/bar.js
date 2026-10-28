@@ -13,8 +13,8 @@
  * Closes by itself after IDLE_MS without a key.
  * Look: Lumen's home bar (bar.css). The tile size, gap, focus scale and tiles per row come from data/bar.json "style" (Lumen's first row);
  * the tiles are placed here, and past perRow tiles the row scrolls to keep the focused one in view.
- * Screensaver ({"saver":true}, from tools/tv/watch.sh when the TV's screensaver starts over another app): Lumen's bundled pictures (a copy in
- * this app's own wallpapers/, put there by tools/build_bar.sh: this window can't load Lumen's) and a clock,
+ * Screensaver ({"saver":true}, from tools/tv/watch.sh when the TV's screensaver starts over another app): Lumen's bundled pictures (copied by
+ * root into this app's data/wallpapers/ by watch.sh bar_pictures: this window can't load Lumen's, and they ship only in Lumen) and a clock,
  * full screen and opaque, in this overlay window, so the app underneath (a film paused in Moonfin or YouTube) stays in front with its player
  * as it was: it is never sent to the background or relaunched, which made Moonfin drop its player. Any key or click closes it, and the remote
  * is the app's again. /tmp/lumen-ambient-on holds "bar" while it is up, so the watcher only ends LG's screensaver when its timer fires again.
@@ -268,7 +268,6 @@
 
 	// ----- screensaver -----
 	var SAVER_SECONDS = 30;
-	var APPS_DIR = DIR.replace(/\/[^\/]*$/, '');
 	var saverEl = document.getElementById('saver');
 	var saverPics = [document.getElementById('saverA'), document.getElementById('saverB')];
 	var saverClockEl = document.getElementById('saverClock');
@@ -313,24 +312,30 @@
 		saver.offset = nextOffset(clockRest(), SAFE_AREA, saver.offset, Math.random);
 		saverClockEl.style.transform = 'translate(' + saver.offset.x + 'px, ' + saver.offset.y + 'px)';
 	}
-	/** The screensaver's pictures, found by loading wallpapers/default-N.jpg in turn: this app's own copy first (tools/build_bar.sh bundles
-	 *  Lumen's pictures), then Lumen's folder. A webOS 4 web app may not load another app's files (C8, 28 Oct 2026: every picture in Lumen's
-	 *  folder failed from here, so the screensaver was black with only the clock), so Lumen's folder is only a fallback for a firmware that allows it. */
+	/** The screensaver's pictures: Lumen's default-N.jpg, which ship only in Lumen. Root copies them into this app's data/wallpapers/ along
+	 *  with a "list" of their names (tools/tv/watch.sh bar_pictures, run before it opens this screensaver), because a webOS 4 web app may not
+	 *  load another app's files (C8, 28 Oct 2026: from here every picture in Lumen's folder failed). If the list can't be read, each name is
+	 *  tried in turn, stopping only after two misses in a row, so one missing number doesn't hide the rest. None yet (a fresh install before
+	 *  the watcher's first copy) means black with the clock. */
+	var SAVER_PICS = DIR + '/data/wallpapers/';
+	var SAVER_NAME = /^default-[0-9]{1,2}\.jpg$/;
 	function saverFind (cb) {
-		var bases = ['file://' + DIR + '/wallpapers/default-', 'file://' + APPS_DIR + '/' + lumenId + '/wallpapers/default-'];
+		readFile(SAVER_PICS + 'list', function (text) {
+			var names = (text || '').split('\n').filter(function (n) { return SAVER_NAME.test(n); });
+			if (names.length) { cb(names.map(function (n) { return 'file://' + SAVER_PICS + n; }), 'list'); return; }
+			saverProbe(cb);
+		});
+	}
+	function saverProbe (cb) {
 		var found = [];
-		var at = 0;
+		var misses = 0;
 		var probe = function (n) {
-			if (n >= 40 || typeof Image !== 'function') { done(); return; }
+			if (n >= 40 || misses >= 2 || typeof Image !== 'function') { cb(found, 'probe'); return; }
+			var src = 'file://' + SAVER_PICS + 'default-' + n + '.jpg';
 			var img = new Image();
-			img.onload = function () { found.push(bases[at] + n + '.jpg'); probe(n + 1); };
-			img.onerror = done;
-			img.src = bases[at] + n + '.jpg';
-		};
-		var done = function () {
-			if (found.length || at + 1 >= bases.length) { cb(found, at); return; }
-			at++;
-			probe(0);
+			img.onload = function () { misses = 0; found.push(src); probe(n + 1); };
+			img.onerror = function () { misses++; probe(n + 1); };
+			img.src = src;
 		};
 		probe(0);
 	}
@@ -448,7 +453,7 @@
 		saverFind(function (files, from) {
 			if (!live()) return;
 			saver.files = files;
-			log('saver: open, ' + files.length + ' pictures' + (files.length ? (from ? ' from Lumen' : ' from the bar') : ''));
+			log('saver: open, ' + (files.length ? files.length + ' pictures (' + from + ')' : 'no pictures yet (the watcher copies them from Lumen), black with the clock'));
 			ready();
 		});
 	}

@@ -26,7 +26,7 @@ import {resized, setLiveBlur, setPicks, setWallpaper, shownWallpaper} from './li
 import {restoreLeftoverBacklight} from './lib/tvcontrols';
 import {albums as immichAlbums, cachedServer, IMMICH_SOURCES, loadServer} from './lib/immich';
 import {Ambient} from './components/Ambient';
-import {returnTo, screensaverSource, videoStandsIn} from './lib/screensaver';
+import {idleDelay, leaveAmbientFlow, screensaverSource, videoStandsIn} from './lib/screensaver';
 import {getCurrentClip, setVideoChoice, setVideoPaused, setVideoWallpaper, VIDEO_PLACES} from './lib/wallpaperVideo';
 import {resyncFlags, setAmbientFlag, setAmbientShowing, setVideoFlag, startScreensaver} from './lib/system';
 import {setFpsCounter} from './lib/fps';
@@ -322,17 +322,12 @@ export function App () {
 	const ambientBack = useRef<string | null>(null);
 	const screenRef = useRef(screen);
 	screenRef.current = screen;
-	/** Leaving the screensaver: Lumen's home screen, then back to the app it came up over when there was one and it is still open (a paused
-	 *  film in Moonfin or YouTube comes forward as it was). */
+	/** Leaving the screensaver: back to the app it came up over when there was one and it is still open (a paused film in Moonfin or
+	 *  YouTube comes forward as it was), without Lumen's home flashing first; else Lumen's home screen (lib/screensaver.ts leaveAmbientFlow). */
 	const leaveAmbient = () => {
 		const back = ambientBack.current;
 		ambientBack.current = null;
-		setScreen('home');
-		if (!back) return;
-		runningApps().then((ids) => ids, () => null).then((ids) => {
-			const to = returnTo(back, ids);
-			if (to) launchApp(to).catch(() => undefined);
-		});
+		leaveAmbientFlow(back, {running: runningApps, launch: launchApp, home: () => { if (screenRef.current === 'ambient') setScreen('home'); }});
 	};
 	useEffect(() => setVideoWallpaper(videoOn), [videoOn]);
 	useEffect(() => {
@@ -382,11 +377,13 @@ export function App () {
 
 	// idle screensaver: after the chosen time on the home screen without a key press or pointer move, while the launcher is in front
 	useEffect(() => {
-		if (!config.idleSeconds || videoActive || screen !== 'home' || controls) return;   // no screensaver of our own while the video plays
+		// while the video plays it stands in for a screensaver, up to a long cap (lib/screensaver.ts idleDelay); then Lumen's own opens
+		const delay = idleDelay(config.idleSeconds, videoActive);
+		if (!delay || screen !== 'home' || controls) return;
 		let timer = 0;
 		const arm = () => {
 			window.clearTimeout(timer);
-			timer = window.setTimeout(() => { if (!document.hidden) showScreensaver(); }, config.idleSeconds * 1000);
+			timer = window.setTimeout(() => { if (!document.hidden) showScreensaver(videoActive ? true : undefined); }, delay);
 		};
 		arm();
 		const events = ['keydown', 'mousemove', 'click'];
@@ -626,7 +623,7 @@ export function App () {
 			group: 'screensaver' as const,
 			label: immich.ready ? 'Use my photos' : 'Use Lumen\'s screensaver',
 			description: immich.ready
-				? 'When the TV\'s screensaver starts, show your photos from Immich instead of LG\'s: a slow crossfade, with the clock. Any key returns to the home screen. Off, Screensaver in Control Center shows Lumen\'s own pictures.'
+				? 'When the TV\'s screensaver starts, show your photos from Immich instead of LG\'s: a slow crossfade, with the clock. Any key returns to the home screen. Over another app (Lumen bar\'s screensaver, so a paused film stays as it was) it shows Lumen\'s own pictures. Off, Screensaver in Control Center shows Lumen\'s own pictures.'
 				: 'Lumen\'s screensaver instead of LG\'s: a slow crossfade of Lumen\'s own pictures, with the clock. With Immich set up (Settings > Wallpaper > Choose wallpaper > Photos) it shows your photos instead.',
 			value: config.ambientOn
 		},

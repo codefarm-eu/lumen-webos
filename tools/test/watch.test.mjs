@@ -502,3 +502,66 @@ test('the wake gap is measured over the sleep only: the loop marks the tick just
 	assert.ok(ih > 0 && mark > ih && sleep > mark, 'tick is set after the checks and right before the sleep');
 });
 
+
+/** runs bar_pictures in a fake apps folder: Lumen's wallpapers/ holds `lumen` (name -> contents), the bar's data/wallpapers/ `bar` */
+function barPictures ({lumen = {}, bar = null, links = [], arg = LUMEN} = {}) {
+	const apps = mkdtempSync(join(tmpdir(), 'watch-pics-'));
+	const lw = join(apps, LUMEN, 'wallpapers');
+	mkdirSync(lw, {recursive: true});
+	mkdirSync(join(apps, 'com.ovsteenb.lumen.bar'), {recursive: true});
+	Object.entries(lumen).forEach(([n, c]) => writeFileSync(join(lw, n), c));
+	links.forEach(([n, to]) => execFileSync('ln', ['-s', to, join(lw, n)]));
+	const bw = join(apps, 'com.ovsteenb.lumen.bar', 'data', 'wallpapers');
+	if (bar) { mkdirSync(bw, {recursive: true}); Object.entries(bar).forEach(([n, c]) => writeFileSync(join(bw, n), c)); }
+	const log = join(apps, 'log');
+	execFileSync('sh', ['-c', `WATCH_SH_LIB=1 LOG='${log}' . '${SCRIPT}'; APPS='${apps}'; bar_pictures '${arg}'`]);
+	const ls = execFileSync('sh', ['-c', `ls '${bw}' 2>/dev/null; true`], {encoding: 'utf8'}).trim().split('\n').filter(Boolean);
+	const read = (f) => { try { return readFileSync(f, 'utf8'); } catch { return null; } };
+	return {ls, list: read(join(bw, 'list')), file: (n) => read(join(bw, n)), log: read(log) || '', bw};
+}
+
+test('the screensaver pictures ship only in Lumen: root copies its default-N.jpg (not the -bg/-blur ones) into the bar\'s data/wallpapers with a list', () => {
+	const r = barPictures({lumen: {'default-0.jpg': 'a', 'default-1.jpg': 'b', 'default-12.jpg': 'c', 'default-0-bg.jpg': 'x', 'default-1-blur.jpg': 'y'}});
+	assert.deepEqual(r.ls.sort(), ['default-0.jpg', 'default-1.jpg', 'default-12.jpg', 'list']);
+	assert.deepEqual(r.list.split('\n').filter(Boolean).sort(), ['default-0.jpg', 'default-1.jpg', 'default-12.jpg']);
+	assert.equal(r.file('default-12.jpg'), 'c');
+	assert.match(r.log, /screensaver pictures from com\.ovsteenb\.lumen \(3 pictures, 3 copied\)/);
+});
+
+test('bar pictures: a changed picture is copied again, one Lumen dropped is removed, and nothing is logged when all is current', () => {
+	const r = barPictures({lumen: {'default-0.jpg': 'new!', 'default-1.jpg': 'b'}, bar: {'default-0.jpg': 'old', 'default-1.jpg': 'b', 'default-5.jpg': 'gone', list: 'default-0.jpg\ndefault-1.jpg\ndefault-5.jpg\n'}});
+	assert.equal(r.file('default-0.jpg'), 'new!');
+	assert.equal(r.file('default-5.jpg'), null);
+	assert.match(r.log, /2 pictures, 1 copied/);
+	const same = barPictures({lumen: {'default-0.jpg': 'a'}, bar: {'default-0.jpg': 'a', list: 'default-0.jpg\n'}});
+	assert.equal(same.log, '');
+});
+
+test('bar pictures: a link in Lumen\'s folder is never followed, and only a Lumen build (one of ME) is a source', () => {
+	const secret = join(mkdtempSync(join(tmpdir(), 'watch-secret-')), 's');
+	writeFileSync(secret, 'secret');
+	const r = barPictures({lumen: {'default-0.jpg': 'a'}, links: [['default-1.jpg', secret]]});
+	assert.deepEqual(r.ls.sort(), ['default-0.jpg', 'list']);
+	// an id that is not one of ME falls back to the first Lumen installed
+	const other = barPictures({lumen: {'default-0.jpg': 'a'}, arg: '../../etc'});
+	assert.deepEqual(other.ls.sort(), ['default-0.jpg', 'list']);
+});
+
+test('bar pictures are copied before the bar\'s screensaver opens, and once at the watcher\'s start', () => {
+	const src = readFileSync(SCRIPT, 'utf8');
+	assert.match(src, /bar_pictures "\$target"\n\s*r=\$\(lsend luna:\/\/com\.webos\.applicationManager\/launch "\{\\"id\\":\\"\$BAR\\",\\"params\\":\{\\"saver\\":true/);
+	assert.match(src, /single_instance \|\|[^\n]*\nbar_pictures /);
+});
+
+test('stop_watch.sh takes our Home bind out with watch.sh\'s own homekey_unbind (one copy), leaving other binds alone', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'watch-stop-'));
+	const k = join(dir, 'keybinds.json');
+	const ours = '"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}';
+	writeFileSync(k, `{"1":{"action":"x"},${ours},"2":{"action":"y"}}\n`);
+	const stop = new URL('../../tools/tv/stop_watch.sh', import.meta.url).pathname;
+	const out = execFileSync('sh', [stop], {encoding: 'utf8', env: {...process.env, WATCH_SH: SCRIPT, STOP_KEYBINDS: k}});
+	assert.match(out, /Home key bind removed/);
+	assert.equal(readFileSync(k, 'utf8'), '{"1":{"action":"x"},"2":{"action":"y"}}\n');
+	assert.doesNotMatch(readFileSync(stop, 'utf8'), /awk/);
+	assert.equal((readFileSync(SCRIPT, 'utf8').match(/while \(\(i = index\(\$0, b ","\)\) > 0\)/g) || []).length, 1);
+});

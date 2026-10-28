@@ -1,5 +1,5 @@
 // node --test tools/test/*.test.mjs: Lumen bar's screensaver ({"saver":true}, bar/bar.js openSaver), run in a vm with a tiny fake DOM, a fake
-// Luna bridge and fake Image loads (wallpapers/default-0..2.jpg exist).
+// Luna bridge and fake Image loads (data/wallpapers/default-0..2.jpg exist: the watcher's copy of Lumen's pictures).
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -9,8 +9,8 @@ const SRC = readFileSync(new URL('../../bar/bar.js', import.meta.url), 'utf8');
 const FLAG_ON = 't=$(mktemp /tmp/lumen-ambient-on.XXXXXX) && echo bar > "$t" && chmod 644 "$t" && mv -f "$t" /tmp/lumen-ambient-on';
 const el = () => ({className: '', style: {}, children: [], textContent: '', innerHTML: '', appendChild (c) { this.children.push(c); return c; }, querySelector () { return null; }});
 
-// the pictures that load: by default only the bar's own copy (a webOS 4 app can't load another app's files)
-const BAR_PICS = /\/com\.ovsteenb\.lumen\.bar\/wallpapers\/default-[0-2]\.jpg$/;
+// the pictures that load: by default the watcher's copy in the bar's data/wallpapers (a webOS 4 app can't load another app's files)
+const BAR_PICS = /\/com\.ovsteenb\.lumen\.bar\/data\/wallpapers\/default-[0-2]\.jpg$/;
 function start (launchParams, opts = {}) {
 	const loads = opts.loads || BAR_PICS;
 	const ids = {bar: el(), view: el(), track: el(), tiles: el(), label: el(), saver: el(), saverA: el(), saverB: el(), saverClock: el()};
@@ -25,6 +25,7 @@ function start (launchParams, opts = {}) {
 		PalmSystem: {launchParams: JSON.stringify(launchParams || {})},
 		Image: function () { const img = this; Object.defineProperty(img, 'src', {set (v) { img._src = v; (loads.test(v) ? img.onload : img.onerror)(); }}); },
 		setTimeout: (fn, ms) => { fn.pending = true; timers.push({fn, ms: ms || 0}); return 1; }, clearTimeout () {}, setInterval: () => 1, clearInterval () {},
+		XMLHttpRequest: opts.files ? function () { const x = this; x.open = (m, u) => { x.url = u; }; x.send = () => { const f = opts.files[x.url.replace(/^file:\/\//, '')]; x.readyState = 4; x.status = f == null ? 404 : 200; x.responseText = f || ''; x.onreadystatechange(); }; } : undefined,
 		close () { closed++; }, decodeURIComponent, JSON, Math, String, RegExp, Date
 	};
 	ctx.window = ctx;
@@ -44,14 +45,28 @@ test('{"saver":true}: an opaque screensaver with Lumen\'s pictures, no bar, and 
 	assert.deepEqual(t.execs(), [FLAG_ON, 'cat /var/lib/homehook/lumen-config.json 2>/dev/null; true']);
 	const shown = [t.ids.saverA.src, t.ids.saverB.src].filter(Boolean);
 	assert.equal(shown.length, 1);
-	assert.match(shown[0], /^file:\/\/\/media\/developer\/apps\/usr\/palm\/applications\/com\.ovsteenb\.lumen\.bar\/wallpapers\/default-[0-2]\.jpg$/);
+	assert.match(shown[0], /^file:\/\/\/media\/developer\/apps\/usr\/palm\/applications\/com\.ovsteenb\.lumen\.bar\/data\/wallpapers\/default-[0-2]\.jpg$/);
 });
 
-test('a bar with no pictures of its own falls back to Lumen\'s folder, where the firmware lets it load them', () => {
-	const t = start({saver: true, lumen: 'com.ovsteenb.lumen'}, {loads: /\/com\.ovsteenb\.lumen\/wallpapers\/default-[0-2]\.jpg$/});
+const PICS_DIR = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen.bar/data/wallpapers/';
+test('the pictures come from the list the watcher wrote with its copy, when it can be read', () => {
+	const t = start({saver: true}, {files: {[PICS_DIR + 'list']: 'default-3.jpg\ndefault-7.jpg\n../x.jpg\n'}, loads: /default-[37]\.jpg$/});
 	const shown = [t.ids.saverA.src, t.ids.saverB.src].filter(Boolean);
 	assert.equal(shown.length, 1);
-	assert.match(shown[0], /\/com\.ovsteenb\.lumen\/wallpapers\/default-[0-2]\.jpg$/);
+	assert.match(shown[0], /\/data\/wallpapers\/default-[37]\.jpg$/);
+});
+
+test('with no list, a missing number does not hide the pictures after it (probing stops at two misses in a row)', () => {
+	const t = start({saver: true}, {loads: /\/data\/wallpapers\/default-(0|2|3)\.jpg$/});
+	const logs = t.calls.map((c) => c.params.command || '').filter((c) => c.indexOf('lumen-bar.log') !== -1).join('\n');
+	assert.match(logs, /saver: open, 3 pictures probe/);
+});
+
+test('a fresh install before the watcher\'s first copy: no pictures, black with the clock, and the log says why', () => {
+	const t = start({saver: true}, {loads: /^$/});
+	assert.match(t.ids.saver.className, /saver--on/);
+	assert.deepEqual([t.ids.saverA.src, t.ids.saverB.src].filter(Boolean), []);
+	assert.match((t.calls.map((c) => c.params.command || '').filter((c) => c.indexOf('lumen-bar.log') !== -1).join('\n')), /no pictures yet/);
 });
 
 test('picture time and brightness come from Lumen\'s settings backup, read as root when a plain read is refused', () => {
