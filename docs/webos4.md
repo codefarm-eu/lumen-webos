@@ -117,7 +117,8 @@ What the refresh checks, and what it can't (trade-off, 28 Oct 2026 review):
   installed watcher, and an `openssl` that can verify it on webOS 4. That was left out: it can't be tested without the TV, and a check that
   fails there stops every refresh. It would also not close the hole on its own, because anything that can write Lumen's folder can change
   Lumen's own code, which runs root commands through the Homebrew Channel whenever Lumen is opened.
-- The watcher's own state and its log are in `/tmp/homehook.run` (made by root, mode 700, re-made if anything else is at that name), so a
+- The watcher's own state and its log are in `/tmp/homehook.run` (made by root, mode 700, re-made if anything else is at that name; a
+  folder someone else made there is moved aside whole, never removed with `rm -r`), so a
   link someone puts in `/tmp` can't make the root watcher write through it. The flags Lumen and Lumen bar write in `/tmp`
   (`lumen-ambient-on`, `allow_lg_home`) are written by rename (`mktemp` and `mv`), and Lumen bar's log is `/tmp/homehook.run/lumen-bar.log`, inside the watcher's root-only folder.
 
@@ -201,7 +202,7 @@ The same settings are used by `com.sammysco.avoverlay`.
   `data/wallpapers/`, with a `list` of their names (`watch.sh bar_pictures`). This happens when the watcher starts and again just before each
   overlay screensaver opens. Only plain files are copied, a changed picture is copied again, and a dropped one is removed. The bar's
   folder is writable by others, so the copy works inside `data/wallpapers/` by relative names: each folder is entered with `cd -P` and must
-  then be where it should be (`pwd -P`), `wallpapers/` must be root's own, and a picture is copied with `cp -RP` to `.new` and kept only as a
+  then be where it should be (`pwd -P`), `wallpapers/` must be root's own (one that isn't is left alone and nothing is copied), and a picture is copied with `cp -RP` to `.new` and kept only as a
   plain file. A link put at `data`, `data/wallpapers` or a picture mid-run can't send root's copy, `chmod` or removal anywhere else.
   `syncBar` leaves `data/wallpapers/` alone. The bar reads the `list`. Without it, the bar tries each `default-N.jpg` and stops after two
   misses in a row. A bar with no copy yet (installed, but no screensaver since the watcher started) shows black with the clock and logs
@@ -459,6 +460,7 @@ Run workflow does the same by hand. A `v*` tag makes a stable release and `stabl
 
 - **Wake gap:** measured from the top of one loop to the next, minus the loop's own long waits (`owned`: the Input Hook check, the
   self-refresh, the bar's picture copy). A re-injection wait is not a wake, while a suspend anywhere else in the loop still is (`wake_gap`).
+  Changed again after review, see part 4: slow Luna answers counted as a wake that way.
 - **Screensaver backlight:** saved as `<backlight> <picture mode>` and put back only into that mode (bar.js, the watcher, and Lumen's own
   `backlightSaver`). If an HDR film started meanwhile, its backlight is not touched, and the restore waits until the mode is back. A mode
   that can't be read doesn't hold it up. The saved value is removed only once the settings service answers `returnValue: true`. After a
@@ -477,3 +479,40 @@ Run workflow does the same by hand. A `v*` tag makes a stable release and `stabl
 - **Kept as is:** the log trims (Lumen bar's log, `homehook.log`, Lumen's `lumen.log`) can race a second writer between reading the size and
   the rename. The worst case is a few lines lost or the file briefly over its cap. Each log is in a folder only root writes, and nothing acts
   on its contents. The video wallpaper cap (3x the idle time, or 30 minutes with the idle screensaver off) is intentional.
+
+## Review follow-ups, part 4 (after #28)
+
+- **Wake gap:** the sleep counts in full. A slow Luna call does not: `/proc/stat`'s CPU ticks (`mono_s`) advance while the process runs and
+  stop across suspend, so a minute's suspend inside a call (an app launching, the bar's screensaver launch) is a wake, and the same minute of
+  the call merely being slow is not. The tick clock is used once a pass has shown it moving with the wall clock, and also on a pass whose ticks
+  did move but far less than the wall clock. The pass's own work also counts on its own past `WAKE_WORK_MAX` (120 s), with or without the tick
+  clock: no awake pass takes that long (each Luna call is cut off at 10 s), so past it this process was held while the kernel ran. That is what
+  a standby that freezes processes without suspending the kernel looks like (the ticks keep going), and it is the only rule besides the sleep
+  that sees such a standby; below 120 s during the work it is missed, as is a suspend during the work when `/proc/stat` can't be read. The
+  power state does not cover that miss. It fires only when a sample actually saw a state other than Active and other than Screen Saver, and
+  the next sample is Active. A freeze never takes that sample, and coming back from the screensaver (Screen Saver, then Active) is not a wake.
+  The ticks are the first core's (`cpu0`, or the one `cpu` line of a kernel without per-core lines), not the average over the cores listed: a
+  core the kernel switches off or on between two passes would move that average on its own. Each count is split as text into seconds and
+  hundredths before anything is added, because a busybox built with 32-bit shell arithmetic (`strtoul`, so a count past 2^32 reads as -1)
+  holds a core's idle ticks for 248 days only, and the old four-core sum for 62. The wake line in `homehook.log` shows the pass's wall and
+  tick seconds (`wake (gap 61s, power Active > Active, wall 62s, ticks 1)`), so the log tells which clock saw the wake. **(verify)** on the C8 that
+  those ticks pause while the TV is off: power off for a minute during a slow launch, and Lumen still opens, with `ticks` far below `wall`
+  in that line. `ticks` keeping up with `wall` after a minute off means the ticks do not pause on this TV, and only the sleep and the 120 s
+  rule see a wake there.
+- **Screensaver backlight across picture modes:** a lowering that finds a value still saved for another mode (or can't read the mode) leaves
+  the panel as it is (bar.js and Lumen's `backlightSaver`). Before, the TV switched off under an HDR film's screensaver left "100 hdrCinema"
+  waiting, the next screensaver over a cinema film lowered cinema without saving it, and its restore then waited for hdrCinema: cinema
+  stayed dim. The same mode as the saved value, or an older build's plain number, is lowered as before. A saved file that can't be read, or
+  whose new value can't be written, is not lowered either. A lowering the settings service refused no longer answers "dimmed" (it did, and
+  then neither the panel nor the pictures were dark): the bar darkens the pictures, and the value saved first stays for the restore. Lumen
+  asks again whether the screensaver is still up after the picture mode comes back, and does not save a value when it has already ended.
+- **Watcher restore:** `c` and the mode are emptied before the saved file is read. A file removed between the check and the read (the bar put
+  the backlight back meanwhile) left `c` as another function had set it (`inputhook_check` sets 1 or 2), and that was sent as the backlight.
+- **No `rm -r` on folders other users own:** busybox `rm -r` walks a folder by name, so a link put inside one while root removes it has root
+  delete files elsewhere. `bar_pictures` leaves a `data/wallpapers/` that is not root's own as it is and copies nothing (logged). In `/tmp`,
+  a folder someone else made at `/tmp/homehook.run` or at the watcher's lock is moved aside whole into a fresh root folder next to it
+  (`run_aside`), and a lock that is not root's own is never read, so its pid can't keep the watcher out. The lock is created mode 700. A dead
+  lock (the watcher was killed) is moved aside the same way, not removed: an older build's lock was mode 755, so another user could already
+  have put a link inside it.
+- **Not changed here:** `root.ts syncBar` still writes `data/icons`, `data/bar.json` and `data/sig` in the bar's folder by full paths, as
+  `bar_pictures` did before #27, and reads `data/sig` with `cat`. It is Lumen's root command, not the watcher's, and is left for its own change.
