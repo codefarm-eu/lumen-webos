@@ -6,6 +6,7 @@
 // are made here, once per picture, from Immich's small thumbnail (fetched as base64, so the canvas is never tainted).
 
 import {readFile, immichRequest, immichStackIds} from './root';
+import {immichServer} from './checks';
 import {readCache, writeCache} from './boot';
 import {loadConfig} from './storage';
 import {canvasFilterWorks} from './compat';
@@ -30,15 +31,19 @@ const POOL_KEY = 'lumen-immich-pool-v1';
 const SHOWN_MAX = 40;      // pictures remembered as recently shown, so a shuffle does not repeat them
 
 /** The server as last read from the TV (kept in localStorage so a cold start needs no root call to build the picture URL). */
-export function cachedServer (): ImmichServer | null { return readCache<ImmichServer>(SERVER_KEY); }
+export function cachedServer (): ImmichServer | null {
+	const s = readCache<ImmichServer>(SERVER_KEY);
+	return s ? immichServer(s.url, s.key) : null;
+}
 
 /** Reads /var/lib/homehook/immich.json ({"url": "http://192.168.1.10:2283", "key": "..."}). Resolves null when it is missing or wrong. */
 export function loadServer (): Promise<ImmichServer | null> {
 	return readFile('immich.json').then((text) => {
 		if (!text.trim()) { writeCache(SERVER_KEY, null); return null; }
 		const j = JSON.parse(text) as {url?: string; key?: string};
-		const url = String(j.url || '').trim().replace(/\/+$/, '').replace(/\/api$/, '');
-		const server = j.key ? {url, key: String(j.key).trim()} : null;
+		// only a plain http(s)://host[:port] and a plain key (lib/checks.ts): the key goes into picture URLs, so a wrong or replaced
+		// immich.json must not send it anywhere odd
+		const server = immichServer(j.url, j.key);
 		writeCache(SERVER_KEY, server);
 		return server;
 	}).catch(() => cachedServer());
@@ -302,6 +307,8 @@ export function nextAsset (server: ImmichServer, sel: string, avoid: string): Pr
 
 /** The picture itself, 1440 px on its long side by default in Immich: plenty for the TV, and quick to load on the home network. */
 export function previewUrl (server: ImmichServer, id: string): string {
+	// the API key travels in the query string here (an <img> can not send a header); a server that is not plain never gets one
+	if (!immichServer(server.url, server.key) || !/^[0-9a-f-]{36}$/i.test(id)) return '';
 	return `${server.url}/api/assets/${id}/thumbnail?size=preview&apiKey=${encodeURIComponent(server.key)}`;
 }
 

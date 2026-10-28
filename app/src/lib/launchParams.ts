@@ -39,3 +39,24 @@ export function onRelaunch (cb: (p: LaunchParams) => void): () => void {
 	document.addEventListener('webOSRelaunch', handler);
 	return () => document.removeEventListener('webOSRelaunch', handler);
 }
+
+/** What a launch or relaunch with `p` does (app.tsx applies it): the screen to show, whether Control Center closes, the app to go back to
+ *  after the screensaver (undefined: keep the one set), and whether the app grid gets the focus. `screen` is the screen up now.
+ *  The screensaver closes Control Center too: it stays mounted and is painted over Ambient, so its keys still ran under the photos. */
+export function launchAction (p: LaunchParams, cfg: {ambientOn: boolean; liveTv: boolean}, screen: string):
+	{screen?: string; closeControls: boolean; back?: string | null; focusDock: boolean} {
+	const out: {screen?: string; closeControls: boolean; back?: string | null; focusDock: boolean} = {closeControls: false, focusDock: p.view === 'recent'};
+	// watch.sh opens Lumen with {"view":"ambient"} when the TV's screensaver starts (Settings > Screensaver); with "back" (the app the TV's
+	// screensaver came up over), dismissing it returns there. A second ambient launch while it is up (LG's screensaver timer again) has no
+	// "back" and keeps the first one.
+	if (p.view === 'ambient' && cfg.ambientOn) {
+		if (p.back || screen !== 'ambient') out.back = p.back || null;
+		out.screen = 'ambient';
+		out.closeControls = true;
+	} else out.back = null;
+	// {"view":"guide"} is the remote's Guide button, rebound with LG Input Hook; only with Settings > Live TV on; off, the button does nothing here
+	if (p.view === 'guide' && cfg.liveTv) { out.screen = 'guide'; out.closeControls = true; }
+	// a plain relaunch is the remote's Home button: back to the home screen from Settings, the Guide, the screensaver or Control Center
+	if (!p.view) { out.screen = 'home'; out.closeControls = true; }
+	return out;
+}

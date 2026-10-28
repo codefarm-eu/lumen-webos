@@ -192,7 +192,8 @@ function fromLaunchPoints (all: LaunchPoint[] | undefined, root: boolean): Promi
 	}).map(withIconColor)).then((list) => { bootMark('apps-colours'); return list; }));
 }
 
-/** Does the icon load straight from its file? A web app on webOS 4 runs from file:// and can usually read other apps' files; if not, error. */
+/** Does the icon load straight from its file? A web app runs from file://; webOS 4 (the C8) refuses another app's files (docs/webos4.md), so there it
+ *  usually errors and the icon is read as root instead. */
 function probeFile (path: string): Promise<string | null> {
 	const url = 'file://' + path.split('/').map(encodeURIComponent).join('/');
 	return new Promise((resolve) => {

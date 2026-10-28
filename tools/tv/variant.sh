@@ -1,6 +1,6 @@
 #!/bin/sh
 # Makes a test copy of a built .ipk with extra appinfo.json keys, for TV spikes (docs/keep-alive.md): sh tools/tv/variant.sh <in.ipk> '<json>' <out-dir>
-# Example: sh tools/tv/variant.sh build/dev/com.samrenfrew.lumen_1.0.9158_all.ipk '{"noSplashOnLaunch":true}' build/variant-a
+# Example: sh tools/tv/variant.sh build/dev/com.ovsteenb.lumen_1.0.9158_all.ipk '{"noSplashOnLaunch":true}' build/variant-a
 # Everything else in the app stays byte for byte as built, so the copy differs from the installed build only in those keys.
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)

@@ -3,8 +3,11 @@
    (Lumen writes its first row's tile size, gap and focus scale there, set in bar.js as --size, --height, --gap, --scale); the numbers
    below are the defaults for 7 tiles a row. An overlay window can not blur the video under it, so the glass is Lumen's tinted fallback
    (Settings > Appearance with Liquid Glass and blur off), the one Lumen draws on the TV. */
-@font-face { font-family: 'SF Private'; src: url(../com.ovsteenb.lumen/fonts/sf.woff2) format('woff2'); font-weight: 1 1000; }
-@font-face { font-family: 'Geist Static'; src: url(../com.ovsteenb.lumen/assets/geist-static-600.woff2) format('woff2'); font-weight: 600; }
+/* the fonts from this app's own folder (a webOS 4 app may not load another app's files): Geist is packaged in by tools/build_bar.sh, and the
+   SF font, which is not in the repo, is copied in on the TV by Lumen (lib/root.ts copyFontIn). One static weight each: Chromium 53 ignores a
+   variable font's weight range. */
+@font-face { font-family: 'SF Private'; src: url(fonts/sf.woff2) format('woff2'); }
+@font-face { font-family: 'Geist Static'; src: url(fonts/geist-static-600.woff2) format('woff2'); font-weight: 600; }
 html, body { margin: 0; padding: 0; width: 1920px; height: 1080px; overflow: hidden; background: transparent; }
 body { font-family: 'SF Private', 'Geist Static', 'LG Smart UI', 'Helvetica Neue', Arial, sans-serif; color: #eee; -webkit-font-smoothing: antialiased; }
 

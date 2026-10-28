@@ -6,7 +6,7 @@
  * The remote's Home closes it too: watch.sh's home_key closes the bar itself (closeByAppId) when the surface manager says it is up. Only when
  * that is unknown does it launch the bar again with {"home":true}; that relaunch while the bar is up closes it like Back, and HOME_DEBOUNCE_MS
  * after it came up a second press is ignored. webOS 4 delivered one relaunch twice (C8, 24 Oct 2026: closed, then opened again), so a
- * relaunch within RELAUNCH_DUP_MS of the previous one is dropped.
+ * relaunch with the same parameters within RELAUNCH_DUP_MS of the previous one is dropped.
  * Magic Remote pointer: pointing at a tile focuses it, a click opens it, the wheel moves along; a click off the glass closes the bar. With the
  * pointer showing, OK can come as a click, as keydown 13, or as both: whichever comes first opens the tile and closes the bar, so the
  * other is ignored (closing), and a keydown 13 with the pointer off every tile does nothing (its click closes the bar).
@@ -17,12 +17,21 @@
  * this app's own wallpapers/, put there by tools/build_bar.sh: this window can't load Lumen's) and a clock,
  * full screen and opaque, in this overlay window, so the app underneath (a film paused in Moonfin or YouTube) stays in front with its player
  * as it was: it is never sent to the background or relaunched, which made Moonfin drop its player. Any key or click closes it, and the remote
- * is the app's again. /tmp/lumen-ambient-on holds "bar" while it is up, so the watcher only ends LG's screensaver when its timer fires again. */
+ * is the app's again. /tmp/lumen-ambient-on holds "bar" while it is up, so the watcher only ends LG's screensaver when its timer fires again.
+ * Settings > Screensaver > Brightness lowers the panel's backlight while it shows, as Lumen's own screensaver does (the old value is kept in
+ * /var/lib/homehook/saver-backlight and put back when it ends; the watcher puts it back too when it closes the bar, or finds the bar gone),
+ * and Settings > Screensaver > Move clock moves the clock to a new place each minute (lib/burnin.ts's rule). */
 (function () {
 	'use strict';
 	var IDLE_MS = 10000;
 	var HOME_DEBOUNCE_MS = 500;
 	var RELAUNCH_DUP_MS = 250;
+	var LOG_MAX = 200;     // lines this window writes to /tmp/lumen-bar.log (RAM) before it stops; the file itself is kept under LOG_BYTES
+	var LOG_BYTES = 65536;
+	var SAVER_BACKLIGHT = {dim: 30, low: 10};   // as Lumen's (app.tsx AMBIENT_BACKLIGHT)
+	var SAVED_BACKLIGHT = '/var/lib/homehook/saver-backlight';
+	// the screensaver's flag for the watcher, written as root by rename (a link someone put at that name in /tmp is replaced, not written through)
+	var FLAG_ON = 't=$(mktemp /tmp/lumen-ambient-on.XXXXXX) && echo bar > "$t" && chmod 644 "$t" && mv -f "$t" /tmp/lumen-ambient-on';
 	var CALL_MS = 3000;
 	var RECENT_MAX = 4;
 	var HOMEHOOK = '/var/lib/homehook';
@@ -49,6 +58,8 @@
 	var closeTimer = 0;
 	var openedAt = 0;      // when the bar last came up (Date.now), for the Home debounce
 	var relaunchAt = 0;    // the last webOSRelaunch handled (Date.now), to drop a duplicate
+	var relaunchKey = '';  // and its parameters (only the same relaunch twice is a duplicate)
+	var logged = 0;        // lines written to the log by this window
 	var pointer = false;   // the Magic Remote's pointer is showing (cursorStateChange, or a pointer move)
 	var hover = -1;        // the tile under the pointer
 	var told = {};         // pointer events already written to the log once (to see on the TV which ones reach this overlay window)
@@ -59,8 +70,14 @@
 		if (typeof window.PalmServiceBridge !== 'function') { if (cb) cb(null); return; }
 		var bridge = new window.PalmServiceBridge();
 		var done = false;
-		var timer = window.setTimeout(function () { if (done) return; done = true; if (cb) cb(null); }, CALL_MS);
+		var timer = 0;
+		var drop = function () {
+			var list = window.__bridges || [];
+			for (var i = 0; i < list.length; i++) if (list[i] === bridge) { list.splice(i, 1); break; }
+		};
+		timer = window.setTimeout(function () { drop(); if (done) return; done = true; if (cb) cb(null); }, CALL_MS);
 		bridge.onservicecallback = function (text) {
+			drop();
 			if (done) return;
 			done = true;
 			window.clearTimeout(timer);
@@ -69,13 +86,20 @@
 			if (cb) cb(r);
 		};
 		bridge.call(uri, JSON.stringify(params || {}));
-		window.__bridges = (window.__bridges || []).concat(bridge);   // keep a reference until it answers
+		// a reference until it answers or times out (the window can stay up for hours with the screensaver: answered ones are dropped)
+		if (!done) (window.__bridges = window.__bridges || []).push(bridge);
 	}
 	function exec (command, cb) {
 		call('luna://org.webosbrew.hbchannel.service/exec', {command: command}, function (r) { cb(r && r.returnValue !== false ? String(r.stdoutString || '') : null); });
 	}
+	/** One line in /tmp/lumen-bar.log (written as root: a link put at that name is removed first, and the file is cut back to its last half once
+	 *  over LOG_BYTES, by rename). At most LOG_MAX lines per window, so a screensaver left up for hours does not keep writing. */
 	function log (text) {
-		exec('echo "$(date +%T) ' + String(text).replace(/[^\w .:=>,+-]/g, '') + '" >> /tmp/lumen-bar.log', function () {});
+		if (logged >= LOG_MAX) return;
+		logged++;
+		var f = '/tmp/lumen-bar.log';
+		exec('f=' + f + '; [ -h $f ] && rm -f $f; echo "$(date +%T) ' + String(text).replace(/[^\w .:=>,+-]/g, '') + '" >> $f; '
+			+ 'if [ "$(wc -c < $f)" -gt ' + LOG_BYTES + ' ]; then t=$(mktemp $f.XXXXXX) && tail -c ' + (LOG_BYTES / 2) + ' $f > "$t" && mv -f "$t" $f; fi; true', function () {});
 	}
 	function launch (id) {
 		if (!APP_ID.test(id)) return;
@@ -248,15 +272,46 @@
 	var saverEl = document.getElementById('saver');
 	var saverPics = [document.getElementById('saverA'), document.getElementById('saverB')];
 	var saverClockEl = document.getElementById('saverClock');
-	var saver = {on: false, timer: 0, clockTimer: 0, files: [], at: -1, layer: 0, seconds: SAVER_SECONDS, ends: 0, session: 0, brightness: '', shown: false};
+	var saver = {on: false, timer: 0, clockTimer: 0, files: [], at: -1, layer: 0, seconds: SAVER_SECONDS, ends: 0, session: 0, brightness: '', shown: false,
+		panel: false, move: true, offset: {x: 0, y: 0}, movedAt: 0};
+	var saverClosing = false;   // the screensaver's 400 ms fade-out: a relaunch then (Home just after the key that ended it) opens nothing
+	var MOVE_EVERY_MS = 60000;  // lib/burnin.ts
+	/** lib/burnin.ts nextOffset in ES5: a new offset for a box at `rest` inside `area`, at least a third of the free range away from `prev` when
+	 *  there is room (else the farthest of 12 random tries). Whole pixels. */
+	function nextOffset (rest, area, prev, rand) {
+		var minX = area.left - rest.left, maxX = area.right - (rest.left + rest.width);
+		var minY = area.top - rest.top, maxY = area.bottom - (rest.top + rest.height);
+		if (minX > maxX) minX = maxX = (minX + maxX) / 2;
+		if (minY > maxY) minY = maxY = (minY + maxY) / 2;
+		var far = Math.sqrt((maxX - minX) * (maxX - minX) + (maxY - minY) * (maxY - minY)) / 3;
+		var best = {x: Math.round(minX), y: Math.round(minY)}, bestD = -1;
+		for (var i = 0; i < 12; i++) {
+			var o = {x: Math.min(Math.floor(maxX), Math.max(Math.ceil(minX), Math.round(minX + rand() * (maxX - minX)))),
+				y: Math.min(Math.floor(maxY), Math.max(Math.ceil(minY), Math.round(minY + rand() * (maxY - minY))))};
+			var d = Math.sqrt((o.x - prev.x) * (o.x - prev.x) + (o.y - prev.y) * (o.y - prev.y));
+			if (d >= far) return o;
+			if (d > bestD) { best = o; bestD = d; }
+		}
+		return best;
+	}
+	/** the clock's resting box (bar.css .saver__clock: left 96px, bottom 80px) and lib/burnin.ts's safe area of the 1920 x 1080 frame */
+	function clockRest () {
+		var w = (saverClockEl && saverClockEl.offsetWidth) || 340, h = (saverClockEl && saverClockEl.offsetHeight) || 150;
+		return {left: 96, top: 1080 - 80 - h, width: w, height: h};
+	}
+	var SAFE_AREA = {left: 96, top: 65, right: 1824, bottom: 1015};
 	function two (n) { return (n < 10 ? '0' : '') + n; }
 	function saverClock () {
 		if (!saverClockEl) return;
 		var d = new Date();
 		saverClockEl.textContent = two(d.getHours()) + ':' + two(d.getMinutes());
-		// a few pixels further each minute, so the clock never burns in
-		var m = d.getHours() * 60 + d.getMinutes();
-		saverClockEl.style.transform = 'translate(' + ((m * 37) % 240) + 'px, ' + (-((m * 23) % 160)) + 'px)';
+		// Move clock on (the default): a new random place in the safe area each minute, far from the last one, so it never burns in.
+		// Off: it stays where it is, as on Lumen's own screensaver.
+		var now = Date.now();
+		if (!saver.move || (saver.movedAt && now - saver.movedAt >= 0 && now - saver.movedAt < MOVE_EVERY_MS)) return;
+		saver.movedAt = now;
+		saver.offset = nextOffset(clockRest(), SAFE_AREA, saver.offset, Math.random);
+		saverClockEl.style.transform = 'translate(' + saver.offset.x + 'px, ' + saver.offset.y + 'px)';
 	}
 	/** The screensaver's pictures, found by loading wallpapers/default-N.jpg in turn: this app's own copy first (tools/build_bar.sh bundles
 	 *  Lumen's pictures), then Lumen's folder. A webOS 4 web app may not load another app's files (C8, 28 Oct 2026: every picture in Lumen's
@@ -305,15 +360,58 @@
 		var c = null;
 		try { c = JSON.parse(text || 'null'); } catch (e) { c = null; }
 		c = c && typeof c === 'object' ? (c.config && typeof c.config === 'object' ? c.config : c) : {};
-		cb({seconds: num(c.ambientSeconds, 5, 3600, SAVER_SECONDS), brightness: c.ambientBrightness === 'dim' || c.ambientBrightness === 'low' ? c.ambientBrightness : ''});
+		cb({seconds: num(c.ambientSeconds, 5, 3600, SAVER_SECONDS), brightness: c.ambientBrightness === 'dim' || c.ambientBrightness === 'low' ? c.ambientBrightness : '',
+			move: c.ambientMove !== false});
+	}
+	// ----- the panel's backlight while the screensaver shows (lib/tvcontrols.ts dimForScreensaver, in the shell as root) -----
+	// One root call at a time, in order: a restore sent while a lowering was still out could land first, and the panel stayed dim.
+	var rootQueue = [];
+	var rootBusy = false;
+	function serial (command, cb) {
+		rootQueue.push({command: command, cb: cb});
+		if (!rootBusy) rootNext();
+	}
+	function rootNext () {
+		var job = rootQueue.shift();
+		if (!job) { rootBusy = false; return; }
+		rootBusy = true;
+		exec(job.command, function (out) { if (job.cb) job.cb(out); rootNext(); });
+	}
+	var BACKLIGHT_GET = "luna-send -n 1 luna://com.webos.settingsservice/getSystemSettings '{\"category\":\"picture\",\"keys\":[\"backlight\"]}' 2>/dev/null"
+		+ " | sed -n 's/.*\"backlight\": *\"\\{0,1\\}\\([0-9][0-9]*\\).*/\\1/p'";
+	function backlightSet (v) {
+		return "luna-send -n 1 luna://com.webos.settingsservice/setSystemSettings '{\"category\":\"picture\",\"settings\":{\"backlight\":\"'" + v + "'\"}}' >/dev/null 2>&1";
+	}
+	/** Lowers the backlight to `level` (never raises it). The value before is kept in SAVED_BACKLIGHT, unless one is there already (a
+	 *  screensaver that never put it back: that one is still the real value). Prints "dimmed" when it did. */
+	function saverDimCommand (level) {
+		return 'f=' + SAVED_BACKLIGHT + '; c=$(' + BACKLIGHT_GET + '); case "$c" in \'\'|*[!0-9]*) exit 0 ;; esac; '
+			+ '[ "$c" -gt ' + level + ' ] || exit 0; [ -f $f ] || { mkdir -p ' + HOMEHOOK + ' && echo "$c" > $f; }; ' + backlightSet(level) + '; echo dimmed';
+	}
+	/** Puts back the value in SAVED_BACKLIGHT, if there is one, and removes it. tools/tv/watch.sh saver_backlight_restore does the same. */
+	var SAVER_RESTORE = 'f=' + SAVED_BACKLIGHT + '; c=$(cat $f 2>/dev/null); case "$c" in \'\'|*[!0-9]*) rm -f $f; exit 0 ;; esac; '
+		+ '[ "$c" -le 100 ] && ' + backlightSet('$c') + '; rm -f $f';
+	function saverDim (level, live) {
+		serial(saverDimCommand(level), function (out) {
+			if (out && out.indexOf('dimmed') !== -1) {
+				saver.panel = true;
+				if (live() && saver.shown) saverEl.className = saverClass();
+			}
+		});
+	}
+	function saverRestore () {
+		serial(SAVER_RESTORE, function () {});
 	}
 	function openSaver () {
 		if (!saverEl) { log('saver: no screensaver in this build'); return; }
 		// already up (the watcher's next {"saver":true}): the flag is written again, as the watcher drops a "bar" flag when it can't see the
 		// bar running (a running list that did not answer), and without it every LG screensaver timer relaunched this window
-		if (saver.on) { exec('echo bar > /tmp/lumen-ambient-on', function () {}); return; }
+		if (saver.on) { exec(FLAG_ON, function () {}); return; }
 		saver.on = true;
+		saverClosing = false;
 		saver.ends = 0;
+		saver.panel = false;
+		saver.movedAt = 0;
 		window.clearTimeout(idleTimer);
 		window.clearTimeout(closeTimer);
 		closing = false;
@@ -321,7 +419,7 @@
 		openedAt = Date.now();
 		try { if (sys && sys.activate) sys.activate(); } catch (e) { /* older firmware */ }
 		// "bar": the watcher knows the flag is this window's, and drops it once the bar is closed (tools/tv/watch.sh ambient_stale)
-		exec('echo bar > /tmp/lumen-ambient-on', function () {});
+		exec(FLAG_ON, function () {});
 		saverClock();
 		saver.clockTimer = window.setInterval ? window.setInterval(saverClock, 10000) : 0;
 		// black at once, over the app: the settings (possibly read as root) and the pictures are found meanwhile, and the first picture
@@ -338,6 +436,9 @@
 			if (!live()) return;
 			saver.seconds = st.seconds;
 			saver.brightness = st.brightness;
+			saver.move = st.move;
+			if (!saver.move) { saver.offset = {x: 0, y: 0}; if (saverClockEl) saverClockEl.style.transform = ''; }
+			if (st.brightness) saverDim(SAVER_BACKLIGHT[st.brightness], live);
 			if (saver.shown) saverEl.className = saverClass();
 			ready();
 		});
@@ -348,7 +449,8 @@
 			ready();
 		});
 	}
-	function saverClass () { return 'saver saver--on saver--in' + (saver.brightness ? ' saver--' + saver.brightness : ''); }
+	// the pictures are only made darker here when the panel could not be dimmed (the backlight unreadable, or already that low)
+	function saverClass () { return 'saver saver--on saver--in' + (saver.brightness && !saver.panel ? ' saver--' + saver.brightness : ''); }
 	function closeSaver (why) {
 		if (!saver.on) return;
 		saver.on = false;
@@ -356,8 +458,11 @@
 		if (saver.clockTimer && window.clearInterval) window.clearInterval(saver.clockTimer);
 		if (saverEl) saverEl.className = 'saver saver--on';
 		exec('rm -f /tmp/lumen-ambient-on', function () {});
+		saverRestore();
 		log('saver: close ' + why);
+		saverClosing = true;
 		closing = true;
+		window.clearTimeout(idleTimer);
 		closeTimer = window.setTimeout(function () { try { window.close(); } catch (e) { /* nothing */ } }, 400);
 	}
 	function wantsSaver (p) { return !!(p && p.saver === true); }
@@ -365,6 +470,8 @@
 	function saverLumen (p) { if (p && typeof p.lumen === 'string' && APP_ID.test(p.lumen)) lumenId = p.lumen; }
 
 	function close (why) {
+		// the screensaver is ended as such (its flag, the backlight), never just closed with the bar's own fade
+		if (saver.on) { closeSaver(why); return; }
 		if (closing) return;
 		closing = true;
 		window.clearTimeout(idleTimer);
@@ -373,6 +480,8 @@
 		closeTimer = window.setTimeout(function () { try { window.close(); } catch (e) { /* nothing */ } }, 150);
 	}
 	function poke () {
+		// no idle close under the screensaver: only a key or a click ends it
+		if (saver.on) return;
 		window.clearTimeout(idleTimer);
 		idleTimer = window.setTimeout(function () { close('idle'); }, IDLE_MS);
 	}
@@ -443,7 +552,9 @@
 	}, true);
 	document.addEventListener('cursorStateChange', function (e) {
 		var on = !!(e.detail && e.detail.visibility);
-		log('pointer: cursor ' + (on ? 'shown' : 'hidden'));
+		// the pointer showing or hiding (the remote picked up) does not end the screensaver, nor arm the bar's idle close under it
+		if (saver.on) return;
+		if (on !== pointer) log('pointer: cursor ' + (on ? 'shown' : 'hidden'));
 		pointer = on;
 		if (!on) hover = -1;
 		if (!closing) poke();
@@ -488,10 +599,15 @@
 	}
 	document.addEventListener('webOSRelaunch', function (e) {
 		var t = Date.now();
-		if (relaunchAt && t - relaunchAt >= 0 && t - relaunchAt < RELAUNCH_DUP_MS) { log('relaunch: duplicate dropped (' + (t - relaunchAt) + ' ms)'); return; }
-		relaunchAt = t;
 		var p = relaunchParams(e);
+		var k = '';
+		try { k = JSON.stringify(p); } catch (err) { k = ''; }
+		if (relaunchAt && k === relaunchKey && t - relaunchAt >= 0 && t - relaunchAt < RELAUNCH_DUP_MS) { log('relaunch: duplicate dropped (' + (t - relaunchAt) + ' ms)'); return; }
+		relaunchAt = t;
+		relaunchKey = k;
 		if (wantsSaver(p)) { saverLumen(p); openSaver(); return; }
+		// the screensaver's fade-out (a key ended it): a Home right after is not a request for the bar, the app underneath gets the remote back
+		if (saverClosing) { log('relaunch: ignored, the screensaver is closing'); return; }
 		// Home while the screensaver is up: it ends, and the app underneath is in front as it was
 		if (saver.on) { closeSaver(p.home ? 'home' : 'relaunch'); return; }
 		if (p.home && !closing) {

@@ -17,7 +17,7 @@ The target TV is an LG 43UT91006LA on webOS 25 (Chromium 120). The repo was firs
 
 A dev build is a local build that you install on the TV over SSH: `npm run deploy:home`. Do not push a branch only to get a build onto the TV, and do not ask Sam to update in the Homebrew Channel.
 
-A push to a branch other than `main` also publishes a Channel dev build (`1.0.9xxx`, `.github/workflows/release.yml`). That happens when Sam asks for a commit and push, not as a test step. A Channel update replaces a local install. A `v*` tag makes a stable release.
+Only `main` publishes a Channel dev build (`1.0.9xxx`, `.github/workflows/release.yml`): work lands there through a pull request, which `ci.yml` builds and tests without publishing anything. A branch push or a pull request never reaches the Channel, and Run workflow publishes only from `main`. A Channel update replaces a local install. A `v*` tag makes a stable release; its version must match `app/public/appinfo.json` and be above every `1.0.9xxx` dev build (bump the minor, e.g. `1.1.0`), or the workflow stops.
 
 This Mac has SSH and DevTools access to the TV. With it you can install a build, read the log, run JS or CSS in the live page, take screenshots, or develop live while Sam watches. The `tv` skill (`.claude/skills/tv/SKILL.md`) has the steps and quirks.
 

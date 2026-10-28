@@ -16,7 +16,7 @@ import {hidePointerOnForeground} from './lib/pointer';
 import {dimClasses, wallpaperDimFrom} from './lib/dim';
 import {DEFAULT_CONFIG, IDLE_SECONDS, hasSavedConfig, loadConfig, saveConfig, toggleId, withWallpaper, type UserConfig} from './lib/storage';
 import {readBackup, scheduleBackup} from './lib/backup';
-import {onRelaunch, startParams, type LaunchParams} from './lib/launchParams';
+import {launchAction, onRelaunch, startParams, type LaunchParams} from './lib/launchParams';
 import {appTile, inputTile, pickInOrder} from './lib/tiles';
 import {TIMING} from './config/constants';
 import {LOCAL_WALLPAPERS, WALLPAPERS, WALLPAPER_CATEGORIES, cloudUrl} from './config/wallpapers';
@@ -153,18 +153,12 @@ export function App () {
 	useEffect(() => {
 		let seq = 0;
 		const apply = (p: LaunchParams) => {
-			if (p.view === 'recent') setFocusRow({id: ROW.dock, seq: ++seq});
-			// watch.sh opens Lumen with {"view":"ambient"} when the TV's screensaver starts (Settings > Screensaver)
-			// with "back" (the app the TV's screensaver came up over), dismissing it returns there. A second ambient launch while it is up (LG's
-			// screensaver timer again) has no "back" and keeps the first one.
-			if (p.view === 'ambient' && configRef.current.ambientOn) {
-				if (p.back || screenRef.current !== 'ambient') ambientBack.current = p.back || null;
-				ambientOpening.current = null; setScreen('ambient');
-			} else ambientBack.current = null;
-			// {"view":"guide"} is the remote's Guide button, rebound with LG Input Hook; only with Settings > Live TV on; off, the button does nothing here
-			if (p.view === 'guide' && configRef.current.liveTv) { setScreen('guide'); setControls(false); }
-			// a plain relaunch is the remote's Home button: back to the home screen from Settings, the Guide, the screensaver or Control Center
-			if (!p.view) { setScreen('home'); setControls(false); }
+			const a = launchAction(p, configRef.current, screenRef.current);
+			if (a.focusDock) setFocusRow({id: ROW.dock, seq: ++seq});
+			if (a.back !== undefined) ambientBack.current = a.back;
+			if (a.screen === 'ambient') ambientOpening.current = null;
+			if (a.screen) setScreen(a.screen as Screen);
+			if (a.closeControls) setControls(false);
 		};
 		apply(startParams());
 		return onRelaunch(apply);

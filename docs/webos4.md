@@ -100,9 +100,23 @@ parse in `sh` and look like the watcher and its hook), moved into place, and the
 pid, so its lock stays its own and the boot hook still sees the same command line. It is not a boot: no wake window and no hidden preload,
 including in the first 5 minutes. `home_reader` is stopped first, because it is a fork of the same script and would otherwise handle Home
 a second time. A refresh runs at most once a minute and 5 times a boot. The count is a plain file of the watcher's own in `/tmp` (a symlink
-there is replaced, not followed). Each refresh is logged in `/tmp/homehook.log`. The app folder is world-writable and owned by the
+there is replaced, not followed). Each refresh is logged in `/tmp/homehook.run/homehook.log`. The app folder is world-writable and owned by the
 developer user on the C8, so the packaged files can't be checked for root ownership. Only the installed copies are checked that way. A boot
 hook that was removed by hand stays removed.
+
+What the refresh checks, and what it can't (trade-off, 28 Oct 2026 review):
+- Only a `com.ovsteenb.lumen` or `com.ovsteenb.lumen.dev` build is a source; an upstream Lumen id is never one.
+- The build writes `homehook/SHA256SUMS` (`app/vite.config.ts`) next to the pair. The watcher refreshes only when both copies match it, and
+  Settings > Home opens Lumen does the same check (`lib/root.ts` `setHomeTakeover`). A half-written install, or one file changed on its own,
+  is refused. On a TV without `sha256sum` the watcher does not refresh itself at all (opening Lumen still installs it).
+- This is an integrity check, not authentication: `SHA256SUMS` sits in the same developer-writable folder. Real authentication would need a
+  signature made by the release workflow (a signing key held as a GitHub secret) and checked on the TV with a public key built into the
+  installed watcher, and an `openssl` that can verify it on webOS 4. That was left out: it can't be tested without the TV, and a check that
+  fails there stops every refresh. It would also not close the hole on its own, because anything that can write Lumen's folder can change
+  Lumen's own code, which runs root commands through the Homebrew Channel whenever Lumen is opened.
+- The watcher's own state and its log are in `/tmp/homehook.run` (made by root, mode 700, re-made if anything else is at that name), so a
+  link someone puts in `/tmp` can't make the root watcher write through it. The flags Lumen and Lumen bar write in `/tmp`
+  (`lumen-ambient-on`, `allow_lg_home`) are written by rename (`mktemp` and `mv`), and `lumen-bar.log` drops a link at its name first.
 
 Once a second the watcher checks for LG's home and opens Lumen in its place:
 - `com.webos.app.home` or `com.webos.app.launcher` as the foreground app. This covers the Home key (short or long press), Back out of an
@@ -138,7 +152,7 @@ sent with `com.webos.service.networkinput/sendSpecialKey {"key":"HOME"}`):
   says `visible: true`, so it never reaches an app.
 - Lumen also calls `webOSSystem.activate()` on every relaunch, as LG asks of apps.
 
-Each step is logged to `/tmp/homehook.log` (`LG Home shown (over <id>)`, `LG Home -> <id>`, `LG Home bar closed with Back (...)`).
+Each step is logged to `/tmp/homehook.run/homehook.log` (`LG Home shown (over <id>)`, `LG Home -> <id>`, `LG Home bar closed with Back (...)`).
 
 Lumen's own **LG Home** button (glass bar menu, Control Center): launching `com.webos.app.home` fails with `notexist` on webOS 4, so it then
 sends the Home key the same way, as root. `/tmp/allow_lg_home` is set first, so the watcher leaves that bar alone.
@@ -261,18 +275,18 @@ Now the Home key never reaches the surface manager.
   injects only once per boot (its service marks it done in `/tmp/inputhook`), so the new process had no hook: every Home press opened LG's
   bar first and the `NL_HOME_SHOWN` path then put Lumen bar over it. The watcher now checks every 5 s that `lginput2` has Input Hook's
   `libphp.so` mapped and, if the same unhooked pid is seen twice in a row, runs the service's own `ezinject` command for `lginput2` only
-  (at most once a minute and 5 times a boot, counted in `/tmp/homehook-reinject`), logging `Input Hook re-injected into lginput2`. LG's bar
+  (at most once a minute and 5 times a boot, counted in `/tmp/homehook.run/homehook-reinject`), logging `Input Hook re-injected into lginput2`. LG's bar
   shown with our bind in place but no Home key in the 3 s before is logged as `warning: LG Home shown with no Home key ...` with the hook
   state (Back out of an app, long press and power on log it too, with `hooked: yes`).
   Hardened after review: lginput2 must be a root process (found without a fork per process), nothing runs while lginput2 is being traced
   (an injection under way), Input Hook 1.5.0's `libinputhookpp.so` is detected and injected with the service's own command, nothing runs if
   Input Hook's files are missing or are not root's own plain files, `ezinject` gets `chmod go-w` (the service makes it 777) and runs in the
-  background (never killed, waited for 10 s at most), and `/tmp/homehook.log` is cut to its last 2000 lines past 512 KB.
+  background (never killed, waited for 10 s at most), and `/tmp/homehook.run/homehook.log` is cut to its last 2000 lines past 512 KB.
 - **Lost:** Home long press (LG's recents).
 - **Checked on the C8, 24 Oct 2026 00:28 BST:** the bind was added and Input Hook logged `Keybinds reloaded` in `lginput2` and `tvservice`.
   `home-key.sh` over YouTube launched Lumen bar 0.11 s after it started, and the bar window was visible 0.38 s after it started
   (`NL_VSC ... lumen.bar visible: true`), with no `_WEBOS_WINDOW_TYPE_HOME` line at all. A press on the real remote was not made from
-  here: on the TV, `/tmp/lginput-hook-lginput2.log` shows `773: execing...` and `/tmp/homehook.log` shows `Home key [...] over ...`.
+  here: on the TV, `/tmp/lginput-hook-lginput2.log` shows `773: execing...` and `/tmp/homehook.run/homehook.log` shows `Home key [...] over ...`.
 - **Undo:** `touch /var/lib/homehook/no-home-key` (the watcher takes its bind out within 5 s), or turn off Home opens Lumen, or run
   `tools/tv/stop_watch.sh`, which also removes it.
 

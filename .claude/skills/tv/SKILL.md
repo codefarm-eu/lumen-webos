@@ -13,10 +13,10 @@ Hard rule (CLAUDE.md): a change Sam is to try goes into the live page first, wit
 
 ## Install a build
 
-1. Run `npm run deploy:home`. It type checks, builds Lumen as `com.samrenfrew.lumen` with the dev tools on, copies the `.ipk` to the TV, installs it and launches it. A final `"install has been disconnected."` after `"installed"` is normal.
-2. Done is Lumen in front: `luna-send -n 1 luna://com.webos.applicationManager/getForegroundAppInfo '{}'` (with `ssh -tt`) gives `com.samrenfrew.lumen`. It can take about 4 seconds. If ssh stops answering, the TV is in standby: say that Lumen starts on the new build at the next switch-on.
+1. Run `npm run deploy:home`. It type checks, builds Lumen as `com.ovsteenb.lumen` with the dev tools on, copies the `.ipk` to the TV, installs it and launches it. A final `"install has been disconnected."` after `"installed"` is normal.
+2. Done is Lumen in front: `luna-send -n 1 luna://com.webos.applicationManager/getForegroundAppInfo '{}'` (with `ssh -tt`) gives `com.ovsteenb.lumen`. It can take about 4 seconds. If ssh stops answering, the TV is in standby: say that Lumen starts on the new build at the next switch-on.
 
-Plain `npm run deploy` uses the app id in `.env`, which is `com.samrenfrew.lumen.dev` ("Home Dev"). That installs a second app beside Lumen, and the Home button does not open it. Use it only when Sam asks for a side-by-side copy.
+Plain `npm run deploy` uses the app id in `.env`, which is `com.ovsteenb.lumen.dev` ("Home Dev"). That installs a second app beside Lumen, and the Home button does not open it. Use it only when Sam asks for a side-by-side copy.
 
 A branch push publishes a Channel build (`1.0.9xxx`), and a Channel update replaces the local install. Push only when Sam asks for it.
 

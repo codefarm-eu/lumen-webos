@@ -7,8 +7,7 @@
   "scripts": {
     "dev": "vite --port 5199",
     "build": "tsc --noEmit && vite build",
-    "package": "sh scripts/package.sh",
-    "manifest": "node scripts/gen-manifest.mjs"
+    "package": "sh scripts/package.sh"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",

@@ -132,7 +132,7 @@ src/
   components/  Header, Clock, Row, Grid, Tile, OptionList, Glyph, Toast
   screens/     Home, Settings
   app.tsx      state, data loading and wiring
-scripts/       package.sh, install.sh, gen-manifest.mjs
+scripts/       package.sh (the Homebrew Channel index is tools/gen_hbc_repo.py)
 public/        appinfo.json, app icon, bundled icons, licence texts
 .github/       build on push; release (ipk + Homebrew manifest) on tag
 ```
