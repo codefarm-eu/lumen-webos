@@ -12,7 +12,7 @@ mkdir -p "$TMP/licenses" && cp "$ROOT/LICENSE" "$TMP/licenses/LICENSE.txt"
 # webOS 4 web app may not load files from another app's folder (C8, 28 Oct 2026: from the bar every one of Lumen's failed, so it was black)
 mkdir -p "$TMP/wallpapers"
 for f in "$ROOT"/app/public/wallpapers/default-[0-9].jpg "$ROOT"/app/public/wallpapers/default-[0-9][0-9].jpg; do
-  [ -f "$f" ] && cp "$f" "$TMP/wallpapers/"
+  if [ -f "$f" ]; then cp "$f" "$TMP/wallpapers/"; fi
 done
 echo "Lumen bar: $(ls "$TMP/wallpapers" | wc -l | tr -d ' ') screensaver pictures"
 python3 - "$ROOT/app/public/appinfo.json" "$TMP/appinfo.json" <<'PY'

@@ -15,6 +15,7 @@ function start (launchParams, opts = {}) {
 	const ids = {bar: el(), view: el(), track: el(), tiles: el(), label: el(), saver: el(), saverA: el(), saverB: el(), saverClock: el()};
 	const handlers = {};
 	const calls = [];
+	const timers = [];
 	let closed = 0;
 	const ctx = {
 		location: {pathname: '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen.bar/index.html'},
@@ -22,14 +23,16 @@ function start (launchParams, opts = {}) {
 		PalmServiceBridge: function () { this.call = (uri, params) => { calls.push({uri, params: JSON.parse(params)}); this.onservicecallback(JSON.stringify({returnValue: true, stdoutString: opts.exec ? opts.exec(JSON.parse(params).command || '') : ''})); }; },
 		PalmSystem: {launchParams: JSON.stringify(launchParams || {})},
 		Image: function () { const img = this; Object.defineProperty(img, 'src', {set (v) { img._src = v; (loads.test(v) ? img.onload : img.onerror)(); }}); },
-		setTimeout: (fn) => { fn.pending = true; return 1; }, clearTimeout () {}, setInterval: () => 1, clearInterval () {},
+		setTimeout: (fn, ms) => { fn.pending = true; timers.push({fn, ms: ms || 0}); return 1; }, clearTimeout () {}, setInterval: () => 1, clearInterval () {},
 		close () { closed++; }, decodeURIComponent, JSON, Math, String, RegExp, Date
 	};
 	ctx.window = ctx;
 	vm.runInNewContext(SRC, ctx);
 	const fire = (type, props) => { const e = Object.assign({type, preventDefault () {}}, props); (handlers[type] || []).forEach((fn) => fn(e)); };
 	const execs = () => calls.filter((c) => c.uri.indexOf('/exec') !== -1).map((c) => c.params.command).filter((c) => c.indexOf('lumen-bar.log') === -1);
-	return {ids, fire, calls, execs, closed: () => closed};
+	// runs the timers set for `ms` or less (the screensaver's 30 ms fade-in), once
+	const tick = (ms = 50) => { timers.splice(0).forEach((t) => { if (t.ms <= ms) t.fn(); else timers.push(t); }); };
+	return {ids, fire, calls, execs, tick, closed: () => closed};
 }
 
 test('{"saver":true}: an opaque screensaver with Lumen\'s pictures, no bar, and the watcher told it is up', () => {
@@ -53,6 +56,8 @@ test('a bar with no pictures of its own falls back to Lumen\'s folder, where the
 test('picture time and brightness come from Lumen\'s settings backup, read as root when a plain read is refused', () => {
 	const t = start({saver: true}, {exec: (c) => (c.indexOf('cat /var/lib/homehook/lumen-config.json') === 0 ? JSON.stringify({config: {ambientSeconds: 60, ambientBrightness: 'low'}}) : '')});
 	assert.ok(t.calls.some((c) => (c.params.command || '').indexOf('cat /var/lib/homehook/lumen-config.json') === 0));
+	t.tick();
+	assert.match(t.ids.saver.className, /saver--in/);
 	assert.match(t.ids.saver.className, /saver--low/);
 });
 

@@ -248,7 +248,7 @@
 	var saverEl = document.getElementById('saver');
 	var saverPics = [document.getElementById('saverA'), document.getElementById('saverB')];
 	var saverClockEl = document.getElementById('saverClock');
-	var saver = {on: false, timer: 0, clockTimer: 0, files: [], at: -1, layer: 0, seconds: SAVER_SECONDS, ends: 0};
+	var saver = {on: false, timer: 0, clockTimer: 0, files: [], at: -1, layer: 0, seconds: SAVER_SECONDS, ends: 0, session: 0, brightness: '', shown: false};
 	function two (n) { return (n < 10 ? '0' : '') + n; }
 	function saverClock () {
 		if (!saverClockEl) return;
@@ -321,17 +321,31 @@
 		exec('touch /tmp/lumen-ambient-on', function () {});
 		saverClock();
 		saver.clockTimer = window.setInterval ? window.setInterval(saverClock, 10000) : 0;
+		// black at once, over the app: the settings (possibly read as root) and the pictures are found meanwhile, and the first picture
+		// fades in once both are known. A late answer from an earlier opening (session) is dropped.
+		var session = ++saver.session;
+		var live = function () { return saver.on && saver.session === session; };
+		saver.brightness = '';
+		saver.shown = false;
+		saverEl.className = 'saver saver--on';
+		window.setTimeout(function () { if (live()) { saver.shown = true; saverEl.className = saverClass(); } }, 30);
+		var waiting = 2;
+		var ready = function () { if (--waiting === 0 && live()) saverNext(); };
 		saverSettings(function (st) {
+			if (!live()) return;
 			saver.seconds = st.seconds;
-			saverEl.className = 'saver saver--on' + (st.brightness ? ' saver--' + st.brightness : '');
-			window.setTimeout(function () { if (saver.on) saverEl.className += ' saver--in'; }, 30);
-			saverFind(function (files, from) {
-				saver.files = files;
-				log('saver: open, ' + files.length + ' pictures' + (files.length ? (from ? ' from Lumen' : ' from the bar') : ''));
-				saverNext();
-			});
+			saver.brightness = st.brightness;
+			if (saver.shown) saverEl.className = saverClass();
+			ready();
+		});
+		saverFind(function (files, from) {
+			if (!live()) return;
+			saver.files = files;
+			log('saver: open, ' + files.length + ' pictures' + (files.length ? (from ? ' from Lumen' : ' from the bar') : ''));
+			ready();
 		});
 	}
+	function saverClass () { return 'saver saver--on saver--in' + (saver.brightness ? ' saver--' + saver.brightness : ''); }
 	function closeSaver (why) {
 		if (!saver.on) return;
 		saver.on = false;
