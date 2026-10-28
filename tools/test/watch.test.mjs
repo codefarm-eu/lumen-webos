@@ -649,6 +649,10 @@ test('backlight restore: only into the picture mode it was saved in; then on its
 	assert.equal(other.saved, true);
 	assert.doesNotMatch(other.sent, /setSystemSettings/);
 	assert.match(other.log, /waits for picture mode cinema \(now hdrCinema\)/);
+	// waiting on the mode is not a failure: asked on every pass (no back-off), logged once
+	const waits = leftover({saved: '80 cinema', mode: 'hdrCinema', runs: 30});
+	assert.equal((waits.sent.match(/getSystemSettings/g) || []).length, 30);
+	assert.equal((waits.log.match(/waits for picture mode/g) || []).length, 1);
 	const same = leftover({saved: '80 cinema', mode: 'cinema'});
 	assert.equal(same.saved, false);
 	assert.match(same.sent, /setSystemSettings .*"backlight":"80"/);

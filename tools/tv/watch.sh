@@ -354,7 +354,8 @@ saver_backlight_restore() {
   if [ -n "$sbm" ]; then
     sbc=$(lsend luna://com.webos.settingsservice/getSystemSettings '{"category":"picture","keys":["pictureMode"]}' </dev/null 2>/dev/null \
       | sed -n 's/.*"pictureMode": *"\([A-Za-z0-9]*\)".*/\1/p')
-    if [ -n "$sbc" ] && [ "$sbc" != "$sbm" ]; then sbl_backoff "$sbt" "waits for picture mode $sbm (now $sbc)"; return 1; fi
+    # not a failure: no back-off (one cheap query per leftover pass), so the backlight is back within seconds of the mode; logged once
+    if [ -n "$sbc" ] && [ "$sbc" != "$sbm" ]; then sbl_note "waits for picture mode $sbm (now $sbc)"; return 1; fi
   fi
   r=$(lsend luna://com.webos.settingsservice/setSystemSettings '{"category":"picture","settings":{"backlight":"'"$c"'"}}' </dev/null 2>&1 | tr -d ' \n')
   case "$r" in
@@ -367,7 +368,11 @@ saver_backlight_restore() {
 sbl_backoff() {
   sbl_next=$(($1 + sbl_wait))
   sbl_wait=$((sbl_wait * 2)); [ "$sbl_wait" -gt 300 ] && sbl_wait=300
-  [ "$2" != "$sbl_said" ] && { sbl_said=$2; echo "$(date +%T) screensaver backlight $2; tried again later" >> "$LOG"; }
+  sbl_note "$2"
+}
+# logs "$1" about the saved backlight once, until the reason changes
+sbl_note() {
+  [ "$1" != "$sbl_said" ] && { sbl_said=$1; echo "$(date +%T) screensaver backlight $1; tried again later" >> "$LOG"; }
   return 0
 }
 # A backlight Lumen bar's screensaver lowered, with the bar closed some other way (the TV switched off under it, the bar ended without its
