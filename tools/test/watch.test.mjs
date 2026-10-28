@@ -580,6 +580,42 @@ test('bar pictures: a picture swapped for a link while it is copied is not kept,
 	assert.ok(!r.ls.includes('.new'));
 });
 
+/** saver_leftover with the screensaver flag holding `flag` (null: none), a saved backlight `saved` (null: none) and Lumen bar `bar` */
+function leftover ({flag = null, saved = '80', bar = 'closed'} = {}) {
+	const dir = mkdtempSync(join(tmpdir(), 'leftover-'));
+	const on = join(dir, 'ambient-on'), sb = join(dir, 'saver-backlight'), calls = join(dir, 'calls');
+	if (flag !== null) writeFileSync(on, flag ? flag + '\n' : '');
+	if (saved !== null) writeFileSync(sb, saved + '\n');
+	const sh = [`WATCH_SH_LIB=1 . '${SCRIPT}'`, `AMBIENT_ON='${on}'; SAVER_BACKLIGHT='${sb}'; LOG='${join(dir, 'log')}'`,
+		`bar_state () { echo ${bar}; }`, `lsend () { echo "$*" >> '${calls}'; echo '{"returnValue":true}'; }`, 'saver_leftover'].join('\n');
+	execFileSync('sh', ['-c', sh]);
+	const has = (f) => { try { readFileSync(f); return true; } catch { return false; } };
+	let sent = '';
+	try { sent = readFileSync(calls, 'utf8'); } catch { /* none */ }
+	return {flag: has(on), saved: has(sb), sent};
+}
+
+test('a backlight Lumen bar\'s screensaver lowered is put back once the bar is closed, also when its "bar" flag was left behind (the TV switched off under it)', () => {
+	const stale = leftover({flag: 'bar'});
+	assert.equal(stale.flag, false);
+	assert.equal(stale.saved, false);
+	assert.match(stale.sent, /setSystemSettings .*"backlight":"80"/);
+	const none = leftover();
+	assert.equal(none.saved, false);
+	assert.match(none.sent, /"backlight":"80"/);
+});
+
+test('the backlight is left as it is while the bar is open or unknown, or Lumen\'s own screensaver holds the flag', () => {
+	for (const c of [{flag: 'bar', bar: 'open'}, {flag: 'bar', bar: 'unknown'}, {bar: 'open'}, {flag: 'lumen'}, {flag: ''}]) {
+		const r = leftover(c);
+		assert.equal(r.saved, true, JSON.stringify(c));
+		assert.equal(r.flag, c.flag !== undefined, JSON.stringify(c));
+		assert.equal(r.sent, '', JSON.stringify(c));
+	}
+	assert.equal(leftover({flag: 'bar', saved: null}).flag, true, 'nothing saved: nothing to do, not even a running list read');
+	assert.match(readFileSync(SCRIPT, 'utf8'), /\[ \$\(\(ticks % 5\)\) -eq 3 \] && saver_leftover\n/);
+});
+
 test('bar pictures are copied before the bar\'s screensaver opens, and once at the watcher\'s start', () => {
 	const src = readFileSync(SCRIPT, 'utf8');
 	assert.match(src, /bar_pictures "\$target"\n\s*r=\$\(lsend luna:\/\/com\.webos\.applicationManager\/launch "\{\\"id\\":\\"\$BAR\\",\\"params\\":\{\\"saver\\":true/);

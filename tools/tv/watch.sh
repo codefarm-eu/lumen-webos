@@ -990,8 +990,7 @@ while true; do
   ticks=$((ticks + 1))
   [ $((ticks % 5)) -eq 1 ] && { sync_home_key; inputhook_check "$now"; }
   [ $((ticks % 300)) -eq 2 ] && trim_log "$IH_LOG"
-  # a backlight Lumen bar's screensaver lowered, with the bar gone and no screensaver up (the bar was closed some other way): put back
-  if [ $((ticks % 5)) -eq 3 ] && [ -f "$SAVER_BACKLIGHT" ] && [ ! -f "$AMBIENT_ON" ] && [ "$(bar_state)" = closed ]; then saver_backlight_restore; fi
+  [ $((ticks % 5)) -eq 3 ] && saver_leftover
   [ $((ticks % 30)) -eq 15 ] && self_update "$now"
   if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
     # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real
