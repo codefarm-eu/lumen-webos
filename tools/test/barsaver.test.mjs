@@ -3,7 +3,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
+import {chmodSync, mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import vm from 'node:vm';
@@ -226,9 +226,9 @@ case "$*" in
   *setSystemSettings*) ${setOk ? `v=$(echo "$*" | sed -n 's/.*"backlight":"\\([0-9]*\\)".*/\\1/p'); echo "$v $m" > '${dir}/tv'; echo '{"returnValue": true}'` : `echo '{"returnValue": false}'`} ;;
 esac
 `, {mode: 0o755});
-	execFileSync('sh', ['-c', '{ ' + cmd.split('/var/lib/homehook/saver-backlight').join(join(dir, 'saved')).split('mkdir -p /var/lib/homehook').join('true') + '\n}; true'], {env: {...process.env, PATH: `${dir}:${process.env.PATH}`}});
+	const out = execFileSync('sh', ['-c', '{ ' + cmd.split('/var/lib/homehook/saver-backlight').join(join(dir, 'saved')).split('mkdir -p /var/lib/homehook').join('true') + '\n}; true'], {encoding: 'utf8', env: {...process.env, PATH: `${dir}:${process.env.PATH}`}});
 	const read = (f) => { try { return readFileSync(join(dir, f), 'utf8').trim(); } catch { return null; } };
-	return {tv: read('tv'), saved: read('saved')};
+	return {tv: read('tv'), saved: read('saved'), out: out.trim()};
 }
 
 test('backlight as root: saved with its picture mode, put back only into that mode, and kept when the settings service refuses', () => {
@@ -260,4 +260,65 @@ test('backlight as root: saved with its picture mode, put back only into that mo
 	r = runRoot(restore, dir, {backlight: 30, mode: 'vivid'});
 	assert.equal(r.tv, '70 vivid');
 	assert.equal(r.saved, null);
+});
+
+test('backlight as root: a value still saved for another picture mode leaves this mode undimmed, so it is never left dim with nothing saved', () => {
+	const t = start({saver: true}, {exec: CONFIG({ambientBrightness: 'dim'})});
+	t.tick();
+	const dim = t.execs().find((c) => c.indexOf('echo "$c $m"') !== -1);
+	t.fire('keydown', {keyCode: 13});
+	const restore = t.execs().find((c) => c.indexOf('f=/var/lib/homehook/saver-backlight; read -r c sm') === 0);
+	const dir = mkdtempSync(join(tmpdir(), 'bar-bl-'));
+	writeFileSync(join(dir, 'flag'), 'bar');
+	const lower = dim.split('/tmp/lumen-ambient-on').join(join(dir, 'flag'));
+	// the TV went off under an HDR film's screensaver: its value waits for hdrCinema (the watcher); now a screensaver over a cinema film
+	writeFileSync(join(dir, 'saved'), '100 hdrCinema\n');
+	let r = runRoot(lower, dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.tv, '80 cinema', 'cinema not lowered');
+	assert.equal(r.saved, '100 hdrCinema');
+	r = runRoot(restore, dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.tv, '80 cinema');
+	// the mode can't be read: not lowered either
+	r = runRoot(lower, dir, {backlight: 80, mode: ''});
+	assert.equal(r.tv, '80');
+	// the same mode as the saved value (its restore never landed), or an older build's number: lowered, the saved value kept
+	r = runRoot(lower, dir, {backlight: 90, mode: 'hdrCinema'});
+	assert.equal(r.tv, '30 hdrCinema');
+	assert.equal(r.saved, '100 hdrCinema');
+	writeFileSync(join(dir, 'saved'), '70\n');
+	r = runRoot(lower, dir, {backlight: 80, mode: 'vivid'});
+	assert.equal(r.tv, '30 vivid');
+	assert.equal(r.saved, '70');
+	// nothing readable in the file (gone between the check and the read, or empty): this mode is saved, then lowered
+	writeFileSync(join(dir, 'saved'), '\n');
+	r = runRoot(lower, dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.tv, '30 cinema');
+	assert.equal(r.saved, '80 cinema');
+	// the file can't be read or replaced: not lowered, so a mode is never dimmed with nothing that can be put back
+	writeFileSync(join(dir, 'saved'), '100 hdrCinema\n');
+	chmodSync(join(dir, 'saved'), 0o000);
+	r = runRoot(lower, dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.tv, '80 cinema');
+	chmodSync(join(dir, 'saved'), 0o644);
+});
+
+test('backlight as root: a lowering the settings service refused does not say "dimmed", so the pictures are darkened instead', () => {
+	const t = start({saver: true}, {exec: CONFIG({ambientBrightness: 'dim'})});
+	t.tick();
+	const dim = t.execs().find((c) => c.indexOf('echo "$c $m"') !== -1);
+	const dir = mkdtempSync(join(tmpdir(), 'bar-bl-'));
+	writeFileSync(join(dir, 'flag'), 'bar');
+	const lower = dim.split('/tmp/lumen-ambient-on').join(join(dir, 'flag'));
+	let r = runRoot(lower, dir, {backlight: 80, mode: 'cinema', setOk: false});
+	assert.equal(r.tv, '80 cinema');
+	assert.equal(r.out, '', 'not "dimmed": the panel is as bright as before');
+	// the value saved first is the real one and stays for the restore (the same value, no harm) rather than being lost
+	assert.equal(r.saved, '80 cinema');
+	r = runRoot(lower, dir, {backlight: 80, mode: 'cinema'});
+	assert.equal(r.out, 'dimmed');
+	assert.equal(r.tv, '30 cinema');
+	// in the window: a refused lowering keeps the pictures dark (saver--dim), the same as a panel that could not be read
+	const refused = start({saver: true}, {exec: (cmd) => (cmd.indexOf('cat /var/lib/homehook/lumen-config.json') === 0 ? JSON.stringify({config: {ambientBrightness: 'dim'}}) : '')});
+	refused.tick();
+	assert.match(refused.ids.saver.className, /saver--dim/);
 });
