@@ -3,7 +3,7 @@
 
 import {LUNA} from '../config/constants';
 import {isWebOS, lunaCall} from './luna';
-import {APP_ROOTS_CASE, IMMICH_BASE, IMMICH_KEY, safeAppPath} from './checks';
+import {IMMICH_BASE, IMMICH_KEY, resolvedPath, safeAppPath, shaCheck} from './checks';
 
 /** The TV-side folder shared with tools/tv/watch.sh (flag files, the log, the settings backup). */
 export const HOMEHOOK = '/var/lib/homehook';
@@ -13,9 +13,8 @@ export function shellQuote (value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Shell: the icon path `p` resolved through every link (readlink -f) into $r, true only when that is a plain file still under one of the app
- *  folders (lib/checks.ts APP_ROOTS), so a link in an app's folder can not have root read or copy a file elsewhere. `p` has passed safeAppPath. */
-const resolvedIcon = (p: string) => `r=$(readlink -f ${shellQuote(p)} 2>/dev/null) && case "$r" in ${APP_ROOTS_CASE}) [ -f "$r" ] ;; *) false ;; esac`;
+/** Shell: the icon path `p` resolved through every link into $r, true only for a plain file still under the app folders (checks.ts resolvedPath) */
+const resolvedIcon = (p: string) => `{ ${resolvedPath(p)}; }`;
 const BASE64 = /^[A-Za-z0-9+\/]*={0,2}$/;
 
 /** The settings Lumen reads or changes, and the values it may set. A key not listed here never reaches the shell. */
@@ -339,8 +338,9 @@ export function setHomeTakeover (appDir: string, on: boolean, livetv: boolean): 
 	const flags = `mkdir -p ${HOMEHOOK} && touch ${HOMEHOOK}/home-takeover && rm -f ${HOMEHOOK}/no-wake-launch && ${livetv ? `touch ${HOMEHOOK}/livetv-to-lumen` : `rm -f ${HOMEHOOK}/livetv-to-lumen`}`;
 	const running = forEachWatcher('echo run; break');
 	// homehook/SHA256SUMS (made by the build, app/vite.config.ts) must match both files: a half-written or partly replaced pair is not
-	// installed as root. Only where the TV has sha256sum; this is a check that the pair is whole, not a signature (docs/webos4.md).
-	const sums = `if command -v sha256sum >/dev/null 2>&1; then [ -f ${src}/SHA256SUMS ] && ( cd ${src} && sha256sum -c SHA256SUMS ) >/dev/null 2>&1 || { echo badsum; exit 0; }; fi`;
+	// installed as root (checks.ts shaCheck: sha256sum or openssl, the same rule as the watcher's). This checks the pair is whole; it is
+	// not a signature (docs/webos4.md).
+	const sums = shaCheck(src, ['watch.sh', '60-homehook']);
 	return run(`[ -f ${src}/watch.sh ] && [ -f ${src}/60-homehook ] || { echo missing; exit 0; }; ${sums}; ${flags}; `
 		+ `if cmp -s ${src}/watch.sh ${HOMEHOOK}/watch.sh && cmp -s ${src}/60-homehook ${INIT_D}/60-homehook && [ -n "$(${running})" ]; then echo same; exit 0; fi; `
 		+ `[ -f ${HOMEHOOK}/watch.sh ] && w=updated || w=installed; mkdir -p ${INIT_D} && cp ${src}/watch.sh ${HOMEHOOK}/watch.sh && cp ${src}/60-homehook ${INIT_D}/60-homehook `

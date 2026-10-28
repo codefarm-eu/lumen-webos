@@ -266,7 +266,7 @@ test('self-refresh: at most once a minute and 5 times a boot (the count survives
 
 test('self-refresh: the watcher checks about every 30 s and keeps home_reader\'s pid for the re-exec', () => {
 	const src = readFileSync(SCRIPT, 'utf8');
-	assert.match(src, /\[ \$\(\(ticks % 30\)\) -eq 15 \] && self_update "\$now"/);
+	assert.match(src, /\[ \$\(\(ticks % 30\)\) -eq 15 \] && owned self_update "\$now"/);
 	assert.match(src, /home_reader &\nhrpid=\$!/);
 	assert.match(src, /exec \/bin\/sh "\$SELF"/);
 });
@@ -495,11 +495,20 @@ test('root state and the log live in a folder only root writes (RUN, mode 700), 
 	assert.equal(readFileSync(join(dir, 'victim'), 'utf8'), 'keep\n');
 });
 
-test('the wake gap is measured over the sleep only: the loop marks the tick just before it sleeps, after the Input Hook check', () => {
+test('the wake gap is measured from the top of the loop, minus the loop\'s own long waits (Input Hook check, self-refresh, picture copy)', () => {
+	const run = (sh) => execFileSync('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'\n${sh}`], {encoding: 'utf8'}).trim();
+	assert.equal(run('wake_gap 1000 1001 0'), '1');
+	assert.equal(run('wake_gap 1000 1012 10'), '2');       // a 10 s re-injection wait is not a wake
+	assert.equal(run('wake_gap 1000 1030 10'), '20');      // a suspend on top of it still is
+	assert.equal(run('wake_gap 1000 1003 9'), '0');
+	const d = mkdtempSync(join(tmpdir(), 'watch-own-'));
+	assert.equal(run(`own=2; date () { [ -f '${d}/t' ] && echo 107 || echo 100; }; owned touch '${d}/t'; echo $own`), '9');
+	assert.equal(run('own=3; date () { echo 5; }; owned false; echo "$? $own"'), '1 3');
 	const src = readFileSync(SCRIPT, 'utf8');
 	const loop = src.slice(src.indexOf('while true; do\n  # wake'));
-	const ih = loop.indexOf('inputhook_check "$now"'), mark = loop.lastIndexOf('tick=$(date +%s)'), sleep = loop.lastIndexOf('usleep 500000');
-	assert.ok(ih > 0 && mark > ih && sleep > mark, 'tick is set after the checks and right before the sleep');
+	assert.match(loop, /gap=\$\(wake_gap "\$tick" "\$now" "\$own"\); tick=\$now; own=0/);
+	for (const c of ['owned inputhook_check "$now"', 'owned self_update "$now"', 'owned bar_pictures "$target"']) assert.ok(loop.indexOf(c) > 0, c);
+	assert.equal(loop.indexOf('tick=$(date +%s)'), -1);
 });
 
 
@@ -633,4 +642,23 @@ test('stop_watch.sh takes our Home bind out with watch.sh\'s own homekey_unbind 
 	assert.equal(readFileSync(k, 'utf8'), '{"1":{"action":"x"},"2":{"action":"y"}}\n');
 	assert.doesNotMatch(readFileSync(stop, 'utf8'), /awk/);
 	assert.equal((readFileSync(SCRIPT, 'utf8').match(/while \(\(i = index\(\$0, b ","\)\) > 0\)/g) || []).length, 1);
+});
+
+/** a PATH with every tool on this machine except `drop` (to try a TV without sha256sum, or without openssl too) */
+function pathWithout (drop) {
+	const d = mkdtempSync(join(tmpdir(), 'nosha-'));
+	execFileSync('sh', ['-c', `for p in $(echo "$PATH" | tr ':' ' '); do for f in "$p"/*; do b=\${f##*/}; case " ${drop.join(' ')} " in *" $b "*) continue ;; esac; [ -x "$f" ] && [ ! -e '${d}'/"$b" ] && ln -s "$f" '${d}'/"$b"; done; done; true`]);
+	return d;
+}
+
+test('self-refresh hash: sha256sum, else openssl (never sha256sum -c); with neither the pair is not taken', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'watch-sha-'));
+	writeFileSync(join(dir, 'f'), 'hello\n');
+	const sum = createHash('sha256').update('hello\n').digest('hex');
+	writeFileSync(join(dir, 'SUMS'), `${sum}  watch.sh\n${'0'.repeat(64)}  60-homehook\n`);
+	const run = (path) => execFileSync('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'; PATH='${path}'; su_sha256 '${dir}/f'; echo "/$?"; su_sha_ok '${dir}/f' watch.sh '${dir}/SUMS' && echo yes || echo no; su_sha_ok '${dir}/f' 60-homehook '${dir}/SUMS' && echo yes || echo no`], {encoding: 'utf8'}).trim().split('\n');
+	assert.deepEqual(run(process.env.PATH), [sum, '/0', 'yes', 'no']);
+	assert.deepEqual(run(pathWithout(['sha256sum'])), [sum, '/0', 'yes', 'no']);
+	assert.deepEqual(run(pathWithout(['sha256sum', 'openssl'])), ['/1', 'no', 'no']);
+	assert.doesNotMatch(readFileSync(SCRIPT, 'utf8'), /^[^#\n]*sha256sum -c/m);
 });

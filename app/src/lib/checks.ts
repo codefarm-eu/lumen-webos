@@ -36,3 +36,24 @@ export function keepOnly (cache: Record<string, string>, keep: string[]): {cache
 	Object.keys(cache).forEach((k) => { if (keep.indexOf(k) !== -1) out[k] = cache[k]; else changed = true; });
 	return {cache: out, changed};
 }
+
+/** Shell that prints "badsum" and exits unless each of `files` in `dir` has the sha256 that dir/SHA256SUMS gives for it. The same rule as
+ *  tools/tv/watch.sh su_sha_ok: each hash is worked out and compared on its own, never with `sha256sum -c` (a busybox build may leave the
+ *  check option out, and then every install failed), with `sha256sum`, or else `openssl dgst -sha256`. A TV with neither can check nothing:
+ *  this install, started from Lumen itself, goes ahead (the code asking for it comes from the same folder, so checking the folder against
+ *  itself proves nothing), while the watcher's unattended self-refresh refuses and waits for this install. `dir` and `files` are fixed
+ *  strings from the caller (an app folder that passed APP_DIR, and literal names). */
+export function shaCheck (dir: string, files: string[]): string {
+	const hash = `sh256 () { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | cut -d' ' -f1; else openssl dgst -sha256 "$1" 2>/dev/null | sed 's/^.*= *//'; fi; }`;
+	const each = files.map((f) => `w=$(sed -n 's/^\\([0-9a-f]\\{64\\}\\)  ${f.replace(/\./g, '\\.')}$/\\1/p' ${dir}/SHA256SUMS 2>/dev/null | head -n 1); [ "\${#w}" -eq 64 ] && [ "$(sh256 ${dir}/${f})" = "$w" ] || { echo badsum; exit 0; }`).join('; ');
+	return `if command -v sha256sum >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1; then ${hash}; ${each}; fi`;
+}
+
+/** Shell: the path `p` resolved through every link into $r, true only when that is a plain file still under one of APP_ROOTS, so a link in an
+ *  app's folder can't have root read or copy a file elsewhere. `p` has passed safeAppPath (no quote, space or "." / ".." segment), and
+ *  goes in single-quoted. Uses readlink -f, or, where busybox was built without it, the folder's physical path (cd -P, pwd -P) with the
+ *  file itself not a link. */
+export function resolvedPath (p: string): string {
+	return `p='${p}'; r=$(readlink -f "$p" 2>/dev/null) || r=$(cd -P "\${p%/*}" 2>/dev/null && [ ! -L "$p" ] && echo "$(pwd -P)/\${p##*/}"); `
+		+ `case "$r" in ${APP_ROOTS_CASE}) [ -f "$r" ] ;; *) false ;; esac`;
+}

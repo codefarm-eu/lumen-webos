@@ -2,12 +2,16 @@
 // lib/backlightSaver.ts, each turned into JS by esbuild (they have no imports)
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import {mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {createRequire} from 'node:module';
 const require = createRequire(new URL('../../app/package.json', import.meta.url));
 const {transformSync} = require('esbuild');
 const load = async (f) => import('data:text/javascript,' + encodeURIComponent(transformSync(readFileSync(new URL(`../../app/src/lib/${f}`, import.meta.url), 'utf8'), {loader: 'ts', format: 'esm'}).code));
-const {safeAppPath, immichServer, APP_ROOTS_CASE, keepOnly} = await load('checks.ts');
+const {safeAppPath, immichServer, APP_ROOTS_CASE, keepOnly, shaCheck, resolvedPath} = await load('checks.ts');
 const {launchAction} = await load('launchParams.ts');
 const {backlightSaver} = await load('backlightSaver.ts');
 
@@ -81,4 +85,59 @@ test('backlight: never raised, nothing done once the screensaver is gone, and a 
 test('the icon cache keeps only the icons of the apps installed now', () => {
 	assert.deepEqual(keepOnly({'/a/icon.png': 'A', '/gone/icon.png': 'G'}, ['/a/icon.png', '/new/icon.png']), {cache: {'/a/icon.png': 'A'}, changed: true});
 	assert.deepEqual(keepOnly({'/a/icon.png': 'A'}, ['/a/icon.png']), {cache: {'/a/icon.png': 'A'}, changed: false});
+});
+
+/** a PATH with only `tools` (plus what the snippet needs), so a TV with or without sha256sum / openssl can be tried */
+function toolPath (tools, extra = {}) {
+	const d = mkdtempSync(join(tmpdir(), 'tools-'));
+	for (const t of ['sed', 'head', 'cut', 'cat', ...tools]) {
+		const at = execFileSync('sh', ['-c', `command -v ${t}`], {encoding: 'utf8'}).trim();
+		symlinkSync(at, join(d, t));
+	}
+	Object.entries(extra).forEach(([n, body]) => { writeFileSync(join(d, n), body, {mode: 0o755}); });
+	return d;
+}
+function homehook (sums = 'good') {
+	const d = mkdtempSync(join(tmpdir(), 'homehook-'));
+	const h = {};
+	for (const f of ['watch.sh', '60-homehook']) { writeFileSync(join(d, f), `#!/bin/sh\n# ${f}\n`); h[f] = createHash('sha256').update(readFileSync(join(d, f))).digest('hex'); }
+	if (sums !== 'none') writeFileSync(join(d, 'SHA256SUMS'), Object.entries(h).map(([f, x]) => (sums === 'bad' && f === '60-homehook' ? '0'.repeat(64) : x) + '  ' + f).join('\n') + '\n');
+	return d;
+}
+const SH = execFileSync('sh', ['-c', 'command -v sh'], {encoding: 'utf8'}).trim();
+const check = (dir, path) => execFileSync(SH, ['-c', shaCheck(dir, ['watch.sh', '60-homehook']) + '; echo ok'], {encoding: 'utf8', env: {PATH: path}}).trim();
+
+test('Settings install: SHA256SUMS checked file by file, with sha256sum or openssl, never sha256sum -c', () => {
+	const sha = toolPath(['sha256sum']);
+	assert.equal(check(homehook(), sha), 'ok');
+	assert.equal(check(homehook('bad'), sha), 'badsum');
+	assert.equal(check(homehook('none'), sha), 'badsum');
+	// a busybox sha256sum built without -c: the check used to fail every install there
+	const real = execFileSync('sh', ['-c', 'command -v sha256sum'], {encoding: 'utf8'}).trim();
+	const noC = toolPath([], {sha256sum: `#!/bin/sh\ncase "$1" in -c) echo 'sha256sum: unrecognized option -c' >&2; exit 1 ;; esac\nexec ${real} "$@"\n`});
+	assert.equal(check(homehook(), noC), 'ok');
+	const ossl = toolPath(['openssl']);
+	assert.equal(check(homehook(), ossl), 'ok');
+	assert.equal(check(homehook('bad'), ossl), 'badsum');
+	// neither: nothing can be checked, and the install started from Lumen goes ahead (the watcher's own refresh refuses, watch.test.mjs)
+	assert.equal(check(homehook('bad'), toolPath([])), 'ok');
+});
+
+test('icon paths resolved as root: readlink -f, or cd -P/pwd -P where busybox has no readlink -f; never a file outside the app folders', () => {
+	const t = mkdtempSync(join(tmpdir(), 'resolve-'));
+	const root = join(t, 'apps');
+	mkdirSync(join(root, 'real'), {recursive: true});
+	writeFileSync(join(root, 'real', 'icon.png'), 'x');
+	writeFileSync(join(t, 'secret'), 's');
+	symlinkSync(join(root, 'real'), join(root, 'dirlink'));
+	symlinkSync(join(t, 'secret'), join(root, 'real', 'leak.png'));
+	symlinkSync(t, join(root, 'out'));
+	const res = (p, path) => execFileSync(SH, ['-c', resolvedPath(p).replace(APP_ROOTS_CASE, root + '/*') + ' && echo "$r" || echo no'], {encoding: 'utf8', env: {PATH: path}}).trim();
+	const noReadlink = toolPath([], {readlink: '#!/bin/sh\necho "readlink: invalid option -- f" >&2; exit 1\n'});
+	for (const path of [process.env.PATH, noReadlink]) {
+		assert.equal(res(join(root, 'real', 'icon.png'), path), join(root, 'real', 'icon.png'));
+		assert.equal(res(join(root, 'dirlink', 'icon.png'), path), join(root, 'real', 'icon.png'));
+		assert.equal(res(join(root, 'real', 'leak.png'), path), 'no');
+		assert.equal(res(join(root, 'out', 'secret'), path), 'no');
+	}
 });

@@ -51,7 +51,10 @@ export function packIcon (id: string, title: string): string | undefined {
 }
 
 export function listApps (useHomebrew: boolean, showSystem = false): Promise<AppList> {
-	return listAppsBase(useHomebrew).then((list) => (showSystem ? addSystemApps(list) : list));
+	// every icon path this listing looked up, from both lists (the TV's launch points and the system apps): the icon cache is pruned once,
+	// against all of them. Pruning in each loadIcons dropped the other list's icons, so each start read them all again as root.
+	const seen: string[] = [];
+	return listAppsBase(useHomebrew, seen).then((list) => (showSystem ? addSystemApps(list, seen) : list)).then((list) => { pruneIconCache(seen); return list; });
 }
 
 // ---------- the list the last launch showed (lib/boot.ts) ----------
@@ -90,7 +93,7 @@ function listKey (useHomebrew: boolean, showSystem: boolean): string {
 	return `${useHomebrew ? 'hb' : 'cat'}:${showSystem ? 'sys' : ''}`;
 }
 
-function addSystemApps (list: AppList): Promise<AppList> {
+function addSystemApps (list: AppList, seen: string[]): Promise<AppList> {
 	const have = list.apps.map((a) => a.id);
 	const extra = SYSTEM_APPS.filter((a) => have.indexOf(a.id) === -1);
 	const check = isWebOS() ? Promise.all(extra.map((a) => appExists(a.id))) : Promise.resolve(extra.map(() => true));
@@ -99,22 +102,22 @@ function addSystemApps (list: AppList): Promise<AppList> {
 		// the TV's own icon for each, as for the other apps (only with the Homebrew Channel: the app manager's app info is read as root)
 		const points = list.source === 'homebrew' ? Promise.all(found.map((a) => appInfo(a.id).then((info): LaunchPoint => ({id: a.id, title: a.title, ...iconFields(info)})).catch((): LaunchPoint => ({id: a.id, title: a.title}))))
 			: Promise.resolve(found.map((a): LaunchPoint => ({id: a.id, title: a.title})));
-		return points.then((pts) => loadIcons(pts, list.source === 'homebrew').then((icons) => Promise.all(found.map((a, i) => {
+		return points.then((pts) => loadIcons(pts, list.source === 'homebrew', seen).then((icons) => Promise.all(found.map((a, i) => {
 			const pack = packIcon(a.id, a.title);
 			return withIconColor({id: a.id, title: a.title, iconUrl: pack || icons[a.id], color: tvColor(pts[i]) || a.color, plain: !pack && !!icons[a.id]});
 		})))).then((apps) => ({...list, apps: list.apps.concat(apps)}));
 	});
 }
 
-function listAppsBase (useHomebrew: boolean): Promise<AppList> {
+function listAppsBase (useHomebrew: boolean, seen: string[]): Promise<AppList> {
 	if (!isWebOS()) return Promise.all(catalogEntries(APP_CATALOG).map(withIconColor)).then((apps): AppList => ({apps, source: 'catalog'}));
 	const catalog = () => listViaCatalog().then((apps): AppList => ({apps, source: 'catalog'}));
 	// without root, the app manager's list may still be open to apps (it is not on webOS 6); its icons then load as files or not at all
 	const direct = () => lunaCall<{launchPoints?: LaunchPoint[]}>(LIST_LAUNCH_POINTS, {}, 8000, true)
-		.then((r) => fromLaunchPoints(r.launchPoints, false))
+		.then((r) => fromLaunchPoints(r.launchPoints, false, seen))
 		.then((apps): AppList => ({apps, source: 'catalog'}), catalog);
 	if (!useHomebrew) return direct();
-	return listViaHomebrew()
+	return listViaHomebrew(seen)
 		.then((apps): AppList => ({apps, source: 'homebrew'}))
 		.catch(direct);
 }
@@ -168,16 +171,16 @@ const HIDDEN_IDS = [APP_ID, 'google.assistant.promo'];
 
 const ICON_CACHE_KEY = 'launcher-icon-cache-v1';
 
-function listViaHomebrew (): Promise<AppEntry[]> {
-	return listLaunchPoints().then((out) => fromLaunchPoints((JSON.parse(out) as {launchPoints?: LaunchPoint[]}).launchPoints, true));
+function listViaHomebrew (seen: string[]): Promise<AppEntry[]> {
+	return listLaunchPoints().then((out) => fromLaunchPoints((JSON.parse(out) as {launchPoints?: LaunchPoint[]}).launchPoints, true, seen));
 }
 
 /** The list from the TV's launch points. `root`: icons the app cannot load as files are read through the Homebrew Channel. */
-function fromLaunchPoints (all: LaunchPoint[] | undefined, root: boolean): Promise<AppEntry[]> {
+function fromLaunchPoints (all: LaunchPoint[] | undefined, root: boolean, seen: string[]): Promise<AppEntry[]> {
 	const points = (all || []).filter((p) => p.id && p.title && HIDDEN_IDS.indexOf(p.id) === -1);
 	if (!points.length) return Promise.reject(new Error('no launch points'));
 	bootMark('apps-parsed', `${points.length}`);
-	return loadIcons(points, root).then((icons) => Promise.all(points.map((p) => {
+	return loadIcons(points, root, seen).then((icons) => Promise.all(points.map((p) => {
 		const path = bestIcon(p);
 		if (path && icons[p.id]) iconPaths[p.id] = path;
 		const known = APP_CATALOG.find((c) => c.id === p.id);
@@ -212,22 +215,18 @@ const ICON_BATCH = 8;
 /** Each app's own icon from the TV, cached in localStorage by path: first as a file:// URL (cheap, nothing copied); an icon the app may
  *  not read as a file is read as root through the Homebrew Channel (`root`), a few at a time, as a data URI. Icons are requested by *index*,
  *  so app IDs never reach the shell. A tile whose icon still fails to draw shows its letter (components/Tile.tsx). */
-function loadIcons (points: LaunchPoint[], root: boolean): Promise<Record<string, string>> {
-	const read = readIconCache();
-	const live: string[] = [];
+function loadIcons (points: LaunchPoint[], root: boolean, seen: string[]): Promise<Record<string, string>> {
+	const cache = readIconCache();
 	const result: Record<string, string> = {};
 	const missing: {id: string; path: string}[] = [];
 	for (const p of points) {
 		const path = bestIcon(p);
 		if (!path || !/^\/[A-Za-z0-9._\/+@-]+$/.test(path)) continue;
-		live.push(path);
-		if (read[path]) result[p.id] = read[path];
+		seen.push(path);
+		if (cache[path]) result[p.id] = cache[path];
 		else missing.push({id: p.id, path});
 	}
-	// only the icons of the apps installed now are kept
-	const kept = keepOnly(read, live);
-	const cache = kept.cache;
-	if (!missing.length) { if (kept.changed) writeIconCache(cache); return Promise.resolve(result); }
+	if (!missing.length) return Promise.resolve(result);
 
 	return Promise.all(missing.map((m) => probeFile(m.path))).then((urls) => {
 		const unread: {id: string; path: string}[] = [];
@@ -261,6 +260,14 @@ function readIconCache (): Record<string, string> {
 		bootMark('iconcache', `${Math.round(raw.length / 1024)}KB ${Math.round(performance.now() - t)}ms`);
 		return out;
 	} catch { return {}; }
+}
+
+/** Keeps only the icons of the apps installed now (`seen`: every icon path the listing looked up). Not when nothing was looked up (the
+ *  catalogue fallback, the TV's list unreadable): that is no sign the apps are gone. */
+function pruneIconCache (seen: string[]): void {
+	if (!seen.length) return;
+	const kept = keepOnly(readIconCache(), seen);
+	if (kept.changed) writeIconCache(kept.cache);
 }
 
 function writeIconCache (cache: Record<string, string>): void {

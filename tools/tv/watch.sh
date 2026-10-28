@@ -115,6 +115,7 @@ pwlast=""
 mesince=0
 launchpid=0
 tick=$(date +%s)
+own=0
 wakeuntil=$((tick + 90))   # a boot counts as a wake; LG Home may take a while to come up
 # but only a boot: a watcher (re)started later (Lumen refreshing it, stop/start by hand) must not open Lumen over the app in front
 booted=$(cut -d. -f1 "${WATCH_UPTIME:-/proc/uptime}" 2>/dev/null)
@@ -480,6 +481,13 @@ wake_open() {
     echo "$(date +%T) wake: open $target over ${1:-nothing}: $r" >> "$LOG" ) &
   launchpid=$!
 }
+# The seconds between two loop tops that the loop did not account for: $1 the last top, $2 this one, $3 the seconds spent in the loop's own
+# long waits (owned: an Input Hook re-injection waits up to 10 s for ezinject, a self-refresh, the bar's picture copy). Counted as a wake, those
+# opened full Lumen over a paused film. Measured from the top of the loop, so a suspend anywhere else in it (a Luna call the TV froze in)
+# still counts.
+wake_gap() { wg=$(($2 - $1 - $3)); [ "$wg" -lt 0 ] && wg=0; echo "$wg"; }
+# runs "$@" and adds the seconds it took to own (see wake_gap)
+owned() { ot0=$(date +%s); "$@"; otr=$?; own=$((own + $(date +%s) - ot0)); return $otr; }
 # one tick of a wake (uses front, app, now, pwstate): Lumen in front as soon as the screen is on, whatever the TV opened; the TV can still put
 # its own app over Lumen in the first seconds, so the wake ends only once Lumen has stayed up WAKE_SETTLE seconds
 # (this fork) An app other than LG Home or Live TV straight after Lumen was in front was picked in Lumen: the wake ends there too, so an app
@@ -742,13 +750,21 @@ su_note() {
   printf '%s\n' "$1" >> "$nt" || { rm -f "$nt"; return 1; }
   mv -f "$nt" "$SU_STATE" || { rm -f "$nt"; return 1; }
 }
-# true when file $1's sha256 is the one SHA256SUMS ($3) gives for name $2. No sha256sum on the TV: false (no refresh from here; opening Lumen
-# still installs the watcher, lib/root.ts setHomeTakeover).
+# file $1's sha256: sha256sum, else openssl dgst; nothing (and false) when the TV has neither. Never sha256sum -c, which a busybox build
+# may leave out. The same rule as Lumen's Settings install (app/src/lib/checks.ts shaCheck).
+su_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then ssh_h=$(sha256sum "$1" 2>/dev/null) || return 1; echo "${ssh_h%% *}"
+  elif command -v openssl >/dev/null 2>&1; then ssh_h=$(openssl dgst -sha256 "$1" 2>/dev/null) || return 1; echo "${ssh_h##*= }"
+  else return 1; fi
+}
+# true when file $1's sha256 is the one SHA256SUMS ($3) gives for name $2. With neither tool on the TV: false, so there is no unattended
+# refresh from here. Opening Lumen still installs the watcher (lib/root.ts setHomeTakeover goes ahead there, since that install is
+# started from the same folder it would check).
 su_sha_ok() {
   ssh_want=$(sed -n "s/^\([0-9a-f]\{64\}\)  $2\$/\1/p" "$3" 2>/dev/null | head -n 1)
   [ "${#ssh_want}" -eq 64 ] || return 1
-  ssh_have=$(sha256sum "$1" 2>/dev/null) || return 1
-  [ "${ssh_have%% *}" = "$ssh_want" ]
+  ssh_have=$(su_sha256 "$1") || return 1
+  [ "$ssh_have" = "$ssh_want" ]
 }
 # $1: now (digits; busybox ash exits the whole watcher on arithmetic with anything else)
 self_update() {
@@ -853,7 +869,7 @@ hrpid=$!
 while true; do
   # wake: the power state goes back to Active from standby or off (not from the screensaver), or the loop missed its ticks (suspended)
   now=$(date +%s)
-  gap=$((now - tick)); tick=$now
+  gap=$(wake_gap "$tick" "$now" "$own"); tick=$now; own=0
   pw=$(lsend luna://com.webos.service.tvpower/power/getPowerState '{}' </dev/null 2>/dev/null)
   # webOS 25 answers "state": "Active", with a space
   pwstate=$(printf '%s' "$pw" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p')
@@ -939,7 +955,7 @@ while true; do
           if saver_overlay "$sp"; then
             # over another app: Lumen bar's screensaver, an overlay, so the app stays in front with its player as it was (a full-screen
             # Lumen sent it to the background, and the relaunch back made Moonfin drop its player). Shown at once, without the wait below.
-            bar_pictures "$target"
+            owned bar_pictures "$target"
             r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$BAR\",\"params\":{\"saver\":true,\"lumen\":\"$target\"}}" </dev/null 2>&1)
             echo "$(date +%T) screensaver: Lumen bar over $over: $r" >> "$LOG"
           else
@@ -988,10 +1004,10 @@ while true; do
   fi
   # keep the extra blocked names in /etc/hosts (about every 30 s; the dashboard rewrites the table at boot)
   ticks=$((ticks + 1))
-  [ $((ticks % 5)) -eq 1 ] && { sync_home_key; inputhook_check "$now"; }
+  [ $((ticks % 5)) -eq 1 ] && { sync_home_key; owned inputhook_check "$now"; }
   [ $((ticks % 300)) -eq 2 ] && trim_log "$IH_LOG"
   [ $((ticks % 5)) -eq 3 ] && saver_leftover
-  [ $((ticks % 30)) -eq 15 ] && self_update "$now"
+  [ $((ticks % 30)) -eq 15 ] && owned self_update "$now"
   if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
     # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real
     grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | while IFS= read -r l; do
@@ -999,8 +1015,5 @@ while true; do
     done
   fi
   # faster ticks while a wake is open, so Lumen goes up as soon as the TV lets it (webOS 4's busybox sleep takes whole seconds: usleep)
-  # the gap that means a wake is measured over the sleep only: time spent in this loop (an Input Hook re-injection waits up to 10 s for
-  # ezinject, a slow Luna answer, a self-refresh) is the loop's own doing, and counted as a wake it opened full Lumen over a paused film
-  tick=$(date +%s)
   if [ "$now" -lt "$wakeuntil" ]; then usleep 500000 2>/dev/null || sleep 1; else sleep 1; fi
 done
