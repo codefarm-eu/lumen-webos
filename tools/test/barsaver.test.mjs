@@ -150,7 +150,7 @@ test('Brightness Dim lowers the panel (not the pictures) and the old value is pu
 	assert.match(t.execs()[dim], /"backlight":"'30'"/);
 	assert.doesNotMatch(t.ids.saver.className, /saver--dim/);
 	t.fire('keydown', {keyCode: 13});
-	const restore = t.execs().findIndex((c) => c.indexOf('cat $f') !== -1 && c.indexOf('saver-backlight') !== -1);
+	const restore = t.execs().findIndex((c) => c.indexOf('f=/var/lib/homehook/saver-backlight; c=$(cat $f') === 0);
 	assert.ok(restore > dim);
 });
 

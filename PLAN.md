@@ -134,7 +134,7 @@ Update Lumen in the Homebrew Channel first (dev build from commit 8e2bd15 or lat
 - [x] Does the TV kill background apps? Lumen yes, YouTube no (see `docs/spikes.md`). Cold start stays the thing to make fast.
 - [x] Power button opens LG Home, not Lumen (confirmed fixed on the TV 2026-10-16): `watch.sh` now treats a wake (power state back to Active, or a gap in its ticks) and a boot as
       a 30 s window in which LG Home is replaced by Lumen (off with `/var/lib/homehook/no-wake-launch`). **(verify)** on the TV; wakes are
-      logged in `/tmp/homehook.log`.
+      logged in `/tmp/homehook.run/homehook.log`.
 - [x] `"keepAlive": true` in appinfo.json: tried 2026-10-16, no effect (Lumen still reloads from scratch after Plex). Removed. Cold start
       stays the thing to make fast (Phase 4).
 - [ ] Keep apps alive: Home or Recents leaves the app you were in running, and Lumen opens with no launch screen. One session of tests

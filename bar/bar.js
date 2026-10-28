@@ -386,7 +386,10 @@
 	 *  screensaver that never put it back: that one is still the real value). Prints "dimmed" when it did. */
 	function saverDimCommand (level) {
 		return 'f=' + SAVED_BACKLIGHT + '; c=$(' + BACKLIGHT_GET + '); case "$c" in \'\'|*[!0-9]*) exit 0 ;; esac; '
-			+ '[ "$c" -gt ' + level + ' ] || exit 0; [ -f $f ] || { mkdir -p ' + HOMEHOOK + ' && echo "$c" > $f; }; ' + backlightSet(level) + '; echo dimmed';
+			+ '[ "$c" -gt ' + level + ' ] || exit 0; [ -f $f ] || { mkdir -p ' + HOMEHOOK + ' && echo "$c" > $f; }; ' + backlightSet(level) + '; '
+			// the screensaver already gone (its flag removed: the watcher closed the bar, and put the backlight back, while this was under way):
+			// put it back here too, or the panel stayed dim with nothing left to undo it
+			+ 'if [ -f /tmp/lumen-ambient-on ]; then echo dimmed; else ' + SAVER_RESTORE + '; fi';
 	}
 	/** Puts back the value in SAVED_BACKLIGHT, if there is one, and removes it. tools/tv/watch.sh saver_backlight_restore does the same. */
 	var SAVER_RESTORE = 'f=' + SAVED_BACKLIGHT + '; c=$(cat $f 2>/dev/null); case "$c" in \'\'|*[!0-9]*) rm -f $f; exit 0 ;; esac; '
@@ -463,6 +466,8 @@
 		saverClosing = true;
 		closing = true;
 		window.clearTimeout(idleTimer);
+		// if the window is not closed after all (window.close refused), a later Home must still open the bar
+		window.setTimeout(function () { saverClosing = false; }, 1500);
 		closeTimer = window.setTimeout(function () { try { window.close(); } catch (e) { /* nothing */ } }, 400);
 	}
 	function wantsSaver (p) { return !!(p && p.saver === true); }
