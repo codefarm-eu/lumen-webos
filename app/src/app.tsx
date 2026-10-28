@@ -38,7 +38,7 @@ import {useLiveTv} from './hooks/useLiveTv';
 import {channelColor, nowNextAt, rowChannels, type Channel} from './lib/livetv';
 import {openChannel, runningApps, setHomeBar, setHomeTakeover, syncBar, uninstallApp} from './lib/root';
 
-import {bootMark, navMark} from './lib/log';
+import {bootMark, logError, navMark} from './lib/log';
 import {isDark, LANGS, setClockMode, setLang} from './lib/i18n';
 
 /** Lumen's install folder on the TV (the page's own folder) */
@@ -432,7 +432,12 @@ export function App () {
 		for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
 		const id = window.setTimeout(() => {
 			syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, h.toString(36), style)
-				.then((r) => { if (r === 'written') bootMark('bar: data written'); })
+				.then((r) => {
+					if (r === 'written') bootMark('bar: data written');
+					// the bar then shows no icons or titles; lumen.log says why (a data/ or data/icons/ in the bar's folder that is not root's,
+					// or a folder where a file should be: lib/checks.ts syncBarShell)
+					else if (r === 'refused') logError('bar', 'data/ not written: refused (a folder in the bar\'s data/ that is not root\'s own, or a folder where a file should be)');
+				})
 				.catch(() => undefined);
 		}, 3000);
 		return () => window.clearTimeout(id);

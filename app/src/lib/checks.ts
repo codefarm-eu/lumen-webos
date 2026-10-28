@@ -95,7 +95,8 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		"d='" + dir + "'",
 		"sig='" + sig + "'",
 		"b64='" + b64 + "'",
-		'me=$(id -u 2>/dev/null) || { echo refused; exit 0; }',
+		// a busybox without id: 0, as the watcher assumes (MYUID): the Channel's exec only ever runs as root
+		'me=$(id -u 2>/dev/null); case "$me" in \'\'|*[!0-9]*) me=0 ;; esac',
 		'[ -d "$d" ] || { echo missing; exit 0; }',
 		'parent=${d%/*}; base=${d##*/}',
 		'pphys=$(cd -P "$parent" 2>/dev/null && pwd -P) || { echo refused; exit 0; }',

@@ -190,7 +190,8 @@ The same settings are used by `com.sammysco.avoverlay`.
   icon paths or from Lumen's bundled icons. It is written again only when a signature in `data/sig` changes, so an update of Lumen bar,
   which empties its folder, is refilled at Lumen's next start. The bar's folder is writable by others, so this write does not use a full
   path (a redirect or a recursive remove would follow a link). It enters the bar folder and then `data/` with `cd -P`, and each must be
-  that directory (`pwd -P`). A `data/` or `data/icons/` that is not root's own is left as it is and nothing is written. A link at `data`,
+  that directory (`pwd -P`). A `data/` or `data/icons/` that is not root's own is left as it is and nothing is written (`lumen.log`: `bar
+  data/ not written: refused`, as the bar then shows no icons or titles). A link at `data`,
   `data/icons`, `bar.json` or `sig` is removed or replaced, not written through, and `bar.json` and `sig` are written to a temp file there
   and moved into place. `data/wallpapers/` is not touched. Lumen bar also reads `/var/lib/homehook/recent` and shows up to 4 recent
   apps that are not in the dock, after a divider.

@@ -288,6 +288,23 @@ test('syncBar: a link at data, icons, bar.json or sig is never written through, 
 	assert.equal(read(join(iconDir, 'data', 'icons', 'yt.png', 'keep')), 'keep');
 });
 
+test('syncBar: a busybox without id takes the writer as root, as the watcher does, rather than refusing every write', () => {
+	// the folders are this user's, so the owner checks pass only when `me` matches: with id gone they must still, which the stat hook
+	// makes true by answering 0 for everything (on the TV both are root)
+	const bar = mkdtempSync(join(tmpdir(), 'sync-noid-'));
+	const noId = 'id () { echo "id: applet not found" >&2; return 127; }\nstat () { case "$*" in *%u*) echo 0 ;; *) command stat "$@" ;; esac; }\n';
+	assert.equal(runSync(bar, {hook: noId}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abc\n');
+	// an id that answers something odd is not taken as a uid either
+	const odd = mkdtempSync(join(tmpdir(), 'sync-oddid-'));
+	assert.equal(runSync(odd, {hook: 'id () { echo "uid=0(root)"; }\nstat () { case "$*" in *%u*) echo 0 ;; *) command stat "$@" ;; esac; }\n'}), 'written');
+	// and with id working, a folder of another user is still refused (the stat hook says 4242 for data)
+	const theirs = mkdtempSync(join(tmpdir(), 'sync-theirs-'));
+	mkdirSync(join(theirs, 'data'));
+	assert.equal(runSync(theirs, {hook: 'stat () { case "$*" in *%u*data) echo 4242 ;; *) command stat "$@" ;; esac; }\n'}), 'refused');
+	assert.match(readFileSync(new URL('../../app/src/app.tsx', import.meta.url), 'utf8'), /r === 'refused'\) logError\('bar'/);
+});
+
 test('syncBar: a data or icons folder that is not ours is left alone, and a link swapped in at mkdir is not entered', () => {
 	const rmLog = join(mkdtempSync(join(tmpdir(), 'sync-rm-')), 'rm');
 	const hookRm = `rm () { case "$1" in -r*|-*r*) echo "$*" >> '${rmLog}' ;; esac; command rm "$@"; }\n`;
