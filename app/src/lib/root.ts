@@ -261,10 +261,11 @@ export function setAmbientFlag (on: boolean): Promise<void> {
 	return run(on ? `mkdir -p ${HOMEHOOK} && touch ${HOMEHOOK}/ambient-screensaver` : `rm -f ${HOMEHOOK}/ambient-screensaver`).then(() => undefined);
 }
 
+const AMBIENT_ON = '/tmp/lumen-ambient-on';
 /** While the ambient screen is up, watch.sh only ends LG's screensaver (which starts again after its timer, as nothing is pressed) instead of
- *  opening Lumen again. */
+ *  opening Lumen again. The file names its owner ("lumen"; Lumen bar's screensaver writes "bar"), and off never removes the bar's. */
 export function setAmbientShowing (on: boolean): Promise<void> {
-	return run(on ? 'touch /tmp/lumen-ambient-on' : 'rm -f /tmp/lumen-ambient-on', 4000).then(() => undefined);
+	return run(on ? `echo lumen > ${AMBIENT_ON}` : `[ "$(cat ${AMBIENT_ON} 2>/dev/null)" = bar ] || rm -f ${AMBIENT_ON}`, 4000).then(() => undefined);
 }
 
 /** With the Home watcher running, LG Home would bounce straight back to Lumen: this flag lets it open once. */

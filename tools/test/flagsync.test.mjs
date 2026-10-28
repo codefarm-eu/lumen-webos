@@ -41,6 +41,29 @@ test('a newer setting replaces the retry, so an old value is never written after
 	assert.deepEqual(st.writes, [true, false, false]);
 });
 
+test('one write at a time: a change while a write is out waits for it, and the newest value is the last one written', async () => {
+	const writes = [];
+	const out = [];
+	const write = (on) => { writes.push(on); return new Promise((ok) => out.push(ok)); };
+	const timers = {set: () => 0, clear () {}};
+	const sync = flagSync(write, timers);
+	const tick = () => new Promise((r) => setImmediate(r));
+	sync.set(true);
+	sync.set(false);
+	sync.set(true);
+	sync.set(false);
+	assert.deepEqual(writes, [true], 'nothing else is sent while the first write is out');
+	out.shift()(); await tick();
+	assert.deepEqual(writes, [true, false], 'then only the newest value');
+	out.shift()(); await tick();
+	assert.deepEqual(writes, [true, false], 'and nothing more once it landed');
+	sync.resync();
+	sync.set(true);
+	out.shift()(); await tick();
+	out.shift()(); await tick();
+	assert.deepEqual(writes, [true, false, false, true]);
+});
+
 test('resync writes the latest value again, and does nothing before the first set', async () => {
 	const {st, sync, tick} = rig();
 	st.down = false;

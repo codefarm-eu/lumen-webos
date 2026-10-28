@@ -40,7 +40,7 @@ test('{"saver":true}: an opaque screensaver with Lumen\'s pictures, no bar, and 
 	assert.match(t.ids.saver.className, /saver--on/);
 	assert.doesNotMatch(t.ids.bar.className, /bar--in/);
 	// the settings backup is read as root here (the test has no XMLHttpRequest, as when the TV refuses the plain read)
-	assert.deepEqual(t.execs(), ['touch /tmp/lumen-ambient-on', 'cat /var/lib/homehook/lumen-config.json 2>/dev/null; true']);
+	assert.deepEqual(t.execs(), ['echo bar > /tmp/lumen-ambient-on', 'cat /var/lib/homehook/lumen-config.json 2>/dev/null; true']);
 	const shown = [t.ids.saverA.src, t.ids.saverB.src].filter(Boolean);
 	assert.equal(shown.length, 1);
 	assert.match(shown[0], /^file:\/\/\/media\/developer\/apps\/usr\/palm\/applications\/com\.ovsteenb\.lumen\.bar\/wallpapers\/default-[0-2]\.jpg$/);
@@ -84,4 +84,12 @@ test('the pointer moving does not end the screensaver, a click does', () => {
 	assert.equal(t.execs().indexOf('rm -f /tmp/lumen-ambient-on'), -1);
 	t.fire('click', {target: {}});
 	assert.ok(t.execs().indexOf('rm -f /tmp/lumen-ambient-on') !== -1);
+});
+
+test('{"saver":true} again while the screensaver is up writes the flag again (the watcher may have dropped it)', async () => {
+	const t = start({saver: true});
+	await new Promise((r) => setTimeout(r, 300));   // past the duplicate-relaunch guard (RELAUNCH_DUP_MS)
+	t.fire('webOSRelaunch', {detail: {saver: true}});
+	assert.equal(t.execs().filter((c) => c === 'echo bar > /tmp/lumen-ambient-on').length, 2);
+	assert.match(t.ids.saver.className, /saver--on/);
 });

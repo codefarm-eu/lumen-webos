@@ -3,7 +3,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
+import {chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -392,4 +392,48 @@ test('full-screen Lumen as before: over Lumen or nothing, an older Lumen bar, no
 	assert.equal(overlay('{"view":"ambient","back":"org.moonfin.webos"}', {bar: 'old'}), false);
 	assert.equal(overlay('{"view":"ambient","back":"org.moonfin.webos"}', {bar: null}), false);
 	assert.equal(overlay('{"view":"ambient","back":"org.moonfin.webos"}', {off: true}), false);
+});
+
+/** ambient_stale with the flag holding `owner` (null: no flag), Lumen in front or not, and Lumen bar open or not */
+function stale (owner, {front = false, bar = false} = {}) {
+	const dir = mkdtempSync(join(tmpdir(), 'ambient-'));
+	const flag = join(dir, 'ambient-on');
+	if (owner !== null) writeFileSync(flag, owner ? owner + '\n' : '');
+	const sh = [`WATCH_SH_LIB=1 . '${SCRIPT}'`, `AMBIENT_ON='${flag}'; front='${front ? LUMEN : ''}'`, `bar_running () { ${bar ? 'true' : 'false'}; }`,
+		'if ambient_stale; then echo stale; else echo kept; fi'].join('\n');
+	return execFileSync('sh', ['-c', sh], {encoding: 'utf8'}).trim();
+}
+
+test('a screensaver flag left by Lumen bar is dropped once the bar is closed, also with Lumen in front (else no screensaver ever showed)', () => {
+	assert.equal(stale('bar', {front: true}), 'stale');
+	assert.equal(stale('bar'), 'stale');
+	assert.equal(stale('bar', {bar: true}), 'kept');
+	assert.equal(stale('bar', {front: true, bar: true}), 'kept');
+});
+
+test('Lumen\'s own screensaver flag (and the unnamed one of older builds) is kept while Lumen is in front, as before', () => {
+	for (const owner of ['lumen', '']) {
+		assert.equal(stale(owner, {front: true}), 'kept', owner);
+		assert.equal(stale(owner), 'stale', owner);
+		assert.equal(stale(owner, {bar: true}), 'kept', owner);
+	}
+	assert.equal(stale(null), 'kept');
+});
+
+test('LG Home seen in the log (home_reader) opens the Lumen build last in front, not the first one installed', () => {
+	const dir = mkdtempSync(join(tmpdir(), 'homeshown-'));
+	const bin = join(dir, 'bin');
+	mkdirSync(bin);
+	for (const id of [LUMEN, LUMEN + '.dev']) mkdirSync(join(dir, 'apps', id), {recursive: true});
+	writeFileSync(join(bin, 'luna-send'), `#!/bin/sh\ncase "$3" in */launch) echo "$4" >> '${dir}/launches' ;; esac\necho '{"returnValue":true}'\n`);
+	chmodSync(join(bin, 'luna-send'), 0o755);
+	writeFileSync(join(dir, 'takeover'), '');
+	writeFileSync(join(dir, 'lastme'), LUMEN + '.dev\n');
+	const line = '2026-10-28T10:00:00.000000Z [100.0] user.info surface-manager [] NL_HOME_SHOWN {"foregroundId": "youtube.leanback.v4"}';
+	const sh = [`WATCH_SH_LIB=1 . '${SCRIPT}'`, `APPS='${dir}/apps'; TAKEOVER_FLAG='${dir}/takeover'; BAR_FLAG='${dir}/none'; WAKEFILE='${dir}/wu'`,
+		`LASTME='${dir}/lastme'; SYSLOG='${dir}/messages'; IH_LOG='${dir}/ihlog'; AMBIENT_ON='${dir}/ambient-on'`, 'usleep () { :; }',
+		// as in home_reader: a fork made before the main loop ever set lastme
+		`lastme=''; on_home_shown '${line}'`].join('\n');
+	execFileSync('sh', ['-c', sh], {encoding: 'utf8', env: {...process.env, PATH: `${bin}:${process.env.PATH}`}});
+	assert.deepEqual(readFileSync(join(dir, 'launches'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)), [{id: LUMEN + '.dev'}]);
 });

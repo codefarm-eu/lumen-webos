@@ -7,6 +7,7 @@ import {flagSync} from './flagSync';
 /** Tells the TV-side watcher that the video wallpaper is on, so LG's screensaver is ended while Lumen is in front. */
 const videoFlag = flagSync(root.setVideoFlag);
 const ambientFlag = flagSync(root.setAmbientFlag);
+const ambientShowing = flagSync(root.setAmbientShowing);
 
 export function setVideoFlag (on: boolean): void {
 	if (!isWebOS()) return;
@@ -24,11 +25,14 @@ export function resyncFlags (): void {
 	if (!isWebOS()) return;
 	videoFlag.resync();
 	ambientFlag.resync();
+	ambientShowing.resync();
 }
 
+/** Whether Lumen's screensaver is up (/tmp/lumen-ambient-on). A flag left set made the watcher end every screensaver of LG's while Lumen was
+ *  in front, so a failed write is tried again like the other flags. */
 export function setAmbientShowing (on: boolean): void {
 	if (!isWebOS()) return;
-	root.setAmbientShowing(on).catch(() => undefined);
+	ambientShowing.set(on);
 }
 
 /** Starts the TV's screensaver now. */

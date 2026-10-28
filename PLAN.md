@@ -56,6 +56,7 @@ Update Lumen in the Homebrew Channel first (dev build from commit 8e2bd15 or lat
 - [ ] Screensaver Print look (verify): with Settings > Screensaver > Print look on, photos have softer blacks, slightly greyer whites and a darker bottom-right corner, and the crossfade stays smooth.
 - [ ] Screensaver brightness (verify): with Brightness at Dim, the backlight drops to 30 while the photos show and goes back to its old
       value on any key. Lumen closed mid-screensaver: the next launch puts the old value back after about 3 s.
+- [ ] Screensaver flag owner and video wallpaper (verify): with the video wallpaper on but no clip playing (Settings open, or the video failed), LG's screensaver or Lumen's photos still start. Close Lumen bar mid-screensaver some other way: the next screensaver still shows with Lumen in front. With "Home shows the bar" off, Home over Lumen bar's screensaver ends it and leaves the app in front, not Lumen under the overlay. LG Home seen in the log opens the Lumen build last in front.
 - [ ] Night dim on the screensaver: after 7 pm with Dim the wallpaper at night on, the photos are darker too.
 - [ ] Immich wallpaper night dim: after 7 pm the Photos wallpaper shows at 55%, like a cloud one. The code path is the same; Sam saw it not dim.
 - [ ] Photos: Recent, with people (verify): only pictures with faces. If Immich leaves out `people` on /api/search/random, it falls back to Recent.

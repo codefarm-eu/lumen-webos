@@ -68,6 +68,10 @@ date and weather bottom left. Any key returns to the home screen.
   screensaver timer still covers other apps.
 - Needs the updated `tools/tv/watch.sh` on the TV (it looks for `/var/lib/homehook/ambient-screensaver`, which the setting creates).
 - LG's screensaver keeps starting after its timer while the ambient screen is up (nothing is pressed); `watch.sh` sees
-  `/tmp/lumen-ambient-on` and only ends it.
-- With the video wallpaper on and Lumen in front, the video wallpaper wins, as before.
+  `/tmp/lumen-ambient-on` and only ends it. The flag holds its owner, `lumen` or `bar` (empty from older builds). The watcher drops a
+  `bar` flag once Lumen bar is closed, whatever is in front, and Lumen clears its own when it starts, so a flag whose remove never reached
+  the TV no longer keeps every screensaver away.
+- With the video wallpaper on, the video wallpaper wins only while a clip is playing on the home screen. In Settings, the Guide, or after
+  the video failed, the screensavers work as with a still wallpaper.
+- Home over Lumen bar's screensaver with "Home shows the bar" off ends the screensaver, and the app is in front as it was.
 - Like Lumen Gallery's screensaver, it takes the screen from whatever app was in front (a paused Plex film, for example).
