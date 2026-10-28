@@ -117,6 +117,7 @@ pwlast=""
 mesince=0
 launchpid=0
 tick=$(date +%s)
+slept=$tick
 own=0
 wakeuntil=$((tick + 90))   # a boot counts as a wake; LG Home may take a while to come up
 # but only a boot: a watcher (re)started later (Lumen refreshing it, stop/start by hand) must not open Lumen over the app in front
@@ -128,13 +129,22 @@ preloadat=$((tick + 60))   # once, after the boot rush; 0 when done
 WATCH_LOCK=${HOMEHOOK_WATCH_LOCK:-/tmp/homehook-watch.lock}
 # self_update re-execs this same pid, which still holds the lock. That is not a boot, even in the first 5 minutes (uptime under
 # 300 would otherwise open Lumen over the app in front and preload again). HOMEHOOK_UPTIME is /proc/uptime; tests point it elsewhere.
-if [ -f "$WATCH_LOCK/pid" ] && [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null)" = "$$" ]; then wakeuntil=0; preloadat=0; fi
+if [ -f "$WATCH_LOCK/pid" ] && [ ! -h "$WATCH_LOCK" ] && [ "$(stat -c %u "$WATCH_LOCK" 2>/dev/null)" = "$MYUID" ] \
+  && [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null)" = "$$" ]; then wakeuntil=0; preloadat=0; fi
+# moves folder $1 (a name in /tmp that is not as it should be) aside whole, into a fresh folder of this user's own next to it, so the name is
+# free again. Not removed: busybox rm -r walks a folder by name, so a link its owner puts inside it meanwhile would have root delete files
+# elsewhere. Nobody else can rename or remove the new folder in sticky /tmp, and mv renames: a link swapped in at $1 is moved, not followed.
+run_aside() {
+  ra=$(mktemp -d "$1.old.XXXXXX" 2>/dev/null) || return 1
+  mv -f "$1" "$ra/" 2>/dev/null
+}
 # makes RUN: a folder of this user's own (root on the TV), mode 700, not a link. Anything else at that name (a link, or a folder another user
-# made first) is removed and the folder made again; mkdir fails if something got there in between, and then the check runs again.
+# made first) is taken away (a folder moved aside) and the folder made again; mkdir fails if something got there in between, and then the
+# check runs again.
 run_dir() {
   for try in 1 2 3; do
     if [ -d "$RUN" ] && [ ! -h "$RUN" ] && [ "$(stat -c '%u %a' "$RUN" 2>/dev/null)" = "$MYUID 700" ]; then return 0; fi
-    rm -rf "$RUN" 2>/dev/null
+    if [ -d "$RUN" ] && [ ! -h "$RUN" ]; then run_aside "$RUN"; else rm -f "$RUN" 2>/dev/null; fi
     mkdir -m 700 "$RUN" 2>/dev/null
   done
   return 1
@@ -275,7 +285,11 @@ bar_pictures() {
   ( cd -P "$APPS/$BAR" 2>/dev/null && [ "$(pwd -P)" = "$bpr" ] || exit 0
     for bpx in data wallpapers; do
       [ -L "$bpx" ] && rm -f "$bpx"
-      [ "$bpx" = wallpapers ] && [ -d "$bpx" ] && [ "$(stat -c %u "$bpx" 2>/dev/null)" != "$MYUID" ] && rm -rf "$bpx"
+      # someone else's wallpapers folder is left as it is, and nothing is copied: busybox rm -r walks a folder by name, so a link put inside
+      # it while root removes it would have root delete files elsewhere, and moving it anywhere could land it in a link's target
+      if [ "$bpx" = wallpapers ] && [ -d "$bpx" ] && [ ! -L "$bpx" ] && [ "$(stat -c %u "$bpx" 2>/dev/null)" != "$MYUID" ]; then
+        echo "$(date +%T) Lumen bar: data/wallpapers is not root's own folder, no screensaver pictures copied" >> "$LOG"; exit 0
+      fi
       mkdir -p "$bpx" 2>/dev/null
       bpw=$(pwd -P)
       cd -P "$bpx" 2>/dev/null && [ "$(pwd -P)" = "$bpw/$bpx" ] || exit 0
@@ -345,6 +359,9 @@ saver_backlight_restore() {
   sbt=$(date +%s)
   # the periodic retry (saver_leftover) backs off after a failure: 5 s, then twice as long each time, up to 5 minutes
   [ "$1" = periodic ] && [ "$sbt" -lt "$sbl_next" ] && return 1
+  # emptied first: a read that can't open the file (the bar put it back and removed it just now) leaves both as they were, and c is shared
+  # with other functions here (lginput_is reads a process name into it, inputhook_check sets it to 1 or 2: a backlight of 1)
+  c=""; sbm=""
   read -r c sbm < "$SAVER_BACKLIGHT" 2>/dev/null
   case "$c" in ''|*[!0-9]*) rm -f "$SAVER_BACKLIGHT"; return 0 ;; esac
   [ "$c" -le 100 ] || { rm -f "$SAVER_BACKLIGHT"; return 0; }
@@ -520,11 +537,17 @@ wake_open() {
     echo "$(date +%T) wake: open $target over ${1:-nothing}: $r" >> "$LOG" ) &
   launchpid=$!
 }
-# The seconds between two loop tops that the loop did not account for: $1 the last top, $2 this one, $3 the seconds spent in the loop's own
-# long waits (owned: an Input Hook re-injection waits up to 10 s for ezinject, a self-refresh, the bar's picture copy). Counted as a wake, those
-# opened full Lumen over a paused film. Measured from the top of the loop, so a suspend anywhere else in it (a Luna call the TV froze in)
-# still counts.
-wake_gap() { wg=$(($2 - $1 - $3)); [ "$wg" -lt 0 ] && wg=0; echo "$wg"; }
+# The seconds of a pass that mean the TV was suspended: $1 the last loop top, $2 when that pass went to sleep, $3 this top, $4 the seconds
+# spent in the pass's own long waits (owned: an Input Hook re-injection waits up to 10 s for ezinject, a self-refresh, the bar's picture copy).
+# The sleep (1 s asked for) counts in full. The pass's own work counts only past WAKE_WORK_MAX: its Luna calls are slow right after an app
+# launch or the bar's screensaver launch, and counted as a wake those opened full Lumen over the app or the paused film. A suspend inside a
+# Luna call (the power state not seen leaving Active first) still counts once it is longer than any awake pass can be.
+WAKE_WORK_MAX=120   # each Luna call is cut off at 10 s (lsend) and a pass makes about a dozen at most
+wake_gap() {
+  wg=$(($3 - $2)); ww=$(($2 - $1 - $4))
+  [ "$ww" -gt "$WAKE_WORK_MAX" ] && wg=$((wg + ww))
+  [ "$wg" -lt 0 ] && wg=0; echo "$wg"
+}
 # runs "$@" and adds the seconds it took to own (see wake_gap)
 owned() { ot0=$(date +%s); "$@"; otr=$?; own=$((own + $(date +%s) - ot0)); return $otr; }
 # one tick of a wake (uses front, app, now, pwstate): Lumen in front as soon as the screen is on, whatever the TV opened; the TV can still put
@@ -883,6 +906,10 @@ self_update() {
 single_instance() {
   for try in 1 2 3; do
     if mkdir "$WATCH_LOCK" 2>/dev/null; then echo $$ > "$WATCH_LOCK/pid"; return 0; fi
+    # the lock is a name in /tmp: one that is not this user's own folder was not made by a watcher. It is never read (its pid could name any
+    # process called watch.sh, and keep every watcher out) nor removed with rm -r (run_aside), only taken away.
+    if [ -h "$WATCH_LOCK" ] || [ ! -d "$WATCH_LOCK" ]; then rm -f "$WATCH_LOCK" 2>/dev/null; continue; fi
+    if [ "$(stat -c %u "$WATCH_LOCK" 2>/dev/null)" != "$MYUID" ]; then run_aside "$WATCH_LOCK"; continue; fi
     old=$(cat "$WATCH_LOCK/pid" 2>/dev/null)
     # the other copy may not have written its pid yet
     [ -z "$old" ] && { sleep 1; old=$(cat "$WATCH_LOCK/pid" 2>/dev/null); }
@@ -908,7 +935,7 @@ hrpid=$!
 while true; do
   # wake: the power state goes back to Active from standby or off (not from the screensaver), or the loop missed its ticks (suspended)
   now=$(date +%s)
-  gap=$(wake_gap "$tick" "$now" "$own"); tick=$now; own=0
+  gap=$(wake_gap "$tick" "$slept" "$now" "$own"); tick=$now; own=0
   pw=$(lsend luna://com.webos.service.tvpower/power/getPowerState '{}' </dev/null 2>/dev/null)
   # webOS 25 answers "state": "Active", with a space
   pwstate=$(printf '%s' "$pw" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p')
@@ -1054,5 +1081,6 @@ while true; do
     done
   fi
   # faster ticks while a wake is open, so Lumen goes up as soon as the TV lets it (webOS 4's busybox sleep takes whole seconds: usleep)
+  slept=$(date +%s)
   if [ "$now" -lt "$wakeuntil" ]; then usleep 500000 2>/dev/null || sleep 1; else sleep 1; fi
 done
