@@ -319,9 +319,14 @@ export function copyFontIn (appDir: string): Promise<boolean> {
 }
 
 const INIT_D = '/var/lib/webosbrew/init.d';
+/** a shell loop that runs `action` for each running copy of the watcher ($p is its /proc folder): found in /proc, as 60-homehook does, and
+ *  matched on the start of the command line, so a shell whose -c text only names the watcher is not one */
+function forEachWatcher (action: string): string {
+	return `for p in /proc/[0-9]*; do case "$(tr '\\0' ' ' < $p/cmdline 2>/dev/null)" in "/bin/sh ${HOMEHOOK}/watch.sh"*|"sh ${HOMEHOOK}/watch.sh"*) ${action} ;; esac; done`;
+}
 /** kills every running copy of the watcher (found in /proc as 60-homehook does: busybox ps lists too little on some firmware; matched on the
  *  start of the command line, so this shell, whose -c text names the watcher too, is not one), then starts it through its boot hook */
-const RESTART_WATCHER = `for p in /proc/[0-9]*; do case "$(tr '\\0' ' ' < $p/cmdline 2>/dev/null)" in "/bin/sh ${HOMEHOOK}/watch.sh"*|"sh ${HOMEHOOK}/watch.sh"*) kill \${p#/proc/} 2>/dev/null ;; esac; done; sh ${INIT_D}/60-homehook`;
+const RESTART_WATCHER = `${forEachWatcher('kill ${p#/proc/} 2>/dev/null')}; sh ${INIT_D}/60-homehook`;
 
 /** Settings > Home Screen > Home opens Lumen. On: installs tools/tv/watch.sh and its boot hook from the app's own folder (homehook/, copied in by
  *  the build), turns the takeover on (home-takeover, and wake launch back on) and (re)starts the watcher. Off: removes the takeover flags, so
@@ -332,7 +337,7 @@ export function setHomeTakeover (appDir: string, on: boolean, livetv: boolean): 
 	if (!on) return run(`rm -f ${HOMEHOOK}/home-takeover ${HOMEHOOK}/livetv-to-lumen; mkdir -p ${HOMEHOOK} && touch ${HOMEHOOK}/no-wake-launch`).then(() => 'off');
 	const src = `${appDir}/homehook`;
 	const flags = `mkdir -p ${HOMEHOOK} && touch ${HOMEHOOK}/home-takeover && rm -f ${HOMEHOOK}/no-wake-launch && ${livetv ? `touch ${HOMEHOOK}/livetv-to-lumen` : `rm -f ${HOMEHOOK}/livetv-to-lumen`}`;
-	const running = `for p in /proc/[0-9]*; do case "$(tr '\\0' ' ' < $p/cmdline 2>/dev/null)" in "/bin/sh ${HOMEHOOK}/watch.sh"*|"sh ${HOMEHOOK}/watch.sh"*) echo run; break ;; esac; done`;
+	const running = forEachWatcher('echo run; break');
 	// homehook/SHA256SUMS (made by the build, app/vite.config.ts) must match both files: a half-written or partly replaced pair is not
 	// installed as root. Only where the TV has sha256sum; this is a check that the pair is whole, not a signature (docs/webos4.md).
 	const sums = `if command -v sha256sum >/dev/null 2>&1; then [ -f ${src}/SHA256SUMS ] && ( cd ${src} && sha256sum -c SHA256SUMS ) >/dev/null 2>&1 || { echo badsum; exit 0; }; fi`;
@@ -364,7 +369,8 @@ export interface BarApp { id: string; title: string; color?: string; plain?: boo
  *  before it scrolls, and how much the focused tile grows. */
 export interface BarStyle { size: number; height: number; gap: number; perRow: number; scale: number }
 /** Fills Lumen bar's data/ folder: copies each app's icon file to data/icons/<id>.<ext> and writes data/bar.json (the dock, Lumen's recent
- *  list, the apps, Lumen's id). Skipped when data/sig already holds `sig` (an app update wipes data/, and then it is written again). */
+ *  list, the apps, Lumen's id). Skipped when data/sig already holds `sig` (an app update wipes data/, and then it is written again).
+ *  data/wallpapers/ is left alone: it holds the screensaver pictures, which tools/tv/watch.sh bar_pictures copies from Lumen. */
 export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing'> {
 	if (!APP_DIR.test(appDir) || !APP_ID.test(lumenId) || !/^[a-z0-9]+$/.test(sig)) return Promise.reject(new Error('refused'));
 	const dir = barDir(appDir);
@@ -384,7 +390,7 @@ export function syncBar (appDir: string, lumenId: string, dock: string[], recent
 	const json = JSON.stringify({v: 1, lumen: lumenId, dock: dock.filter((x) => APP_ID.test(x)), recent: recent.filter((x) => APP_ID.test(x)), apps: out, style});
 	const b64 = toBase64(json);
 	return run(`[ -d ${dir} ] || { echo missing; exit 0; }; [ "$(cat ${dir}/data/sig 2>/dev/null)" = ${sig} ] && { echo same; exit 0; }; `
-		+ `rm -rf ${dir}/data && mkdir -p ${dir}/data/icons; ${copies.join('; ') || 'true'}; `
+		+ `[ -L ${dir}/data ] && rm -f ${dir}/data; rm -rf ${dir}/data/icons ${dir}/data/bar.json ${dir}/data/sig && mkdir -p ${dir}/data/icons; ${copies.join('; ') || 'true'}; `
 		+ `echo ${b64} | base64 -d > ${dir}/data/bar.json && echo ${sig} > ${dir}/data/sig && echo written`, 15000)
 		.then((r) => (r.indexOf('missing') !== -1 ? 'missing' : r.indexOf('same') !== -1 ? 'same' : 'written'));
 }

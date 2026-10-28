@@ -27,3 +27,12 @@ export function immichServer (url: unknown, key: unknown): {url: string; key: st
 	const k = String(key || '').trim();
 	return IMMICH_BASE.test(u) && IMMICH_KEY.test(k) ? {url: u, key: k} : null;
 }
+
+/** The icon cache (lib/apps.ts, localStorage) limited to `keep`, the icon paths of the apps installed now, so icons of removed apps (and
+ *  of an app's old versions) don't pile up until the storage quota is hit. `changed` says whether anything was dropped. */
+export function keepOnly (cache: Record<string, string>, keep: string[]): {cache: Record<string, string>; changed: boolean} {
+	const out: Record<string, string> = {};
+	let changed = false;
+	Object.keys(cache).forEach((k) => { if (keep.indexOf(k) !== -1) out[k] = cache[k]; else changed = true; });
+	return {cache: out, changed};
+}

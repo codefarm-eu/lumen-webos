@@ -254,6 +254,43 @@ saver_overlay() {
   [ -f "$NOSAVEROVERLAY_FLAG" ] && return 1
   grep -q 'id="saver"' "$APPS/$BAR/index.html" 2>/dev/null
 }
+# Lumen bar's screensaver pictures. They ship only in Lumen (app/public/wallpapers/default-N.jpg). A webOS 4 web app can't load another
+# app's files, so root copies them into the bar's own data/wallpapers/ (bar.js saverFind), with a "list" of their names. $1: the Lumen build
+# (one of ME) to copy from; empty means the first one installed. Only plain files are copied (cp -P, never through a link). A picture whose size
+# changed is copied again, and one Lumen no longer has is removed. Quiet and quick when nothing changed. (A fresh bar with no copy yet shows
+# black with the clock.)
+bar_pictures() {
+  bpl=""
+  for id in $1 $ME; do case " $ME " in *" $id "*) [ -d "$APPS/$id/wallpapers" ] && { bpl=$id; break; } ;; esac; done
+  [ -n "$bpl" ] && [ -d "$APPS/$BAR" ] && [ ! -L "$APPS/$BAR" ] || return 0
+  bpd="$APPS/$BAR/data/wallpapers"
+  [ -L "$APPS/$BAR/data" ] && rm -f "$APPS/$BAR/data"
+  [ -L "$bpd" ] && rm -f "$bpd"
+  mkdir -p "$bpd" 2>/dev/null && chmod 755 "$APPS/$BAR/data" "$bpd" 2>/dev/null || return 0
+  bpn=""; bpc=0
+  for f in "$APPS/$bpl"/wallpapers/default-[0-9].jpg "$APPS/$bpl"/wallpapers/default-[0-9][0-9].jpg; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    b=${f##*/}
+    bpn="$bpn$b
+"
+    if [ ! -f "$bpd/$b" ] || [ -L "$bpd/$b" ] || [ "$(wc -c < "$f")" != "$(wc -c < "$bpd/$b")" ]; then
+      rm -f "$bpd/$b"; cp -P "$f" "$bpd/$b" 2>/dev/null && chmod 644 "$bpd/$b" && bpc=$((bpc + 1))
+    fi
+  done
+  for f in "$bpd"/*; do
+    b=${f##*/}
+    [ "$b" = list ] && continue
+    case "
+$bpn" in *"
+$b
+"*) ;; *) rm -f "$f" ;; esac
+  done
+  if [ "$(cat "$bpd/list" 2>/dev/null)" != "$(printf '%s' "$bpn")" ]; then
+    bpt=$(mktemp "$bpd/list.XXXXXX") && printf '%s' "$bpn" > "$bpt" && chmod 644 "$bpt" && mv -f "$bpt" "$bpd/list"
+    echo "$(date +%T) Lumen bar: screensaver pictures from $bpl ($(printf '%s' "$bpn" | grep -c .) pictures, $bpc copied)" >> "$LOG"
+  fi
+  return 0
+}
 # prints "open", "closed", or "unknown" when the app manager did not answer (or answered no running list)
 bar_state() {
   bsr=$(lsend luna://com.webos.applicationManager/running '{}' </dev/null 2>/dev/null)
@@ -467,13 +504,17 @@ sync_home_key() {
     fi
     printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind added (LG Input Hook)" >> "$LOG"
   elif [ "$have" -eq 1 ]; then
-    new=$(printf '%s' "$cur" | awk -v b="$HOMEKEY_BIND" '{ while ((i = index($0, b ",")) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
-      while ((i = index($0, "," b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
-      while ((i = index($0, b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b)); print }')
+    new=$(printf '%s' "$cur" | homekey_unbind)
     printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind removed" >> "$LOG"
   fi
 }
 
+# keybinds.json text (stdin) without our Home bind and its comma (stdout). Also used by tools/tv/stop_watch.sh, which sources this file.
+homekey_unbind() {
+  awk -v b="$HOMEKEY_BIND" '{ while ((i = index($0, b ",")) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
+    while ((i = index($0, "," b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
+    while ((i = index($0, b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b)); print }'
+}
 # true when our Home bind is in Input Hook's keybinds.json (takeover on, so a Home press should come through home_key)
 home_bind_on() {
   [ -f "$KEYBINDS" ] && grep -qF "$HOMEKEY_BIND" "$KEYBINDS" 2>/dev/null
@@ -777,6 +818,7 @@ case "$0" in */watch-key) home_key; exit 0 ;; esac
 [ -n "$WATCH_SH_LIB" ] && return 0
 run_dir || exit 0
 single_instance || { echo "$(date +%T) watcher: another copy is running, this one exits" >> "$LOG"; exit 0; }
+bar_pictures "$(cat "$LASTME" 2>/dev/null)"   # a bar installed before this watcher started has its pictures before its first screensaver
 
 echo "$wakeuntil" > "$WAKEFILE"
 home_reader &
@@ -871,6 +913,7 @@ while true; do
           if saver_overlay "$sp"; then
             # over another app: Lumen bar's screensaver, an overlay, so the app stays in front with its player as it was (a full-screen
             # Lumen sent it to the background, and the relaunch back made Moonfin drop its player). Shown at once, without the wait below.
+            bar_pictures "$target"
             r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$BAR\",\"params\":{\"saver\":true,\"lumen\":\"$target\"}}" </dev/null 2>&1)
             echo "$(date +%T) screensaver: Lumen bar over $over: $r" >> "$LOG"
           else

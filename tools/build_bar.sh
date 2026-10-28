@@ -10,13 +10,7 @@ cp -R "$ROOT/bar/." "$TMP/"
 mkdir -p "$TMP/licenses" && cp "$ROOT/LICENSE" "$TMP/licenses/LICENSE.txt"
 # the bar's label font (bar.css): Geist, from Lumen's sources, with its licence
 mkdir -p "$TMP/fonts" && cp "$ROOT/app/src/assets/geist-static-600.woff2" "$TMP/fonts/" && cp "$ROOT/app/public/licenses/Geist-OFL.txt" "$TMP/licenses/"
-# the screensaver's pictures (bar.js saverFind): Lumen's bundled default-N.jpg, without the -bg and -blur copies. The bar's own copy, because a
-# webOS 4 web app may not load files from another app's folder (C8, 28 Oct 2026: from the bar every one of Lumen's failed, so it was black)
-mkdir -p "$TMP/wallpapers"
-for f in "$ROOT"/app/public/wallpapers/default-[0-9].jpg "$ROOT"/app/public/wallpapers/default-[0-9][0-9].jpg; do
-  if [ -f "$f" ]; then cp "$f" "$TMP/wallpapers/"; fi
-done
-echo "Lumen bar: $(ls "$TMP/wallpapers" | wc -l | tr -d ' ') screensaver pictures"
+# no screensaver pictures here: they ship only in Lumen, and the watcher copies them into the bar's data/wallpapers/ (watch.sh bar_pictures)
 python3 - "$ROOT/app/public/appinfo.json" "$TMP/appinfo.json" <<'PY'
 import json, sys
 v = json.load(open(sys.argv[1]))['version']

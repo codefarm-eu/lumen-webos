@@ -7,7 +7,7 @@ import {createRequire} from 'node:module';
 const require = createRequire(new URL('../../app/package.json', import.meta.url));
 const {transformSync} = require('esbuild');
 const load = async (f) => import('data:text/javascript,' + encodeURIComponent(transformSync(readFileSync(new URL(`../../app/src/lib/${f}`, import.meta.url), 'utf8'), {loader: 'ts', format: 'esm'}).code));
-const {safeAppPath, immichServer, APP_ROOTS_CASE} = await load('checks.ts');
+const {safeAppPath, immichServer, APP_ROOTS_CASE, keepOnly} = await load('checks.ts');
 const {launchAction} = await load('launchParams.ts');
 const {backlightSaver} = await load('backlightSaver.ts');
 
@@ -76,4 +76,9 @@ test('backlight: never raised, nothing done once the screensaver is gone, and a 
 	b.restoreLeftover(); await t.flush();
 	assert.deepEqual(t.st.sets, [75]);
 	assert.equal(t.st.saved, null);
+});
+
+test('the icon cache keeps only the icons of the apps installed now', () => {
+	assert.deepEqual(keepOnly({'/a/icon.png': 'A', '/gone/icon.png': 'G'}, ['/a/icon.png', '/new/icon.png']), {cache: {'/a/icon.png': 'A'}, changed: true});
+	assert.deepEqual(keepOnly({'/a/icon.png': 'A'}, ['/a/icon.png']), {cache: {'/a/icon.png': 'A'}, changed: false});
 });
