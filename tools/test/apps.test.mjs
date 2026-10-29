@@ -184,6 +184,36 @@ test('C8 listLaunchPoints: catalogue icons stay Lumen\'s files, and Moonfin, Ama
 	store[CACHE] = prev;
 });
 
+test('an icon outside the app folders is tried as a file and never read as root', async () => {
+	const outside = '/tmp/outside-app/icon.png';
+	const moon = '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-fresh.png';
+	const trap = '/media/developer/apps/usr/palm/applications/org.moonfin.webos/../../../etc/passwd';
+	T.points = [
+		{id: 'outside.app', title: 'Outside', largeIcon: outside},
+		{id: 'org.moonfin.webos', title: 'Moonfin', largeIcon: moon},
+		{id: 'trap.app', title: 'Trap', largeIcon: trap}
+	];
+	T.rootReads = [];
+	let {apps} = await listApps(true, false);
+	assert.equal(apps.find((a) => a.id === 'outside.app').iconUrl, undefined);
+	assert.equal(apps.find((a) => a.id === 'trap.app').iconUrl, undefined);
+	assert.deepEqual(T.rootReads, [moon]);
+	const Prev = globalThis.Image;
+	globalThis.Image = function () {
+		const img = this;
+		Object.defineProperty(img, 'src', {set () { img.naturalWidth = 8; setTimeout(() => img.onload && img.onload()); }});
+	};
+	try {
+		T.points = [{id: 'outside.app', title: 'Outside', largeIcon: '/tmp/outside-app/other.png'}];
+		T.rootReads = [];
+		({apps} = await listApps(true, false));
+		assert.equal(apps.find((a) => a.id === 'outside.app').iconUrl, 'file:///tmp/outside-app/other.png');
+		assert.deepEqual(T.rootReads, []);
+	} finally {
+		globalThis.Image = Prev;
+	}
+});
+
 test('a TV path is forgotten once that app is no longer installed', async () => {
 	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
 	const moon = '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-130.png';
@@ -258,4 +288,32 @@ test('syncBar logs a skipped copy and a missing path, and does not keep an icon 
 	assert.match(logged, /bar: icon skipped netflix not-image/);
 	assert.match(logged, /bar: icon skipped com\.webos\.app\.livetv no-path/);
 	assert.doesNotMatch(logged, /skipped \./);
+});
+
+test('an svg, webp or gif is not sent to the copy, so a start does not rewrite the bar for an icon that can never pass', async () => {
+	T.answer = 'written';
+	T.calls = [];
+	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
+	const r = await syncBar(dir, 'com.ovsteenb.lumen', [], [], [
+		{id: 'org.example.svgapp', title: 'SVG', file: '/media/developer/apps/usr/palm/applications/org.example.svgapp/icon.svg'},
+		{id: 'org.example.webpapp', title: 'WebP', file: '/media/developer/apps/usr/palm/applications/org.example.webpapp/icon.webp'},
+		{id: 'org.example.gifapp', title: 'GIF', file: '/media/developer/apps/usr/palm/applications/org.example.gifapp/icon.gif'},
+		{id: 'org.example.jpgapp', title: 'JPEG', file: '/media/developer/apps/usr/palm/applications/org.example.jpgapp/icon.jpg'}
+	], 'abc');
+	assert.equal(r, 'written');
+	const cmd = T.calls[0];
+	assert.equal(cmd.includes('icon.svg'), false);
+	assert.equal(cmd.includes('icon.webp'), false);
+	assert.equal(cmd.includes('icon.gif'), false);
+	assert.equal(cmd.includes('icon.jpg'), true);
+	const json = JSON.parse(Buffer.from(/b64='([^']*)'/.exec(cmd)[1], 'base64').toString('utf8'));
+	assert.equal(json.apps['org.example.svgapp'].icon, undefined);
+	assert.equal(json.apps['org.example.webpapp'].icon, undefined);
+	assert.equal(json.apps['org.example.gifapp'].icon, undefined);
+	assert.equal(json.apps['org.example.jpgapp'].icon, '~icon:org.example.jpgapp.jpg');
+	const logged = Buffer.from(/echo ([A-Za-z0-9+/=]+) \| base64/.exec(T.calls[1])[1], 'base64').toString('utf8');
+	assert.match(logged, /bar: icon skipped org\.example\.svgapp not-image/);
+	assert.match(logged, /bar: icon skipped org\.example\.webpapp not-image/);
+	assert.match(logged, /bar: icon skipped org\.example\.gifapp not-image/);
+	assert.doesNotMatch(logged, /jpgapp not-image/);
 });

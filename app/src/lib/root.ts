@@ -394,14 +394,16 @@ export function syncBar (appDir: string, lumenId: string, dock: string[], recent
 		// "." and ".." pass APP_ID but are not file names the shell will copy; a "~icon:" token for them would be left in bar.json
 		if (!APP_ID.test(a.id) || a.id === '.' || a.id === '..') return;
 		const entry: {title: string; color?: string; plain?: boolean; icon?: string} = {title: a.title, color: a.color, plain: a.plain};
-		const ext = a.file ? (/\.(png|jpe?g|svg|webp|gif)$/i.exec(a.file) || ['', 'png'])[1].toLowerCase() : '';
-		const name = ext ? `${a.id}.${ext}` : '';
+		// png and jpeg only: the shell's magic check refuses anything else, and sending it would rewrite the bar on every start
+		const ext = a.file && /\.(png|jpe?g)$/i.exec(a.file);
+		const name = ext ? `${a.id}.${ext[1].toLowerCase()}` : '';
 		const nameOk = !!name && name !== '.new' && /^[A-Za-z0-9._-]+$/.test(name);
 		if (a.file && safeAppPath(a.file) && nameOk) {
-			// the shell swaps the quoted token for the copied name, or for null when the copy did not happen
+			// the shell swaps this icon field for the copied name, or for null when the copy did not happen
 			entry.icon = `~icon:${name}`;
 			icons.push({src: a.file, name, id: a.id});
-		} else skipped.push(`bar: icon skipped ${a.id} ${a.file ? 'unsafe-path' : 'no-path'}`);
+		} else if (a.file && safeAppPath(a.file)) skipped.push(`bar: icon skipped ${a.id} not-image`);
+		else skipped.push(`bar: icon skipped ${a.id} ${a.file ? 'unsafe-path' : 'no-path'}`);
 		out[a.id] = entry;
 	});
 	const json = JSON.stringify({v: 1, lumen: lumenId, dock: dock.filter((x) => APP_ID.test(x)), recent: recent.filter((x) => APP_ID.test(x)), apps: out, style});

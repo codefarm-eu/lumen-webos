@@ -194,21 +194,23 @@ The same settings are used by `com.sammysco.avoverlay`.
   Amazon Music, BBC iPlayer and Netflix, and `listLaunchPoints` has a safe file for each (`org.moonfin.webos/icon-130.png`, Amazon Music
   `largeIcon.png`, `bbc.iplayer.3.0/bbc_130x130.png`, Netflix `LARGE_APP_ICON.png`). That signature is the hash of the dock, the recent list,
   the style and an app list whose `file` is set only for those four catalogue icons
-  (`/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen/icons/apps/…`). That is what `iconFile` returns when `iconPaths` is empty: a
-  relative catalogue icon becomes a path in Lumen's folder, and a `data:` URI becomes a path only from `iconPaths`. The boot log's icon cache is
-  already full (328–333KB). `icons-file` is not run for these apps (the only lines are `0/1`, for App Store and a test app), and the colours in
-  `bar.json` are sampled `rgb()`, so the tiles are `data:` URIs, not missing pictures. A direct `listApps` of these launch points does fill
-  `iconPaths` and `iconFile` then returns each `largeIcon`. `sameApps` compares the icon URL's length and prefix, not the path, so a saved list
-  of `data:` URIs is left on screen. The bar effect calls `iconFile` as the effect starts and freezes that list for the 3s write, so the paths
-  `listApps` learns never reach `syncBar`. `cachedApps` fills `iconPaths` only for an `@icon:` ref. Boots on 23–26 Oct log `iconcache` before
-  `listLaunchPoints`, which happens only when the saved list contains `@icon:`, so those sessions had paths at first paint. This 9044 file has
-  no boot line (Lumen was closed before the 20s flush) and its signature is the empty-map write. TV Settings is the same shape for a second
-  reason: it is not a launch point, and `addSystemApps` never stored a path, so `iconFile` stays empty even after the list is read.
+  (`/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen/icons/apps/…`). Recomputing that hash with each app's `largeIcon` does not
+  give `l9d5e4`. The 9044 write ran with no TV path for any app whose tile is a `data:` picture. The icon cache in the log is already full
+  (328–333KB, and `icons-file` is not run for them), the colours in `bar.json` are sampled `rgb()`, and a direct `listApps` of those points does
+  return each `largeIcon`. What put an empty path
+  list into that write was not in `lumen.log` (there is no boot line for it; Lumen was closed before the 20s flush). Two states of `main`'s
+  `iconFile` both hash to `l9d5e4`, and neither was seen: a saved list that still holds the raw `data:` pictures (`iconPaths` empty, and
+  `sameApps` does not count a path, so the effect keeps the list it froze at the start), or a saved list of `@icon:` refs whose icon cache is
+  missing (`cachedApps` then has no picture, and `iconFile` returns before it looks at the stored path). Boots on 23–26 Oct do log `iconcache`
+  before `listLaunchPoints`, which happens only when the saved list contains `@icon:` and the cache is read. TV Settings is separate: it is not
+  a launch point, and on 9044 `addSystemApps` never stored a path.
   `tools/tv-bar-diag.sh` prints the TV's launch points, `bar.json` and the bar lines in `lumen.log`. Run it as root the way the script's header
   says (`ssh -tt` with the script decoded on the TV; `sh -s` over the pty hangs, and `timeout 90` is not this busybox). A copied file has to be
   a PNG or JPEG of at most 1 MiB, and still under the app folders after `readlink -f`. `bar.json` names an
-  icon only when that copy is a plain file (`null` otherwise). A skip is `bar: icon skipped <id> <reason>` in `lumen.log`, and the signature
-  is not written, so the next start tries again. The signature includes `BAR_EPOCH`, so an update rewrites a bar left by 1.0.9044. It is
+  icon only when that copy is a plain file (`null` otherwise). A skip in the copy is `bar: icon skipped <id> <reason>` in `lumen.log`, and the old
+  signature is removed, so the next start tries again and a return to the last signed list does not answer `same` with the skipped bar left in
+  place. An icon that is not a PNG or JPEG is not sent to the copy, so it does not rewrite the bar on every start. The signature includes
+  `BAR_EPOCH`, so an update rewrites a bar left by 1.0.9044. It is
   written again only when a signature in `data/sig` changes, so an update of Lumen bar,
   which empties its folder, is refilled at Lumen's next start. The bar's folder is writable by others, so this write does not use a full
   path (a redirect or a recursive remove would follow a link). It enters the bar folder and then `data/` with `cd -P`, and each must be

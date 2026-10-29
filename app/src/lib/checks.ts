@@ -69,10 +69,12 @@ export function syncBarResult (stdout: string): 'same' | 'written' | 'missing' |
 
 /** Shell that fills the bar folder `dir`'s data/icons, data/bar.json and data/sig. `dir` is an absolute path with no quotes or ".."
  *  (the bar folder next to an app dir that passed APP_DIR). `sig` is [a-z0-9]+ and `b64` is bar.json. Each icon `src` has passed
- *  safeAppPath; `name` is `<id>.<ext>`. An entry that should show an icon carries the quoted token `"~icon:<name>"`. That whole token becomes
- *  `"data/icons/<name>?<sig>"` only when the copy is a plain PNG or JPEG of at most 1 MiB, and `null` otherwise (bar.js treats a null icon
- *  as none). The match is the quoted token, so key order does not matter and one name is not a prefix of another. A copy that did not happen
- *  prints `skip <id> <reason>` (`unresolved`, `copy`, `toobig`, `not-image`) and the signature is not written, so the next start tries again.
+ *  safeAppPath; `name` is `<id>.<ext>`. An entry that should show an icon carries `"icon":"~icon:<name>"`. That field becomes
+ *  `"icon":"data/icons/<name>?<sig>"` only when the copy is a plain PNG or JPEG of at most 1 MiB, and `"icon":null` otherwise (bar.js treats a
+ *  null icon as none). The match is the icon field, so a title with the same text is left alone, key order does not matter, and one name is
+ *  not a prefix of another. A copy that did not happen
+ *  prints `skip <id> <reason>` (`unresolved`, `copy`, `toobig`, `not-image`). The old signature is removed, so the next start tries again
+ *  and a return to the last signed list is not answered `same` with this bar left in place.
  *  The bar's folder is writable by others, so nothing is written by a full path (a redirect and a recursive remove both follow a link).
  *  The bar folder and then data/ are entered with cd -P and must be that directory (pwd -P); a parent that is a link is fine, the bar
  *  folder itself being a link is not. A data/ or data/icons/ that is not this user's is left as it is. A link at data, icons, bar.json
@@ -90,31 +92,42 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 	const copies = use.map((i) => {
 		const id = i.id && syncNameOk(i.id) ? i.id : i.name;
 		const skip = (why: string) => 'skipped=1; echo \'skip ' + id + ' ' + why + '\'';
+		// size without reading the file. stat is already used above; ls -ln is the busybox fallback (size is the fifth field).
+		const sizeOf = (p: string) => 'sz=$(stat -c %s ' + p + ' 2>/dev/null); case "$sz" in \'\'|*[!0-9]*) sz=$(ls -ln ' + p + ' 2>/dev/null | tr -s \' \' | cut -d\' \' -f5) ;; esac';
 		// -P copies a link as a link; it is then not a plain file, so it is removed and not named in bar.json.
-		// The file must be a PNG or JPEG of at most 1 MiB: a launch point can name any file under an app folder.
+		// A launch point can name any file under an app folder. The size is read first so a huge file is not copied into the
+		// 15s budget. The copy is then judged again (a file swapped in after the first stat), and removed when it fails.
 		return [
 			'if { ' + resolvedPath(i.src) + '; }; then',
-			'sz=$(wc -c < "$r" 2>/dev/null | tr -d \'[:space:]\')',
-			'case "$sz" in \'\'|*[!0-9]*) ' + skip('copy') + ' ;; *)',
-			'if [ "$sz" -gt 1048576 ]; then ' + skip('toobig'),
-			'elif ! { dd if="$r" bs=8 count=1 2>/dev/null | cmp -s - .pngm || dd if="$r" bs=3 count=1 2>/dev/null | cmp -s - .jpgm; }; then ' + skip('not-image'),
+			sizeOf('"$r"'),
+			'if [ -z "$sz" ] || [ -n "$(printf %s "$sz" | tr -d 0-9)" ]; then ' + skip('copy'),
+			'elif [ "$sz" -gt 1048576 ]; then ' + skip('toobig'),
 			'else rm -f -- .new',
 			'if [ -e .new ]; then echo refused; exit 0; fi',
 			'cp -fP -- "$r" .new 2>/dev/null',
-			'if [ -L \'' + i.name + '\' ]; then rm -f -- \'' + i.name + '\'; fi',
+			'if [ ! -f .new ] || [ -L .new ]; then rm -f -- .new; ' + skip('copy'),
+			'else ' + sizeOf('.new'),
+			'if [ -z "$sz" ] || [ -n "$(printf %s "$sz" | tr -d 0-9)" ]; then rm -f -- .new; ' + skip('copy'),
+			'elif [ "$sz" -gt 1048576 ]; then rm -f -- .new; ' + skip('toobig'),
+			'elif ! { dd if=.new bs=8 count=1 2>/dev/null | cmp -s - .pngm || dd if=.new bs=3 count=1 2>/dev/null | cmp -s - .jpgm; }; then rm -f -- .new; ' + skip('not-image'),
+			'else if [ -L \'' + i.name + '\' ]; then rm -f -- \'' + i.name + '\'; fi',
 			'if [ -f .new ] && [ ! -L .new ] && chmod 644 .new && mv -f -- .new \'' + i.name + '\'; then :; else rm -f -- .new; ' + skip('copy') + '; fi',
-			'fi ;; esac',
+			'fi',
+			'fi',
+			'fi',
 			'else ' + skip('unresolved') + '; fi'
 		].join('\n');
 	}).join('\n');
 	// the quoted token only. null is what bar.js already treats as no icon, and it does not depend on which key is last.
 	const rewrite = use.map((i) => {
 		const pat = i.name.replace(/\./g, '\\.');
-		const token = '\\"~icon:' + pat + '\\"';
-		const dest = '\\"data/icons/' + i.name + '?$sig\\"';
+		// the icon field only. A title that is the same text is `"title":"~icon:…"`, which this does not match, and a quote in a
+		// title is escaped by JSON.stringify, so it cannot forge the field.
+		const token = '\\"icon\\":\\"~icon:' + pat + '\\"';
+		const dest = '\\"icon\\":\\"data/icons/' + i.name + '?$sig\\"';
 		return 'if [ -f \'icons/' + i.name + '\' ] && [ ! -L \'icons/' + i.name + '\' ]; then '
 			+ 'json=$(printf \'%s\' "$json" | sed "s#' + token + '#' + dest + '#g"); '
-			+ 'else json=$(printf \'%s\' "$json" | sed "s#' + token + '#null#g"); fi';
+			+ 'else json=$(printf \'%s\' "$json" | sed "s#' + token + '#\\"icon\\":null#g"); fi';
 	});
 	const dropDirs = names ? 'for n in ' + names + '; do if [ -d "$n" ] && [ ! -L "$n" ]; then echo refused; exit 0; fi; done' : ':';
 	return [
@@ -178,8 +191,9 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'[ -f .bar.json.new ] && [ ! -L .bar.json.new ] || { rm -f -- .bar.json.new; echo refused; exit 0; }',
 		'chmod 644 .bar.json.new || { echo refused; exit 0; }',
 		'if [ -L bar.json ]; then rm -f -- bar.json; fi',
-		// a skipped copy is not signed, so the next start does not answer "same" and tries the file again
-		'if [ "$skipped" = 1 ]; then rm -f -- .sig.new; mv -f -- .bar.json.new bar.json && echo written || echo refused; exit 0; fi',
+		// a skipped copy removes the old signature. Leaving it would make a later return to that signed list answer "same"
+		// and keep this bar.json, skips and all.
+		'if [ "$skipped" = 1 ]; then rm -f -- .sig.new; rm -f -- sig; mv -f -- .bar.json.new bar.json && echo written || echo refused; exit 0; fi',
 		'printf \'%s\\n\' "$sig" > .sig.new || { echo refused; exit 0; }',
 		'[ -f .sig.new ] && [ ! -L .sig.new ] || { rm -f -- .sig.new; echo refused; exit 0; }',
 		'chmod 644 .sig.new || { echo refused; exit 0; }',

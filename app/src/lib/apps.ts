@@ -183,6 +183,15 @@ function fileIcon (p: LaunchPoint): string | undefined {
 	return undefined;
 }
 
+/** The icon the old loader would try as a file:// URL when it is not under an app folder: the first of large, medium, icon that is a plain
+ *  absolute path. `..` is not tried. It is never read as root (that stays fileIcon). */
+function looseIcon (p: LaunchPoint): string | undefined {
+	const raw = p.largeIcon || p.mediumLargeIcon || p.icon;
+	if (!raw || !/^\/[A-Za-z0-9._\/+@-]+$/.test(raw)) return undefined;
+	if (raw.slice(1).split('/').some((s) => s === '' || s === '.' || s === '..')) return undefined;
+	return raw;
+}
+
 const COLOR = /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9., %]+\))$/;
 /** LG's tile colour for the app: iconColor, else bgColor (white is LG's "not set" for both, so it is skipped) */
 function tvColor (p: LaunchPoint): string | undefined {
@@ -251,27 +260,30 @@ const ICON_BATCH = 8;
 function loadIcons (points: LaunchPoint[], root: boolean, seen: string[]): Promise<Record<string, string>> {
 	const cache = readIconCache();
 	const result: Record<string, string> = {};
-	const missing: {id: string; path: string}[] = [];
+	const missing: {id: string; path: string; asRoot: boolean}[] = [];
 	for (const p of points) {
-		// fileIcon skips an http largeIcon and uses the file icon under it; a path outside the app folders is not read
-		const path = fileIcon(p);
+		// fileIcon skips an http largeIcon and uses the file icon under it. A path outside the app folders is still tried as a file the
+		// app itself can load (as before); only a path under APP_ROOTS is read as root.
+		const rooted = fileIcon(p);
+		const path = rooted || looseIcon(p);
 		if (!path) continue;
 		seen.push(path);
 		if (cache[path]) result[p.id] = cache[path];
-		else missing.push({id: p.id, path});
+		else missing.push({id: p.id, path, asRoot: !!rooted});
 	}
 	if (!missing.length) return Promise.resolve(result);
 
 	return Promise.all(missing.map((m) => probeFile(m.path))).then((urls) => {
-		const unread: {id: string; path: string}[] = [];
+		const unread: {id: string; path: string; asRoot: boolean}[] = [];
 		missing.forEach((m, i) => {
 			const url = urls[i];
 			if (url) { result[m.id] = url; cache[m.path] = url; } else unread.push(m);
 		});
 		bootMark('icons-file', `${missing.length - unread.length}/${missing.length}`);
-		if (!unread.length || !root) { writeIconCache(cache); return result; }
+		const forRoot = root ? unread.filter((m) => m.asRoot) : [];
+		if (!forRoot.length) { writeIconCache(cache); return result; }
 		const batches: {id: string; path: string}[][] = [];
-		for (let i = 0; i < unread.length; i += ICON_BATCH) batches.push(unread.slice(i, i + ICON_BATCH));
+		for (let i = 0; i < forRoot.length; i += ICON_BATCH) batches.push(forRoot.slice(i, i + ICON_BATCH));
 		// one batch after another: one line per icon, "<index> <base64>" (lib/root.ts skips any path that is not a plain absolute path)
 		return batches.reduce((chain, batch) => chain.then(() => readIcons(batch.map((m) => m.path)).then((out) => {
 			for (const line of out.split('\n')) {

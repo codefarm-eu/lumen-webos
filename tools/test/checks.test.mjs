@@ -390,7 +390,7 @@ test('syncBar: a picture swapped for a link while it is copied is not kept, and 
 });
 
 test('syncBar: C8 developer and cryptofs icons are copied, including an app outside the first boot sample, and a miss is not listed', () => {
-	// the paths Olivier's C8 actually has. /media is not writable here, so the copy runs on a mirror of the same suffixes.
+	// the paths the C8 actually has. /media is not writable here, so the copy runs on a mirror of the same suffixes.
 	const real = {
 		moonfin: '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-130.png',
 		music: '/media/cryptofs/apps/usr/palm/applications/com.theadelab.amclient-lg/largeIcon.png',
@@ -475,6 +475,14 @@ test('syncBar: the icon token is replaced as a whole, in any key order, and a ba
 	assert.equal(got.apps.text.icon, null);
 	assert.equal(got.apps.text.title, 'Text');
 	assert.equal(read(join(bar, 'data', 'sig')), null);
+	// a title that is the token text is not an icon field, so it stays
+	const titled = {v: 1, apps: {a: {title: '~icon:a.png', icon: '~icon:a.png'}}};
+	const bar2 = join(base, 'bar2');
+	mkdirSync(bar2);
+	assert.equal(runSync(bar2, {sig: 'tok2', json: titled, icons: [icons[0]], roots: app}).split('\n').pop(), 'written');
+	const got2 = JSON.parse(read(join(bar2, 'data', 'bar.json')));
+	assert.equal(got2.apps.a.title, '~icon:a.png');
+	assert.equal(got2.apps.a.icon, 'data/icons/a.png?tok2');
 });
 
 test('syncBar: a rewrite that yields no JSON is refused, and a huge file is not copied', () => {
@@ -497,13 +505,36 @@ test('syncBar: a rewrite that yields no JSON is refused, and a huge file is not 
 	mkdirSync(happ);
 	mkdirSync(hbar);
 	writeFileSync(join(happ, 'icon.png'), png('ok'));
-	const hook = 'wc () { if [ "$1" = -c ]; then echo 2000000; else command wc "$@"; fi; }\n';
+	// the source is a small PNG. Only the copied file's size is reported huge, so the check has to be on .new.
+	const hook = 'stat () { if [ "$1" = -c ] && [ "$2" = %s ] && [ "$3" = .new ]; then echo 2000000; return; fi; command stat "$@"; }\n';
 	const hout = runSync(hbar, {icons: [{src: join(happ, 'icon.png'), name: 'a.png', id: 'a'}], json, roots: happ, hook, full: true});
 	assert.match(hout, /skip a toobig/);
 	assert.equal(hout.split('\n').pop(), 'written');
 	assert.equal(JSON.parse(read(join(hbar, 'data', 'bar.json'))).apps.a.icon, null);
 	assert.equal(read(join(hbar, 'data', 'icons', 'a.png')), null);
 	assert.equal(read(join(hbar, 'data', 'sig')), null);
+});
+
+test('syncBar: a skipped copy removes the old signature, so going back to that list is not "same" with the skipped bar left in place', () => {
+	const base = mkdtempSync(join(tmpdir(), 'sync-stale-'));
+	const app = join(base, 'app');
+	const bar = join(base, 'bar');
+	mkdirSync(app);
+	mkdirSync(bar);
+	writeFileSync(join(app, 'ok.png'), png('ok'));
+	writeFileSync(join(app, 'bad.png'), Buffer.from('not an image'));
+	const ok = [{src: join(app, 'ok.png'), name: 'a.png', id: 'a'}];
+	const jsonX = {v: 1, recent: ['x'], apps: {a: {title: 'A', icon: '~icon:a.png'}}};
+	assert.equal(runSync(bar, {sig: 'sx', json: jsonX, icons: ok, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'sx\n');
+	const both = ok.concat([{src: join(app, 'bad.png'), name: 'b.png', id: 'b'}]);
+	const jsonY = {v: 1, recent: ['y'], apps: {a: {title: 'A', icon: '~icon:a.png'}, b: {title: 'B', icon: '~icon:b.png'}}};
+	assert.equal(runSync(bar, {sig: 'sy', json: jsonY, icons: both, roots: app}), 'written');
+	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).recent[0], 'y');
+	assert.equal(read(join(bar, 'data', 'sig')), null);
+	assert.equal(runSync(bar, {sig: 'sx', json: jsonX, icons: ok, roots: app}), 'written');
+	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).recent[0], 'x');
+	assert.equal(read(join(bar, 'data', 'sig')), 'sx\n');
 });
 
 test('backlight: a value still saved for another picture mode leaves this one undimmed (else it stayed dim with nothing saved for it)', async () => {

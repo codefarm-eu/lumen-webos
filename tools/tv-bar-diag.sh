@@ -8,7 +8,7 @@
 # put the script on the TV and run it there, with ssh's stdin closed:
 #
 #   B64=$(base64 < tools/tv-bar-diag.sh | tr -d '\n')
-#   ssh -tt root@<tv> "echo $B64 | base64 -d > /tmp/x.sh; sh /tmp/x.sh; rm -f /tmp/x.sh" < /dev/null
+#   ssh -tt root@<tv> "f=\$(mktemp /tmp/lumen-bar-diag.XXXXXX); echo $B64 | base64 -d > \"\$f\"; sh \"\$f\"; rm -f \"\$f\"" < /dev/null
 #
 # Do not pass -f to luna-send. Lumen's own call does not. The first URI that
 # returns launchPoints is the one printed.
@@ -20,9 +20,8 @@
 URIS="luna://com.webos.applicationManager/listLaunchPoints
 luna://com.webos.service.applicationmanager/listLaunchPoints
 palm://com.palm.applicationManager/listLaunchPoints"
-OUT=/tmp/lumen-bar-diag.$$
-ERR=/tmp/lumen-bar-diag.$$.err
-rm -f "$OUT" "$ERR"
+OUT=$(mktemp /tmp/lumen-bar-diag.XXXXXX) || exit 1
+ERR=$(mktemp /tmp/lumen-bar-diag.XXXXXX) || { rm -f "$OUT"; exit 1; }
 trap 'rm -f "$OUT" "$ERR"' EXIT INT TERM
 
 # One luna-send. Prints the reply (CR stripped) or nothing. Uses a pty when
