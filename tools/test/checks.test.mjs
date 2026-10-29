@@ -6,7 +6,7 @@ import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {createRequire} from 'node:module';
 const require = createRequire(new URL('../../app/package.json', import.meta.url));
 const {transformSync} = require('esbuild');
@@ -19,6 +19,9 @@ test('icon paths: only plain paths under the app folders, no "." or ".." segment
 	assert.equal(safeAppPath('/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon.png'), true);
 	assert.equal(safeAppPath('/usr/palm/applications/com.webos.app.hdmi1/icon.png'), true);
 	assert.equal(safeAppPath('/media/cryptofs/apps/usr/palm/applications/youtube.leanback.v4/largeIcon.png'), true);
+	assert.equal(safeAppPath('/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-130.png'), true);
+	assert.equal(safeAppPath('/media/cryptofs/apps/usr/palm/applications/com.theadelab.amclient-lg/largeIcon.png'), true);
+	assert.equal(safeAppPath('/media/cryptofs/apps/usr/palm/applications/netflix/icon.png'), true);
 	for (const bad of ['/media/developer/apps/x/../../../../etc/shadow', '/media/developer/apps/./x.png', '/media/developer/apps//x.png',
 		'/etc/shadow', '/var/lib/homehook/immich.json', '/home/root/.ssh/id_rsa', 'media/developer/apps/x.png', "/media/developer/apps/a'b.png",
 		'/media/developer/apps/a b.png', '/media/developer/apps/x/..', '/usr/palmx/a.png']) assert.equal(safeAppPath(bad), false, bad);
@@ -174,14 +177,17 @@ const read = (p) => { try { return readFileSync(p, 'utf8'); } catch { return nul
 const b64 = (obj) => Buffer.from(JSON.stringify(obj), 'utf8').toString('base64');
 
 /** runs the link-safe bar write in `dir`. `roots`, when set, is treated as an app-folder root so an icon under it can be copied. */
-function runSync (dir, {sig = 'abc', json = {v: 1, title: 'a "b"'}, icons = [], hook = '', roots = null} = {}) {
+function runSync (dir, {sig = 'abc', json = {v: 1, title: 'a "b"'}, icons = [], hook = '', roots = null, full = false} = {}) {
 	let script = syncBarShell(dir, sig, b64(json), icons);
-	if (roots) script = script.replace(APP_ROOTS_CASE, roots + '/*');
-	return execFileSync('sh', ['-c', hook + script], {encoding: 'utf8'}).trim();
+	// every icon's resolvedPath embeds the app-root list; one replace would only retarget the first icon
+	if (roots) script = script.split(APP_ROOTS_CASE).join(roots + '/*');
+	const out = execFileSync('sh', ['-c', hook + script], {encoding: 'utf8'}).replace(/\s+$/, '');
+	// skip lines come before the status word
+	return full ? out : (out.split('\n').pop() || '').trim();
 }
 
 test('syncBar: a reply that is not exactly one status word is never a successful write', () => {
-	for (const s of ['written', 'written\n', 'noise\nwritten']) assert.equal(syncBarResult(s), 'written');
+	for (const s of ['written', 'written\n', 'noise\nwritten', 'skip netflix unresolved\nwritten']) assert.equal(syncBarResult(s), 'written');
 	assert.equal(syncBarResult('same'), 'same');
 	assert.equal(syncBarResult('missing'), 'missing');
 	assert.equal(syncBarResult('refused'), 'refused');
@@ -207,7 +213,7 @@ test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpa
 	const script = syncBarShell(bar, 'abc', b64({v: 1}), icons);
 	assert.doesNotMatch(script, /rm -[a-z]*r/);
 	assert.doesNotMatch(script, /wallpapers/);
-	assert.equal(runSync(bar, {icons, roots: root, json: {v: 1, title: 'a "b"'}}), 'written');
+	assert.equal(runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'written');
 	const data = join(bar, 'data');
 	assert.equal(JSON.parse(read(join(data, 'bar.json'))).title, 'a "b"');
 	assert.equal(read(join(data, 'sig')), 'abc\n');
@@ -222,11 +228,12 @@ test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpa
 	assert.equal(modeOf(join(data, 'wallpapers')), '700');
 	assert.equal(lstatSync(join(data, 'icons', 'yt.png')).isSymbolicLink(), false);
 	writeFileSync(join(root, 'app', 'icon.png'), 'changed');
-	assert.equal(runSync(bar, {icons, roots: root}), 'same');
+	assert.equal(runSync(bar, {icons, roots: join(root, 'app')}), 'same');
 	assert.equal(read(join(data, 'icons', 'yt.png')), 'png-bytes');
 	const rootSrc = readFileSync(new URL('../../app/src/lib/root.ts', import.meta.url), 'utf8');
 	assert.match(rootSrc, /syncBarShell\(dir, sig, toBase64\(json\), icons\)/);
-	assert.match(rootSrc, /\.then\(syncBarResult\)/);
+	assert.match(rootSrc, /syncBarResult\(outText\)/);
+	assert.match(rootSrc, /bar: icon skipped/);
 	assert.doesNotMatch(rootSrc, /rm -rf \$\{dir\}/);
 	assert.doesNotMatch(rootSrc, /cat \$\{dir\}\/data\/sig/);
 	assert.doesNotMatch(rootSrc, /> \$\{dir\}\/data\/bar\.json/);
@@ -376,6 +383,58 @@ test('syncBar: a picture swapped for a link while it is copied is not kept, and 
 	assert.equal(modeOf(target), '600');
 	assert.equal(lstatSync(join(pre, 'data', 'bar.json')).isSymbolicLink(), false);
 	assert.equal(JSON.parse(read(join(pre, 'data', 'bar.json'))).v, 1);
+});
+
+test('syncBar: C8 developer and cryptofs icons are copied, including an app outside the first boot sample, and a miss is not listed', () => {
+	// the paths Olivier's C8 actually has. /media is not writable here, so the copy runs on a mirror of the same suffixes.
+	const real = {
+		moonfin: '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-130.png',
+		music: '/media/cryptofs/apps/usr/palm/applications/com.theadelab.amclient-lg/largeIcon.png',
+		netflix: '/media/cryptofs/apps/usr/palm/applications/netflix/icon.png',
+		iplayer: '/media/cryptofs/apps/usr/palm/applications/bbc.iplayer.3.0/icon.png',
+		evil: '/media/developer/apps/usr/palm/applications/org.evil.app/icon.png'
+	};
+	for (const p of Object.values(real)) assert.equal(safeAppPath(p), true, p);
+	const base = mkdtempSync(join(tmpdir(), 'sync-c8-'));
+	const mirror = (p) => join(base, p.replace(/^\//, ''));
+	const bar = join(base, 'bar');
+	mkdirSync(bar);
+	for (const key of ['moonfin', 'music', 'netflix']) {
+		mkdirSync(dirname(mirror(real[key])), {recursive: true});
+		writeFileSync(mirror(real[key]), key);
+	}
+	const secret = join(base, 'secret');
+	writeFileSync(secret, 'secret');
+	chmodSync(secret, 0o600);
+	mkdirSync(dirname(mirror(real.evil)), {recursive: true});
+	symlinkSync(secret, mirror(real.evil));
+	const icons = [
+		{src: mirror(real.moonfin), name: 'org.moonfin.webos.png', id: 'org.moonfin.webos'},
+		{src: mirror(real.music), name: 'com.theadelab.amclient-lg.png', id: 'com.theadelab.amclient-lg'},
+		{src: mirror(real.netflix), name: 'netflix.png', id: 'netflix'},
+		{src: mirror(real.iplayer), name: 'bbc.iplayer.3.0.png', id: 'bbc.iplayer.3.0'},
+		{src: mirror(real.evil), name: 'org.evil.app.png', id: 'org.evil.app'}
+	];
+	const apps = {};
+	for (const i of icons) apps[i.id] = {title: i.id, plain: true, icon: '~icon:' + i.name};
+	const out = runSync(bar, {sig: 'c8sig', json: {v: 1, apps}, icons, roots: join(base, 'media'), full: true});
+	assert.equal(out.split('\n').pop(), 'written');
+	assert.match(out, /skip bbc\.iplayer\.3\.0 unresolved/);
+	assert.match(out, /skip org\.evil\.app unresolved/);
+	const got = JSON.parse(read(join(bar, 'data', 'bar.json')));
+	assert.equal(got.apps['org.moonfin.webos'].icon, 'data/icons/org.moonfin.webos.png?c8sig');
+	assert.equal(got.apps['com.theadelab.amclient-lg'].icon, 'data/icons/com.theadelab.amclient-lg.png?c8sig');
+	assert.equal(got.apps.netflix.icon, 'data/icons/netflix.png?c8sig');
+	assert.equal(got.apps['bbc.iplayer.3.0'].icon, undefined);
+	assert.equal(got.apps['org.evil.app'].icon, undefined);
+	assert.equal(read(join(bar, 'data', 'icons', 'org.moonfin.webos.png')), 'moonfin');
+	assert.equal(read(join(bar, 'data', 'icons', 'com.theadelab.amclient-lg.png')), 'music');
+	assert.equal(read(join(bar, 'data', 'icons', 'netflix.png')), 'netflix');
+	assert.equal(read(join(bar, 'data', 'icons', 'bbc.iplayer.3.0.png')), null);
+	assert.equal(read(join(bar, 'data', 'icons', 'org.evil.app.png')), null);
+	assert.equal(read(secret), 'secret');
+	assert.equal(modeOf(secret), '600');
+	assert.equal(Object.hasOwn(got.apps, 'youtube.leanback.v4'), false);
 });
 
 test('backlight: a value still saved for another picture mode leaves this one undimmed (else it stayed dim with nothing saved for it)', async () => {

@@ -69,26 +69,41 @@ export function syncBarResult (stdout: string): 'same' | 'written' | 'missing' |
 
 /** Shell that fills the bar folder `dir`'s data/icons, data/bar.json and data/sig. `dir` is an absolute path with no quotes or ".."
  *  (the bar folder next to an app dir that passed APP_DIR). `sig` is [a-z0-9]+ and `b64` is bar.json. Each icon `src` has passed
- *  safeAppPath; `name` is `<id>.<ext>`.
+ *  safeAppPath; `name` is `<id>.<ext>`. An entry that should show an icon carries `"icon":"~icon:<name>"`; that token becomes
+ *  `data/icons/<name>?<sig>` only when the copy is a plain file afterwards, and is removed otherwise. A copy that did not happen prints
+ *  `skip <id> unresolved` (the path is not a plain file still under an app folder) or `skip <id> copy` (the copy itself failed).
  *  The bar's folder is writable by others, so nothing is written by a full path (a redirect and a recursive remove both follow a link).
  *  The bar folder and then data/ are entered with cd -P and must be that directory (pwd -P); a parent that is a link is fine, the bar
  *  folder itself being a link is not. A data/ or data/icons/ that is not this user's is left as it is. A link at data, icons, bar.json
  *  or sig is removed or replaced, not written through. bar.json and sig are written to a temp file in that directory and moved into
- *  place. data/wallpapers/ is never named. Prints one word: missing, same, written, or refused. */
-export function syncBarShell (dir: string, sig: string, b64: string, icons: {src: string; name: string}[]): string {
+ *  place. data/wallpapers/ is never named. The last line is one word: missing, same, written, or refused. `skip` lines may come before it. */
+export function syncBarShell (dir: string, sig: string, b64: string, icons: {src: string; name: string; id?: string}[]): string {
 	// the leading slash splits off an empty first segment; ".." and an empty segment later are what a path must not have
 	const dirParts = dir.split('/');
 	if (!/^\/[A-Za-z0-9._/+@-]+$/.test(dir) || dirParts[0] !== '' || dirParts.slice(1).some((s) => s === '' || s === '.' || s === '..')) throw new Error('refused');
 	if (!/^[a-z0-9]+$/.test(sig) || !/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) throw new Error('refused');
 	// safe to quote into the shell. The app-folder check is resolvedPath's, so a link that resolves outside one is not copied.
 	const shellPath = (p: string) => /^\/[A-Za-z0-9._/+@-]+$/.test(p) && p.length <= 512 && !p.slice(1).split('/').some((s) => s === '' || s === '.' || s === '..');
-	const use = icons.filter((i) => shellPath(i.src) && syncNameOk(i.name));
+	const use = icons.filter((i) => shellPath(i.src) && syncNameOk(i.name) && (!i.id || syncNameOk(i.id)));
 	const names = use.map((i) => i.name).join(' ');
-	const copies = use.map((i) => 'if { ' + resolvedPath(i.src) + '; }; then rm -f -- .new; '
-		+ 'if [ -e .new ]; then echo refused; exit 0; fi; '
-		+ 'cp -fP -- "$r" .new 2>/dev/null; '
-		+ 'if [ -L \'' + i.name + '\' ]; then rm -f -- \'' + i.name + '\'; fi; '
-		+ 'if [ -f .new ] && [ ! -L .new ] && chmod 644 .new && mv -f -- .new \'' + i.name + '\'; then :; else rm -f -- .new; fi; fi').join('\n');
+	const copies = use.map((i) => {
+		const id = i.id && syncNameOk(i.id) ? i.id : i.name;
+		// -P copies a link as a link; it is then not a plain file, so it is removed and not named in bar.json
+		return 'if { ' + resolvedPath(i.src) + '; }; then rm -f -- .new; '
+			+ 'if [ -e .new ]; then echo refused; exit 0; fi; '
+			+ 'cp -fP -- "$r" .new 2>/dev/null; '
+			+ 'if [ -L \'' + i.name + '\' ]; then rm -f -- \'' + i.name + '\'; fi; '
+			+ 'if [ -f .new ] && [ ! -L .new ] && chmod 644 .new && mv -f -- .new \'' + i.name + '\'; then :; else rm -f -- .new; echo \'skip ' + id + ' copy\'; fi; '
+			+ 'else echo \'skip ' + id + ' unresolved\'; fi';
+	}).join('\n');
+	// bar.json names an icon only when that copy is a plain file. The token is put there by syncBar; sed runs on the decoded text.
+	const rewrite = use.map((i) => {
+		// "." is any character in sed; icon names are ids plus an extension, and ids contain dots (bbc.iplayer.3.0)
+		const pat = i.name.replace(/\./g, '\\.');
+		return 'if [ -f \'icons/' + i.name + '\' ] && [ ! -L \'icons/' + i.name + '\' ]; then '
+			+ 'json=$(printf \'%s\' "$json" | sed "s#~icon:' + pat + '#data/icons/' + i.name + '?$sig#g"); '
+			+ 'else json=$(printf \'%s\' "$json" | sed "s#,\\"icon\\":\\"~icon:' + pat + '\\"##g"); fi';
+	});
 	const dropDirs = names ? 'for n in ' + names + '; do if [ -d "$n" ] && [ ! -L "$n" ]; then echo refused; exit 0; fi; done' : ':';
 	return [
 		'# relative names only, after cd -P. a folder that is not ours is left alone. never a recursive remove.',
@@ -138,6 +153,10 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'elif [ -d .sig.new ]; then echo refused; exit 0',
 		'elif [ -e .sig.new ]; then rm -f -- .sig.new; fi',
 		'printf \'%s\' "$b64" | base64 -d > .bar.json.new || { rm -f -- .bar.json.new; echo refused; exit 0; }',
+		'[ -f .bar.json.new ] && [ ! -L .bar.json.new ] || { rm -f -- .bar.json.new; echo refused; exit 0; }',
+		'json=$(cat .bar.json.new) || { echo refused; exit 0; }',
+		...rewrite,
+		'printf \'%s\' "$json" > .bar.json.new',
 		'[ -f .bar.json.new ] && [ ! -L .bar.json.new ] || { rm -f -- .bar.json.new; echo refused; exit 0; }',
 		'chmod 644 .bar.json.new || { echo refused; exit 0; }',
 		'printf \'%s\\n\' "$sig" > .sig.new || { echo refused; exit 0; }',

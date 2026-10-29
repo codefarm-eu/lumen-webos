@@ -417,20 +417,24 @@ export function App () {
 			.concat(folderTiles.map((f): TileModel => ({key: 'folder:' + f.name, label: f.name, color: '#3b4256', children: f.items.map((t) => t.imageUrl), running: f.items.some((t) => open(t.key))})));
 	}, [shownApps, folderTiles, config.folders, running]);
 
+	// 2: bar.json must be written again on TVs whose signature was saved when only the bundled icons were copied (1.0.9044)
+	const BAR_EPOCH = 2;
 	// Lumen bar (Home shows the bar): its data/ folder gets the dock (the glass bar's apps), Lumen's recent list and every app with its icon
-	// file, written again only when that changes (a signature in data/sig)
+	// file, written again only when that changes (a signature in data/sig). BAR_EPOCH is part of that signature so an update rewrites a
+	// bar.json that was saved when most icons were dropped (1.0.9044). The file path is read when the timer fires, after the TV list has
+	// filled icon paths; the cold-start list alone only knew the bundled icons.
 	useEffect(() => {
 		if (!config.homeBar || !isWebOS() || !allApps.length) return;
 		const dir = appDir();
 		const real = allApps.filter((a) => !a.glyph && /^[A-Za-z0-9._-]+$/.test(a.id));
 		const dock = homeTiles.slice(0, config.firstRow).map((t) => t.key).filter((k) => real.some((a) => a.id === k));
-		const list = real.map((a) => ({id: a.id, title: a.title, color: a.color, plain: a.plain, file: iconFile(a, dir)}));
 		const t = TILES_FOR[config.firstRow] || TILES_FOR[6];
 		const style = {size: t.size, height: t.height, gap: t.gap, perRow: config.firstRow, scale: BAR_FOCUS_SCALE[config.focusStrength] || BAR_FOCUS_SCALE.normal};
-		const text = JSON.stringify([dock, config.recentIds, list, style]);
-		let h = 5381;
-		for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
 		const id = window.setTimeout(() => {
+			const list = real.map((a) => ({id: a.id, title: a.title, color: a.color, plain: a.plain, file: iconFile(a, dir)}));
+			const text = JSON.stringify([BAR_EPOCH, dock, config.recentIds, list, style]);
+			let h = 5381;
+			for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
 			syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, h.toString(36), style)
 				.then((r) => {
 					if (r === 'written') bootMark('bar: data written');

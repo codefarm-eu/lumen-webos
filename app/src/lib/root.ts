@@ -379,19 +379,33 @@ export function syncBar (appDir: string, lumenId: string, dock: string[], recent
 	if (!APP_DIR.test(appDir) || !APP_ID.test(lumenId) || !/^[a-z0-9]+$/.test(sig)) return Promise.reject(new Error('refused'));
 	const dir = barDir(appDir);
 	const out: Record<string, {title: string; color?: string; plain?: boolean; icon?: string}> = {};
-	const icons: {src: string; name: string}[] = [];
+	const icons: {src: string; name: string; id: string}[] = [];
+	const skipped: string[] = [];
 	apps.forEach((a) => {
 		if (!APP_ID.test(a.id)) return;
 		const entry: {title: string; color?: string; plain?: boolean; icon?: string} = {title: a.title, color: a.color, plain: a.plain};
 		if (a.file && safeAppPath(a.file)) {
 			const ext = (/\.(png|jpe?g|svg|webp|gif)$/i.exec(a.file) || ['', 'png'])[1].toLowerCase();
-			entry.icon = `data/icons/${a.id}.${ext}?${sig}`;
-			icons.push({src: a.file, name: `${a.id}.${ext}`});
-		}
+			const name = `${a.id}.${ext}`;
+			// the shell swaps this for data/icons/<name>?<sig> only after the copy is a plain file, and drops it when the copy did not happen
+			entry.icon = `~icon:${name}`;
+			icons.push({src: a.file, name, id: a.id});
+		} else skipped.push(`bar: icon skipped ${a.id} ${a.file ? 'unsafe-path' : 'no-path'}`);
 		out[a.id] = entry;
 	});
 	const json = JSON.stringify({v: 1, lumen: lumenId, dock: dock.filter((x) => APP_ID.test(x)), recent: recent.filter((x) => APP_ID.test(x)), apps: out, style});
-	return run(syncBarShell(dir, sig, toBase64(json), icons), 15000).then(syncBarResult);
+	return run(syncBarShell(dir, sig, toBase64(json), icons), 15000).then((outText) => {
+		const status = syncBarResult(outText);
+		if (status === 'written') {
+			const lines = skipped.slice();
+			for (const line of outText.split('\n')) {
+				const m = /^skip ([A-Za-z0-9._-]+) (copy|unresolved)$/.exec(line.trim());
+				if (m) lines.push(`bar: icon skipped ${m[1]} ${m[2]}`);
+			}
+			if (lines.length) appendLog(lines.join('\n') + '\n').catch(() => undefined);
+		}
+		return status;
+	});
 }
 
 /** Writes text to one of FILES. The text travels as base64, so nothing in it is ever read by the shell. */

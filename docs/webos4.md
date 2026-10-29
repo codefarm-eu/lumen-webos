@@ -187,8 +187,14 @@ The same settings are used by `com.sammysco.avoverlay`.
   the bar, and the app underneath has the focus again. After 10 s without a key the bar closes by itself. A relaunch (Home pressed again)
   starts it over.
 - **Data:** an app cannot read another app's storage, so Lumen fills `data/` in Lumen bar's folder, as root. `data/bar.json` holds the dock
-  (the glass bar's apps), Lumen's recent list, every app's title and colour, and Lumen's id. `data/icons/<id>.png` are copied from the TV
-  icon paths or from Lumen's bundled icons. It is written again only when a signature in `data/sig` changes, so an update of Lumen bar,
+  (the glass bar's apps), Lumen's recent list, every app's title and colour, and Lumen's id. `data/icons/<id>.png` are copied from each app's
+  own icon file under the app folders (developer, store, system), not only from Lumen's bundled icons. On 1.0.9044 the bar kept real icons for
+  YouTube, Prime Video, the Browser and Homebrew Channel only (the catalogue icons, and the only apps colour-sampled on the first boot). Every
+  other app's icon is a `data:` URI on this TV (`icons-file` 0/37: another app's files do not load as `file://`), and that URI was not turned
+  back into the file path when the bar list was built, so `bar.json` had no `icon` for Moonfin, Amazon Music, Netflix, iPlayer and the rest.
+  The path is kept with the app, and a `data:` URI is looked up in the icon cache. `bar.json` names an icon only after that copy is a plain
+  file; a skip is a line in `lumen.log` (`bar: icon skipped <id> <reason>`). The signature includes a generation (`BAR_EPOCH`) so an update
+  rewrites a `bar.json` left by 1.0.9044. It is written again only when a signature in `data/sig` changes, so an update of Lumen bar,
   which empties its folder, is refilled at Lumen's next start. The bar's folder is writable by others, so this write does not use a full
   path (a redirect or a recursive remove would follow a link). It enters the bar folder and then `data/` with `cd -P`, and each must be
   that directory (`pwd -P`). A `data/` or `data/icons/` that is not root's own is left as it is and nothing is written (`lumen.log`: `bar

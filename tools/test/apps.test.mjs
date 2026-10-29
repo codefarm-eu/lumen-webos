@@ -16,7 +16,8 @@ const STUBS = {
 	'./launch': 'export const appExists = () => Promise.resolve(true);',
 	'../config/iconpack': 'export const ICON_PACK = {};',
 	'../config/systemApps': "export const SYSTEM_APPS = [{id: 'com.webos.app.livetv', title: 'Live TV', color: '#5d7b74'}];",
-	'./boot': 'export const readCache = () => null; export const writeCache = () => {};',
+	'./boot': 'export const readCache = (k) => { try { return JSON.parse(localStorage.getItem(k) || "null"); } catch (e) { return null; } };'
+		+ 'export const writeCache = (k, v) => { localStorage.setItem(k, JSON.stringify(v)); };',
 	'./log': 'export const bootMark = () => {};'
 };
 const code = (await build({
@@ -35,7 +36,8 @@ globalThis.window = globalThis;
 // icon files never load as files here (as on the C8), so each icon is read as root
 globalThis.Image = function () { const img = this; Object.defineProperty(img, 'src', {set () { setTimeout(() => img.onerror && img.onerror()); }}); };
 globalThis.T = {points: [], rootReads: []};
-const {listApps} = await import('data:text/javascript,' + encodeURIComponent(code));
+const {listApps, iconFile, saveAppsCache, cachedApps} = await import('data:text/javascript,' + encodeURIComponent(code));
+const cold = await import('data:text/javascript,' + encodeURIComponent(code + '\n/* cold */'));
 const CACHE = 'launcher-icon-cache-v1';
 
 test('icon cache: pruned once against both lists (launch points and system apps), so a second start reads nothing as root', async () => {
@@ -48,6 +50,49 @@ test('icon cache: pruned once against both lists (launch points and system apps)
 	await listApps(true, true);
 	assert.deepEqual(T.rootReads, [], 'both lists\' icons stayed cached');
 	assert.deepEqual(Object.keys(JSON.parse(store[CACHE])).sort(), cached);
+});
+
+test('bar icon file: a data: URI from the icon cache resolves for Moonfin, Amazon Music and Netflix, not only the bundled icons', () => {
+	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
+	const moon = '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-130.png';
+	const music = '/media/cryptofs/apps/usr/palm/applications/com.theadelab.amclient-lg/largeIcon.png';
+	const netflix = '/media/cryptofs/apps/usr/palm/applications/netflix/icon.png';
+	store[CACHE] = JSON.stringify({[moon]: 'data:image/png;base64,MOON', [music]: 'data:image/png;base64,MUSIC', [netflix]: 'data:image/png;base64,NET'});
+	// a fresh module: iconPaths is empty, as on a cold start before listApps. The picture is only in the icon cache.
+	assert.equal(cold.iconFile({id: 'org.moonfin.webos', title: 'Moonfin', iconUrl: 'data:image/png;base64,MOON'}, dir), moon);
+	assert.equal(cold.iconFile({id: 'com.theadelab.amclient-lg', title: 'Amazon Music', iconUrl: 'data:image/png;base64,MUSIC'}, dir), music);
+	assert.equal(cold.iconFile({id: 'netflix', title: 'Netflix', iconUrl: 'data:image/png;base64,NET'}, dir), netflix);
+	assert.equal(cold.iconFile({id: 'youtube.leanback.v4', title: 'YouTube', iconUrl: 'icons/apps/youtube.leanback.v4.png'}, dir), dir + '/icons/apps/youtube.leanback.v4.png');
+	assert.equal(cold.iconFile({id: 'x', title: 'X', iconUrl: 'http://lgsmarttv.lan/icon.png'}, dir), undefined);
+	assert.equal(cold.iconFile({id: 'org.moonfin.webos', title: 'Moonfin', iconUrl: 'data:not-cached', iconPath: '/etc/passwd'}, dir), undefined);
+	assert.equal(cold.iconFile({id: 'netflix', title: 'Netflix', iconUrl: 'data:not-cached', iconPath: netflix}, dir), netflix);
+});
+
+test('bar icon file: launch points keep the TV path, including an http largeIcon that falls through to the file', async () => {
+	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
+	const moon = '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-130.png';
+	const music = '/media/cryptofs/apps/usr/palm/applications/com.theadelab.amclient-lg/largeIcon.png';
+	const netflix = '/media/cryptofs/apps/usr/palm/applications/netflix/icon.png';
+	const iplayer = '/media/cryptofs/apps/usr/palm/applications/bbc.iplayer.3.0/icon.png';
+	T.points = [
+		{id: 'org.moonfin.webos', title: 'Moonfin', largeIcon: moon},
+		{id: 'com.theadelab.amclient-lg', title: 'Amazon Music', largeIcon: music},
+		{id: 'netflix', title: 'Netflix', icon: netflix},
+		{id: 'bbc.iplayer.3.0', title: 'BBC iPlayer', largeIcon: 'http://lgsmarttv.lan:3000/iplayer.png', icon: iplayer}
+	];
+	const {apps} = await listApps(true, true);
+	const by = (id) => apps.find((a) => a.id === id);
+	assert.equal(by('org.moonfin.webos').iconPath, moon);
+	assert.equal(by('com.theadelab.amclient-lg').iconPath, music);
+	assert.equal(by('netflix').iconPath, netflix);
+	assert.equal(by('bbc.iplayer.3.0').iconPath, iplayer);
+	assert.equal(by('com.webos.app.livetv').iconPath, '/usr/palm/applications/com.webos.app.livetv/icon.png');
+	assert.equal(iconFile(by('netflix'), dir), netflix);
+	saveAppsCache(true, true, apps);
+	const restored = cold.cachedApps(true, true);
+	assert.equal(cold.iconFile(restored.find((a) => a.id === 'org.moonfin.webos'), dir), moon);
+	assert.equal(cold.iconFile(restored.find((a) => a.id === 'netflix'), dir), netflix);
+	assert.equal(cachedApps(true, true).some((a) => a.id === 'netflix' && a.iconPath === netflix), true);
 });
 
 test('icon cache: a listing that looked nothing up (the TV\'s list unreadable) prunes nothing', async () => {
