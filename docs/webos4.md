@@ -219,6 +219,7 @@ The same settings are used by `com.sammysco.avoverlay`.
   before any command line is trusted. A live pid counts as this script only on that boot, and only when its command line starts with
   `sh -c # lumen-bar-sync`. That pid is left alone for the wall clock, and taken once `/proc/uptime` is 600 seconds past the start stored in
   the lock. An empty pid, or a pid whose command line is not that prefix, counts as live until the lock is 120 seconds off (either way).
+  Two runs can both pass the pid check before either removes the lock; `bar.json` and `sig` are still moved into place, so a half-written pair is not left behind. A lock from an older build, with no start time stored, is not covered by the 600 second ceiling.
   The pid is read again before a stale lock is removed; if it changed, the answer is `busy`. A lock is also taken over when it names this
   shell's own pid, or when its pid is dead. A path that resolves outside the app folders, a file that
   is too big, or a file that is not a real image is signed plus `-p` at once. A changed list still rewrites. An icon that is not a PNG, JPEG or WebP is not

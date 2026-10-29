@@ -177,7 +177,7 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		// data/ is already ours. boot id first: a cmdline counts as this script only on this boot, and only
 		// when it starts with the sh -c prefix. uptime past 600s takes the lock even then.
 		'boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)',
-		'up=; read up _ < /proc/uptime 2>/dev/null; up=${up%%.*}',
+		'up=; read up _ 2>/dev/null < /proc/uptime; up=${up%%.*}',
 		'datahere=$(pwd -P)',
 		'held=0',
 		'if mkdir .lock 2>/dev/null; then held=1',

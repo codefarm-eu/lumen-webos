@@ -720,6 +720,7 @@ test('syncBar: the run lock stays in data/, and only a lock that is not this scr
 	assert.equal(read(join(own, 'data', 'sig')), 'own\n');
 	assert.equal(gone(ownLock), true);
 	const scriptPid = spawn('sh', ['-c', '# lumen-bar-sync\nsleep 60'], {stdio: 'ignore'});
+	const binPid = spawn('/bin/sh', ['-c', '# lumen-bar-sync\nsleep 60'], {stdio: 'ignore'});
 	const buried = spawn('sh', ['-c', 'sleep 60 # lumen-bar-sync'], {stdio: 'ignore'});
 	try {
 		const cm = execFileSync('sh', ['-c', `tr '\\0' ' ' < /proc/${scriptPid.pid}/cmdline`], {encoding: 'utf8'});
@@ -750,7 +751,32 @@ test('syncBar: the run lock stays in data/, and only a lock that is not this scr
 		plant(long, scriptPid.pid, {up: nowUp - 601});
 		assert.equal(runSync(long, {sig: 'lng', json, icons, roots: app}), 'written');
 		assert.equal(read(join(long, 'data', 'sig')), 'lng\n');
-	} finally { scriptPid.kill('SIGKILL'); buried.kill('SIGKILL'); }
+		const binCm = execFileSync('sh', ['-c', `tr '\\0' ' ' < /proc/${binPid.pid}/cmdline`], {encoding: 'utf8'});
+		assert.match(binCm, /^\/bin\/sh -c # lumen-bar-sync/);
+		const bins = join(base, 'bins');
+		mkdirSync(join(bins, 'data'), {recursive: true});
+		writeFileSync(join(bins, 'data', 'sig'), 'old\n');
+		const binsLock = plant(bins, binPid.pid, {age: 121, up: nowUp});
+		assert.equal(runSync(bins, {sig: 'bin', json, icons, roots: app}), 'busy');
+		assert.equal(read(join(bins, 'data', 'sig')), 'old\n');
+		assert.equal(read(join(binsLock, 'p')), String(binPid.pid) + '\n');
+		const noU = join(base, 'nou');
+		mkdirSync(join(noU, 'data'), {recursive: true});
+		writeFileSync(join(noU, 'data', 'sig'), 'old\n');
+		const noULock = plant(noU, scriptPid.pid, {age: 121});
+		writeFileSync(join(noULock, 'u'), '');
+		assert.equal(runSync(noU, {sig: 'nou', json, icons, roots: app}), 'busy');
+		assert.equal(read(join(noU, 'data', 'sig')), 'old\n');
+		assert.equal(read(join(noULock, 'p')), String(scriptPid.pid) + '\n');
+		assert.equal(read(join(noULock, 'u')), '');
+		const noUp = join(base, 'noup');
+		mkdirSync(join(noUp, 'data'), {recursive: true});
+		writeFileSync(join(noUp, 'data', 'sig'), 'old\n');
+		const noUpLock = plant(noUp, scriptPid.pid, {up: nowUp - 601});
+		assert.equal(runSync(noUp, {sig: 'nup', json, icons, roots: app, hook: 'read () { return 1; }\n'}), 'busy');
+		assert.equal(read(join(noUp, 'data', 'sig')), 'old\n');
+		assert.equal(read(join(noUpLock, 'p')), String(scriptPid.pid) + '\n');
+	} finally { scriptPid.kill('SIGKILL'); binPid.kill('SIGKILL'); buried.kill('SIGKILL'); }
 	const other = join(base, 'other');
 	mkdirSync(join(other, 'data'), {recursive: true});
 	writeFileSync(join(other, 'data', 'sig'), 'old\n');
