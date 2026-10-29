@@ -238,7 +238,7 @@ const rootCode = (await build({
 	entryPoints: [new URL('../../app/src/lib/root.ts', import.meta.url).pathname], bundle: true, format: 'esm', write: false,
 	plugins: [{name: 'stubs', setup (b) {
 		const s = {'../config/constants': "export const LUNA = {homebrewExec: 'luna://org.webosbrew.hbchannel.service/exec'};",
-			'./luna': 'export const isWebOS = () => true; export const lunaCall = (uri, params) => { (globalThis.T.calls = globalThis.T.calls || []).push((params && params.command) || ""); return Promise.resolve({stdoutString: globalThis.T.answer || ""}); };'};
+			'./luna': 'export const isWebOS = () => true; export const lunaCall = (uri, params) => { const cmd = (params && params.command) || ""; (globalThis.T.calls = globalThis.T.calls || []).push(cmd); if (globalThis.T.gate) return new Promise((resolve) => { globalThis.T.gate.push(() => resolve({stdoutString: globalThis.T.answer || ""})); }); return Promise.resolve({stdoutString: globalThis.T.answer || ""}); };'};
 		b.onResolve({filter: /^\.\.?\//}, (a) => (s[a.path] !== undefined ? {path: a.path, namespace: 'stub2'} : undefined));
 		b.onLoad({filter: /.*/, namespace: 'stub2'}, (a) => ({contents: s[a.path], loader: 'js'}));
 	}}]
@@ -316,4 +316,24 @@ test('an svg or gif is not sent to the copy, and a webp icon pack file is', asyn
 	assert.doesNotMatch(logged, /webpapp not-image/);
 	assert.match(logged, /bar: icon skipped org\.example\.gifapp not-image/);
 	assert.doesNotMatch(logged, /jpgapp not-image/);
+});
+
+test('syncBar runs one write at a time', async () => {
+	T.answer = 'same';
+	T.calls = [];
+	T.gate = [];
+	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
+	const app = {id: 'netflix', title: 'Netflix', file: '/media/cryptofs/apps/usr/palm/applications/netflix/icon.png'};
+	const first = syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'abc');
+	const second = syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'abd');
+	await Promise.resolve();
+	assert.equal(T.calls.length, 1);
+	T.gate.shift()();
+	assert.equal(await first, 'same');
+	await Promise.resolve();
+	assert.equal(T.calls.length, 2);
+	assert.equal(T.calls[1].includes("sig='abd'"), true);
+	T.gate.shift()();
+	assert.equal(await second, 'same');
+	T.gate = null;
 });

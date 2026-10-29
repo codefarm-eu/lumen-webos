@@ -73,10 +73,12 @@ export function syncBarResult (stdout: string): 'same' | 'written' | 'missing' |
  *  `"icon":"data/icons/<name>?<sig>"` only when the copy is a plain PNG, JPEG or WebP of at most 1 MiB. A failed re-copy leaves a previous good
  *  file in place and the field keeps naming it; with no previous file the field is `"icon":null` (bar.js treats a null icon as none). The match
  *  is the icon field, so a title with the same text is left alone, key order does not matter, and one name is not a prefix of another. A copy
- *  that did not happen prints `skip <id> <reason>` (`unresolved`, `outside`, `copy`, `toobig`, `not-image`). A missing file (`unresolved`) and a
- *  copy that failed while writing (`copy`) are tried again next start (the signature is removed). A path that resolves outside the app
- *  folders (`outside`), a file that is too big, or a file that is not an image is signed as `<sig>-p`, so the same list then answers `same`.
- *  A different list still rewrites.
+ *  that did not happen prints `skip <id> <reason>` (`unresolved`, `outside`, `copy`, `toobig`, `not-image`). A missing file or a folder at the
+ *  icon path (`unresolved`) is signed `<sig>-r` the first time and `<sig>-p` if it is still missing on the next start, so a file that appears
+ *  in between is copied, and one that never appears settles. A copy that failed while writing (`copy`) is not signed, so the next start tries
+ *  it again. A path that resolves outside the app folders (`outside`), a file that is too big, or a file that is not an image is signed
+ *  `<sig>-p` at once, so the same list then answers `same`. A different list still rewrites. Each run's scratch files are named with the
+ *  shell's pid, so two writes do not share them.
  *  The bar's folder is writable by others, so nothing is written by a full path (a redirect and a recursive remove both follow a link).
  *  The bar folder and then data/ are entered with cd -P and must be that directory (pwd -P); a parent that is a link is fine, the bar
  *  folder itself being a link is not. A data/ or data/icons/ that is not this user's is left as it is. A link at data, icons, bar.json
@@ -93,11 +95,12 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 	const names = use.map((i) => i.name).join(' ');
 	const copies = use.map((i) => {
 		const id = i.id && syncNameOk(i.id) ? i.id : i.name;
-		// a missing file and a failed write are tried again. a path outside the app folders, too big, and not an image are signed so they settle.
-		const skip = (why: string) => (why === 'outside' || why === 'toobig' || why === 'not-image' ? 'perm=1' : 'retry=1') + '; echo \'skip ' + id + ' ' + why + '\'';
+		// a missing file is counted once, then signed. a failed write is tried again. outside, too big, and not an image are signed at once.
+		const skip = (why: string) => (why === 'unresolved' ? 'miss=1' : why === 'copy' ? 'retry=1' : 'perm=1') + '; echo \'skip ' + id + ' ' + why + '\'';
 		// size without reading the file. stat -c %s decides. ls -ln (size is the fifth field) runs only when that print is empty.
 		// The owner checks above already use stat -c %u, so a host with no stat is refused before it gets here.
 		const sizeOf = (p: string) => 'sz=$(stat -c %s ' + p + ' 2>/dev/null); case "$sz" in \'\'|*[!0-9]*) sz=$(ls -ln ' + p + ' 2>/dev/null | tr -s \' \' | cut -d\' \' -f5) ;; esac';
+		const n = '.n.$t';
 		// -P copies a link as a link; it is then not a plain file, so it is removed and not named in bar.json.
 		// A launch point can name any file under an app folder. The size is read first so a huge file is not copied into the
 		// 15s budget. The copy is then judged again (a file swapped in after the first stat), and removed when it fails.
@@ -106,21 +109,24 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 			sizeOf('"$r"'),
 			'if [ -z "$sz" ] || [ -n "$(printf %s "$sz" | tr -d 0-9)" ]; then ' + skip('copy'),
 			'elif [ "$sz" -gt 1048576 ]; then ' + skip('toobig'),
-			'else rm -f -- .new',
-			'if [ -e .new ]; then echo refused; exit 0; fi',
-			'cp -fP -- "$r" .new 2>/dev/null',
-			'if [ ! -f .new ] || [ -L .new ]; then rm -f -- .new; ' + skip('copy'),
-			'else ' + sizeOf('.new'),
-			'if [ -z "$sz" ] || [ -n "$(printf %s "$sz" | tr -d 0-9)" ]; then rm -f -- .new; ' + skip('copy'),
-			'elif [ "$sz" -gt 1048576 ]; then rm -f -- .new; ' + skip('toobig'),
-			'elif ! { dd if=.new bs=8 count=1 2>/dev/null | cmp -s - .pngm || dd if=.new bs=3 count=1 2>/dev/null | cmp -s - .jpgm || { dd if=.new bs=4 count=1 2>/dev/null | cmp -s - .riffm && dd if=.new bs=1 skip=8 count=4 2>/dev/null | cmp -s - .webpm; }; }; then rm -f -- .new; ' + skip('not-image'),
+			'else rm -f -- ' + n,
+			'if [ -e ' + n + ' ]; then echo refused; exit 0; fi',
+			'cp -fP -- "$r" ' + n + ' 2>/dev/null',
+			'if [ -d ' + n + ' ]; then ' + skip('unresolved'),
+			'elif [ ! -f ' + n + ' ] || [ -L ' + n + ' ]; then rm -f -- ' + n + '; ' + skip('copy'),
+			'else ' + sizeOf(n),
+			'if [ -z "$sz" ] || [ -n "$(printf %s "$sz" | tr -d 0-9)" ]; then rm -f -- ' + n + '; ' + skip('copy'),
+			'elif [ "$sz" -gt 1048576 ]; then rm -f -- ' + n + '; ' + skip('toobig'),
+			'elif ! { dd if=' + n + ' bs=8 count=1 2>/dev/null | cmp -s - .png.$t || dd if=' + n + ' bs=3 count=1 2>/dev/null | cmp -s - .jpg.$t || { dd if=' + n + ' bs=4 count=1 2>/dev/null | cmp -s - .riff.$t && dd if=' + n + ' bs=1 skip=8 count=4 2>/dev/null | cmp -s - .webp.$t; }; }; then rm -f -- ' + n + '; ' + skip('not-image'),
 			'else if [ -L \'' + i.name + '\' ]; then rm -f -- \'' + i.name + '\'; fi',
-			'if [ -f .new ] && [ ! -L .new ] && chmod 644 .new && mv -f -- .new \'' + i.name + '\'; then :; else rm -f -- .new; ' + skip('copy') + '; fi',
+			'if [ -f ' + n + ' ] && [ ! -L ' + n + ' ] && chmod 644 ' + n + ' && mv -f -- ' + n + ' \'' + i.name + '\'; then :; else rm -f -- ' + n + '; ' + skip('copy') + '; fi',
 			'fi',
 			'fi',
 			'fi',
-			// $r is what resolvedPath left: under the app folders but not a file yet, empty, or somewhere else (a link out of the folders).
-			'else case "$r" in ' + APP_ROOTS_CASE + ') ' + skip('unresolved') + ' ;; \'\' ) if [ -L "$p" ]; then ' + skip('outside') + '; else ' + skip('unresolved') + '; fi ;; *) ' + skip('outside') + ' ;; esac; fi'
+			// $r is what resolvedPath left. A folder under the app folders is a miss (tried once more), not a path that escaped.
+			// An empty resolve of a link, or a path that landed elsewhere, will not become a file here.
+			'elif [ -d "$r" ] && case "$r" in ' + APP_ROOTS_CASE + ') [ ! -L "$p" ] ;; *) false ;; esac; then ' + skip('unresolved') +
+			'; else case "$r" in ' + APP_ROOTS_CASE + ') ' + skip('unresolved') + ' ;; \'\' ) if [ -L "$p" ]; then ' + skip('outside') + '; else ' + skip('unresolved') + '; fi ;; *) ' + skip('outside') + ' ;; esac; fi'
 		].join('\n');
 	}).join('\n');
 	// the quoted token only. null is what bar.js already treats as no icon, and it does not depend on which key is last.
@@ -140,8 +146,11 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		"d='" + dir + "'",
 		"sig='" + sig + "'",
 		"b64='" + b64 + "'",
+		'miss=0',
 		'retry=0',
 		'perm=0',
+		'got=',
+		't=$$',
 		// a busybox without id: 0, as the watcher assumes (MYUID): the Channel's exec only ever runs as root
 		'me=$(id -u 2>/dev/null); case "$me" in \'\'|*[!0-9]*) me=0 ;; esac',
 		'[ -d "$d" ] || { echo missing; exit 0; }',
@@ -168,9 +177,9 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'[ "$(stat -c %u . 2>/dev/null)" = "$me" ] || { echo refused; exit 0; }',
 		'chmod 755 . 2>/dev/null || { echo refused; exit 0; }',
 		dropDirs,
-		"printf '\\211PNG\\r\\n\\032\\n' > .pngm; printf '\\377\\330\\377' > .jpgm; printf 'RIFF' > .riffm; printf 'WEBP' > .webpm",
+		"printf '\\211PNG\\r\\n\\032\\n' > .png.\$t; printf '\\377\\330\\377' > .jpg.\$t; printf 'RIFF' > .riff.\$t; printf 'WEBP' > .webp.\$t",
 		copies,
-		'rm -f -- .new .pngm .jpgm .riffm .webpm',
+		'rm -f -- .n.$t .png.$t .jpg.$t .riff.$t .webp.$t',
 		"keep='" + names + "'",
 		'for f in .* *; do',
 		'case "$f" in .|..|\'*\'|\'.*\') continue ;; esac',
@@ -178,34 +187,34 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'[ "$skip" = 1 ] && continue',
 		'if [ -L "$f" ] || [ -f "$f" ]; then rm -f -- "$f"; fi',
 		'done',
-		'rm -f -- .new',
+		'rm -f -- .n.$t',
 		'cd -P .. 2>/dev/null && [ "$(pwd -P)" = "$ihere" ] || { echo refused; exit 0; }',
-		'if [ -L .bar.json.new ]; then rm -f -- .bar.json.new',
-		'elif [ -d .bar.json.new ]; then echo refused; exit 0',
-		'elif [ -e .bar.json.new ]; then rm -f -- .bar.json.new; fi',
-		'if [ -L .sig.new ]; then rm -f -- .sig.new',
-		'elif [ -d .sig.new ]; then echo refused; exit 0',
-		'elif [ -e .sig.new ]; then rm -f -- .sig.new; fi',
-		'printf \'%s\' "$b64" | base64 -d > .bar.json.new || { rm -f -- .bar.json.new; echo refused; exit 0; }',
-		'[ -f .bar.json.new ] && [ ! -L .bar.json.new ] || { rm -f -- .bar.json.new; echo refused; exit 0; }',
-		'json=$(cat .bar.json.new) || { echo refused; exit 0; }',
+		'if [ -L .bar.$t ]; then rm -f -- .bar.$t',
+		'elif [ -d .bar.$t ]; then echo refused; exit 0',
+		'elif [ -e .bar.$t ]; then rm -f -- .bar.$t; fi',
+		'if [ -L .sig.$t ]; then rm -f -- .sig.$t',
+		'elif [ -d .sig.$t ]; then echo refused; exit 0',
+		'elif [ -e .sig.$t ]; then rm -f -- .sig.$t; fi',
+		'printf \'%s\' "$b64" | base64 -d > .bar.$t || { rm -f -- .bar.$t; echo refused; exit 0; }',
+		'[ -f .bar.$t ] && [ ! -L .bar.$t ] || { rm -f -- .bar.$t; echo refused; exit 0; }',
+		'json=$(cat .bar.$t) || { echo refused; exit 0; }',
 		...rewrite,
 		// a failed sed leaves json empty; writing that and a new sig would stick ("same" forever) with an empty bar
-		'[ -n "$json" ] || { rm -f -- .bar.json.new .sig.new; echo refused; exit 0; }',
-		'case "$json" in \'{\'*) ;; *) rm -f -- .bar.json.new .sig.new; echo refused; exit 0 ;; esac',
-		'printf \'%s\' "$json" > .bar.json.new',
-		'[ -f .bar.json.new ] && [ ! -L .bar.json.new ] || { rm -f -- .bar.json.new; echo refused; exit 0; }',
-		'chmod 644 .bar.json.new || { echo refused; exit 0; }',
+		'[ -n "$json" ] || { rm -f -- .bar.$t .sig.$t; echo refused; exit 0; }',
+		'case "$json" in \'{\'*) ;; *) rm -f -- .bar.$t .sig.$t; echo refused; exit 0 ;; esac',
+		'printf \'%s\' "$json" > .bar.$t',
+		'[ -f .bar.$t ] && [ ! -L .bar.$t ] || { rm -f -- .bar.$t; echo refused; exit 0; }',
+		'chmod 644 .bar.$t || { echo refused; exit 0; }',
 		'if [ -L bar.json ]; then rm -f -- bar.json; fi',
-		// a missing file or a copy that failed while writing is tried again: the signature is removed, so the next start is not "same".
-		// a path outside the app folders, a huge file or a non-image is signed "<sig>-p", so the same list then answers "same".
+		// a copy that failed while writing is tried again: the signature is removed, so the next start is not "same".
+		// a missing file is "<sig>-r" the first time and "<sig>-p" if it is still missing. outside, too big and not an image are "<sig>-p" at once.
 		// the old signature is removed before either move, so a failed move of sig cannot leave it beside a new bar.json.
-		'if [ "$retry" = 1 ]; then rm -f -- .sig.new; rm -f -- sig; mv -f -- .bar.json.new bar.json && echo written || echo refused; exit 0; fi',
-		'mark="$sig"; [ "$perm" = 1 ] && mark="$sig-p"',
-		'printf \'%s\\n\' "$mark" > .sig.new || { echo refused; exit 0; }',
-		'[ -f .sig.new ] && [ ! -L .sig.new ] || { rm -f -- .sig.new; echo refused; exit 0; }',
-		'chmod 644 .sig.new || { echo refused; exit 0; }',
+		'if [ "$retry" = 1 ]; then rm -f -- .sig.$t; rm -f -- sig; mv -f -- .bar.$t bar.json && echo written || echo refused; exit 0; fi',
+		'mark="$sig"; if [ "$miss" = 1 ]; then if [ "$got" = "$sig-r" ]; then mark="$sig-p"; else mark="$sig-r"; fi; elif [ "$perm" = 1 ]; then mark="$sig-p"; fi',
+		'printf \'%s\\n\' "$mark" > .sig.$t || { echo refused; exit 0; }',
+		'[ -f .sig.$t ] && [ ! -L .sig.$t ] || { rm -f -- .sig.$t; echo refused; exit 0; }',
+		'chmod 644 .sig.$t || { echo refused; exit 0; }',
 		'rm -f -- sig',
-		'mv -f -- .bar.json.new bar.json && mv -f -- .sig.new sig && echo written || echo refused'
+		'mv -f -- .bar.$t bar.json && mv -f -- .sig.$t sig && echo written || echo refused'
 	].join('\n');
 }

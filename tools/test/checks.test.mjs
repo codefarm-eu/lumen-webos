@@ -374,7 +374,7 @@ test('syncBar: a picture swapped for a link while it is copied is not kept, and 
 	const secret = join(root, 'secret');
 	writeFileSync(secret, 'secret');
 	chmodSync(secret, 0o600);
-	const hook = `cp () { command cp "$@"; rm -f -- .new; ln -s '${secret}' .new; }\n`;
+	const hook = `cp () { command cp "$@"; rm -f -- .n."$t"; ln -s '${secret}' .n."$t"; }\n`;
 	assert.equal(runSync(bar, {icons: [{src: join(root, 'app', 'icon.png'), name: 'yt.png'}], roots: root, hook}), 'written');
 	assert.equal(modeOf(secret), '600');
 	assert.equal(read(secret), 'secret');
@@ -442,10 +442,11 @@ test('syncBar: C8 developer and cryptofs icons are copied, including an app outs
 	assert.equal(read(secret), 'secret');
 	assert.equal(modeOf(secret), '600');
 	assert.equal(Object.hasOwn(got.apps, 'youtube.leanback.v4'), false);
-	// a missing file is tried again: the signature is not written
-	assert.equal(read(join(bar, 'data', 'sig')), null);
+	// a missing file is signed -r once, then -p, so it is not rewritten on every start. The link out is outside.
+	assert.equal(read(join(bar, 'data', 'sig')), 'c8sig-r\n');
 	assert.equal(runSync(bar, {sig: 'c8sig', json: {v: 1, apps}, icons, roots: join(base, 'media')}), 'written');
-	assert.equal(read(join(bar, 'data', 'sig')), null);
+	assert.equal(read(join(bar, 'data', 'sig')), 'c8sig-p\n');
+	assert.equal(runSync(bar, {sig: 'c8sig', json: {v: 1, apps}, icons, roots: join(base, 'media')}), 'same');
 });
 
 test('syncBar: the icon token is replaced as a whole, in any key order, and a bad picture is left null', () => {
@@ -509,7 +510,7 @@ test('syncBar: a rewrite that yields no JSON is refused, and a huge file is not 
 	mkdirSync(hbar);
 	writeFileSync(join(happ, 'icon.png'), png('ok'));
 	// the source is a small PNG. Only the copied file's size is reported huge, so the check has to be on .new.
-	const hook = 'stat () { if [ "$1" = -c ] && [ "$2" = %s ] && [ "$3" = .new ]; then echo 2000000; return; fi; command stat "$@"; }\n';
+	const hook = 'stat () { if [ "$1" = -c ] && [ "$2" = %s ] && [ "$3" != "$r" ]; then echo 2000000; return; fi; command stat "$@"; }\n';
 	const hout = runSync(hbar, {icons: [{src: join(happ, 'icon.png'), name: 'a.png', id: 'a'}], json, roots: happ, hook, full: true});
 	assert.match(hout, /skip a toobig/);
 	assert.equal(hout.split('\n').pop(), 'written');
@@ -531,13 +532,19 @@ test('syncBar: a missing file is copied once it appears, a non-image is signed o
 	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
 	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'written');
 	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).apps.a.icon, null);
-	assert.equal(read(join(bar, 'data', 'sig')), null);
+	assert.equal(read(join(bar, 'data', 'sig')), 'abc-r\n');
 	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abc-p\n');
+	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'same');
+	const laterBar = join(base, 'later');
+	mkdirSync(laterBar);
+	assert.equal(runSync(laterBar, {sig: 'lat', json, icons: missing, roots: app}), 'written');
+	assert.equal(read(join(laterBar, 'data', 'sig')), 'lat-r\n');
 	writeFileSync(join(app, 'gone.png'), png('later'));
-	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'written');
-	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).apps.a.icon, 'data/icons/a.png?abc');
-	assert.equal(readFileSync(join(bar, 'data', 'icons', 'a.png')).includes(Buffer.from('later')), true);
-	assert.equal(read(join(bar, 'data', 'sig')), 'abc\n');
+	assert.equal(runSync(laterBar, {sig: 'lat', json, icons: missing, roots: app}), 'written');
+	assert.equal(JSON.parse(read(join(laterBar, 'data', 'bar.json'))).apps.a.icon, 'data/icons/a.png?lat');
+	assert.equal(readFileSync(join(laterBar, 'data', 'icons', 'a.png')).includes(Buffer.from('later')), true);
+	assert.equal(read(join(laterBar, 'data', 'sig')), 'lat\n');
 	// a stored -p with a different request sig rewrites, and the new sig has no -p
 	writeFileSync(join(app, 'bad.png'), Buffer.from('not an image'));
 	const bad = [{src: join(app, 'bad.png'), name: 'b.png', id: 'b'}];
@@ -602,6 +609,43 @@ test('syncBar: a missing file is copied once it appears, a non-image is signed o
 	assert.equal(kept.apps.a.icon, 'data/icons/a.png?k2');
 	assert.equal(readFileSync(join(again, 'data', 'icons', 'a.png')).includes(Buffer.from('kept')), true);
 	assert.equal(read(join(again, 'data', 'sig')), 'k2-p\n');
+});
+
+test('syncBar: a folder is a miss, a link is signed without readlink, and a failed sig move leaves no signature', () => {
+	const base = mkdtempSync(join(tmpdir(), 'sync-fold-'));
+	const app = join(base, 'app');
+	const bar = join(base, 'bar');
+	mkdirSync(app);
+	mkdirSync(join(app, 'icon.png'));
+	mkdirSync(bar);
+	const icons = [{src: join(app, 'icon.png'), name: 'a.png', id: 'a'}];
+	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
+	const fold = runSync(bar, {sig: 'abc', json, icons, roots: app, full: true});
+	assert.match(fold, /skip a unresolved/);
+	assert.equal(fold.split('\n').pop(), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abc-r\n');
+	const linkBar = join(base, 'link');
+	mkdirSync(linkBar);
+	const secret = join(base, 'secret');
+	writeFileSync(secret, png('no'));
+	symlinkSync(secret, join(app, 'leak.png'));
+	const linkIcons = [{src: join(app, 'leak.png'), name: 'b.png', id: 'b'}];
+	const linkJson = {v: 1, apps: {b: {title: 'B', icon: '~icon:b.png'}}};
+	const linked = runSync(linkBar, {sig: 'lnk', json: linkJson, icons: linkIcons, roots: app, hook: 'readlink () { return 1; }\n', full: true});
+	assert.match(linked, /skip b outside/);
+	assert.equal(read(join(linkBar, 'data', 'sig')), 'lnk-p\n');
+	assert.equal(runSync(linkBar, {sig: 'lnk', json: linkJson, icons: linkIcons, roots: app, hook: 'readlink () { return 1; }\n'}), 'same');
+	const moveBar = join(base, 'move');
+	mkdirSync(moveBar);
+	writeFileSync(join(app, 'ok.png'), png('ok'));
+	const moveIcons = [{src: join(app, 'ok.png'), name: 'c.png', id: 'c'}];
+	const moveJson = {v: 1, apps: {c: {title: 'C', icon: '~icon:c.png'}}};
+	const moveHook = 'mv () { case "$3" in .sig.*) return 1 ;; esac; command mv "$@"; }\n';
+	assert.equal(runSync(moveBar, {sig: 'mov', json: moveJson, icons: moveIcons, roots: app, hook: moveHook}), 'refused');
+	assert.equal(read(join(moveBar, 'data', 'sig')), null);
+	assert.equal(runSync(moveBar, {sig: 'mov', json: moveJson, icons: moveIcons, roots: app}), 'written');
+	assert.equal(read(join(moveBar, 'data', 'sig')), 'mov\n');
+	assert.equal(JSON.parse(read(join(moveBar, 'data', 'bar.json'))).apps.c.icon, 'data/icons/c.png?mov');
 });
 
 test('syncBar: a skipped copy removes the old signature, so going back to that list is not "same" with the skipped bar left in place', () => {

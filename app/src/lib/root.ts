@@ -383,9 +383,15 @@ export function barSig (dock: string[], recent: string[], list: unknown, style: 
  *  list, the apps, Lumen's id). Skipped when data/sig already holds `sig` (an app update wipes data/, and then it is written again).
  *  data/wallpapers/ is left alone: it holds the screensaver pictures, which tools/tv/watch.sh bar_pictures copies from Lumen.
  *  The bar's folder is writable by others, so the write is syncBarShell: relative names after cd -P, a temp file then mv, and a data/
- *  or icons/ that is not root's own is refused rather than removed. */
+ *  or icons/ that is not root's own is refused rather than removed. One write at a time: two overlapping runs would share the scratch files. */
+let barQueue: Promise<unknown> = Promise.resolve();
 export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused'> {
 	if (!APP_DIR.test(appDir) || !APP_ID.test(lumenId) || !/^[a-z0-9]+$/.test(sig)) return Promise.reject(new Error('refused'));
+	const next = barQueue.then(() => syncBarNow(appDir, lumenId, dock, recent, apps, sig, style));
+	barQueue = next.catch(() => undefined);
+	return next;
+}
+function syncBarNow (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused'> {
 	const dir = barDir(appDir);
 	const out: Record<string, {title: string; color?: string; plain?: boolean; icon?: string}> = {};
 	const icons: {src: string; name: string; id: string}[] = [];
