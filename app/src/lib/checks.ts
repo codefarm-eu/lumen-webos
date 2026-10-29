@@ -73,9 +73,10 @@ export function syncBarResult (stdout: string): 'same' | 'written' | 'missing' |
  *  `"icon":"data/icons/<name>?<sig>"` only when the copy is a plain PNG, JPEG or WebP of at most 1 MiB. A failed re-copy leaves a previous good
  *  file in place and the field keeps naming it; with no previous file the field is `"icon":null` (bar.js treats a null icon as none). The match
  *  is the icon field, so a title with the same text is left alone, key order does not matter, and one name is not a prefix of another. A copy
- *  that did not happen prints `skip <id> <reason>` (`unresolved`, `copy`, `toobig`, `not-image`). A missing file (`unresolved`) and a copy that
- *  failed while writing (`copy`) are tried again next start (the signature is removed). A file that is too big or not an image is signed as
- *  `<sig>-p`, so the same list then answers `same`. A different list still rewrites.
+ *  that did not happen prints `skip <id> <reason>` (`unresolved`, `outside`, `copy`, `toobig`, `not-image`). A missing file (`unresolved`) and a
+ *  copy that failed while writing (`copy`) are tried again next start (the signature is removed). A path that resolves outside the app
+ *  folders (`outside`), a file that is too big, or a file that is not an image is signed as `<sig>-p`, so the same list then answers `same`.
+ *  A different list still rewrites.
  *  The bar's folder is writable by others, so nothing is written by a full path (a redirect and a recursive remove both follow a link).
  *  The bar folder and then data/ are entered with cd -P and must be that directory (pwd -P); a parent that is a link is fine, the bar
  *  folder itself being a link is not. A data/ or data/icons/ that is not this user's is left as it is. A link at data, icons, bar.json
@@ -92,8 +93,8 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 	const names = use.map((i) => i.name).join(' ');
 	const copies = use.map((i) => {
 		const id = i.id && syncNameOk(i.id) ? i.id : i.name;
-		// a missing file and a failed write are tried again. too big and not an image are signed so they settle.
-		const skip = (why: string) => (why === 'toobig' || why === 'not-image' ? 'perm=1' : 'retry=1') + '; echo \'skip ' + id + ' ' + why + '\'';
+		// a missing file and a failed write are tried again. a path outside the app folders, too big, and not an image are signed so they settle.
+		const skip = (why: string) => (why === 'outside' || why === 'toobig' || why === 'not-image' ? 'perm=1' : 'retry=1') + '; echo \'skip ' + id + ' ' + why + '\'';
 		// size without reading the file. stat -c %s decides. ls -ln (size is the fifth field) runs only when that print is empty.
 		// The owner checks above already use stat -c %u, so a host with no stat is refused before it gets here.
 		const sizeOf = (p: string) => 'sz=$(stat -c %s ' + p + ' 2>/dev/null); case "$sz" in \'\'|*[!0-9]*) sz=$(ls -ln ' + p + ' 2>/dev/null | tr -s \' \' | cut -d\' \' -f5) ;; esac';
@@ -118,7 +119,8 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 			'fi',
 			'fi',
 			'fi',
-			'else ' + skip('unresolved') + '; fi'
+			// $r is what resolvedPath left: under the app folders but not a file yet, empty, or somewhere else (a link out of the folders).
+			'else case "$r" in ' + APP_ROOTS_CASE + ') ' + skip('unresolved') + ' ;; \'\' ) if [ -L "$p" ]; then ' + skip('outside') + '; else ' + skip('unresolved') + '; fi ;; *) ' + skip('outside') + ' ;; esac; fi'
 		].join('\n');
 	}).join('\n');
 	// the quoted token only. null is what bar.js already treats as no icon, and it does not depend on which key is last.
@@ -196,7 +198,7 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'chmod 644 .bar.json.new || { echo refused; exit 0; }',
 		'if [ -L bar.json ]; then rm -f -- bar.json; fi',
 		// a missing file or a copy that failed while writing is tried again: the signature is removed, so the next start is not "same".
-		// a huge file or a non-image is signed "<sig>-p", so the same list then answers "same" and a changed list still rewrites.
+		// a path outside the app folders, a huge file or a non-image is signed "<sig>-p", so the same list then answers "same".
 		// the old signature is removed before either move, so a failed move of sig cannot leave it beside a new bar.json.
 		'if [ "$retry" = 1 ]; then rm -f -- .sig.new; rm -f -- sig; mv -f -- .bar.json.new bar.json && echo written || echo refused; exit 0; fi',
 		'mark="$sig"; [ "$perm" = 1 ] && mark="$sig-p"',

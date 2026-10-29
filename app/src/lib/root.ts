@@ -412,7 +412,7 @@ export function syncBar (appDir: string, lumenId: string, dock: string[], recent
 		if (status === 'written') {
 			const lines = skipped.slice();
 			for (const line of outText.split('\n')) {
-				const m = /^skip ([A-Za-z0-9._-]+) (copy|unresolved|toobig|not-image)$/.exec(line.trim());
+				const m = /^skip ([A-Za-z0-9._-]+) (copy|unresolved|outside|toobig|not-image)$/.exec(line.trim());
 				if (m) lines.push(`bar: icon skipped ${m[1]} ${m[2]}`);
 			}
 			if (lines.length) appendLog(lines.join('\n') + '\n').catch(() => undefined);

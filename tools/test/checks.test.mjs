@@ -215,13 +215,14 @@ test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpa
 	const script = syncBarShell(bar, 'abc', b64({v: 1}), icons);
 	assert.doesNotMatch(script, /rm -[a-z]*r/);
 	assert.doesNotMatch(script, /wallpapers/);
-	assert.equal(runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'written');
+	const first = runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}, full: true});
+	assert.equal(first.split('\n').pop(), 'written');
+	assert.match(first, /skip leak\.png outside/);
 	const data = join(bar, 'data');
 	assert.equal(JSON.parse(read(join(data, 'bar.json'))).title, 'a "b"');
-	// the link resolves outside the app folder: a missing file is tried again, and the signature is not written
-	assert.equal(read(join(data, 'sig')), null);
-	assert.equal(runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'written');
-	assert.equal(read(join(data, 'sig')), null);
+	// the link resolves outside the app folder: signed, so the same list answers "same" and is not rewritten
+	assert.equal(read(join(data, 'sig')), 'abc-p\n');
+	assert.equal(runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'same');
 	assert.equal(Buffer.compare(readFileSync(join(data, 'icons', 'yt.png')), bytes), 0);
 	assert.equal(modeOf(join(data, 'icons', 'yt.png')), '644');
 	assert.equal(read(join(data, 'icons', 'leak.png')), null);
@@ -426,7 +427,7 @@ test('syncBar: C8 developer and cryptofs icons are copied, including an app outs
 	const out = runSync(bar, {sig: 'c8sig', json: {v: 1, apps}, icons, roots: join(base, 'media'), full: true});
 	assert.equal(out.split('\n').pop(), 'written');
 	assert.match(out, /skip bbc\.iplayer\.3\.0 unresolved/);
-	assert.match(out, /skip org\.evil\.app unresolved/);
+	assert.match(out, /skip org\.evil\.app outside/);
 	const got = JSON.parse(read(join(bar, 'data', 'bar.json')));
 	assert.equal(got.apps['org.moonfin.webos'].icon, 'data/icons/org.moonfin.webos.png?c8sig');
 	assert.equal(got.apps['com.theadelab.amclient-lg'].icon, 'data/icons/com.theadelab.amclient-lg.png?c8sig');
