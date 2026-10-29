@@ -7,7 +7,7 @@ import type {OptionItem} from './components/SettingsList';
 import {Toast, type ToastMessage} from './components/Toast';
 import type {TileModel} from './components/Tile';
 import {BUILTIN, BUILTIN_APPS, withBuiltins} from './config/builtinApps';
-import {cachedApps, iconFile, listApps, sameApps, saveAppsCache, seedAppIds, type AppEntry} from './lib/apps';
+import {barIcon, cachedApps, iconPathByPicture, listApps, sameApps, saveAppsCache, seedAppIds, type AppEntry} from './lib/apps';
 import {afterFirstFrame, readCache, writeCache} from './lib/boot';
 import {listInputs, MOCK_INPUTS, type InputSource} from './lib/inputs';
 import {launchApp, launchLgHome} from './lib/launch';
@@ -36,7 +36,7 @@ import {AUTO_PLACE, POSTCODE_PLACE, findPlace, peekWeather, readWeather, type We
 import {TextPrompt} from './components/TextPrompt';
 import {useLiveTv} from './hooks/useLiveTv';
 import {channelColor, nowNextAt, rowChannels, type Channel} from './lib/livetv';
-import {openChannel, runningApps, setHomeBar, setHomeTakeover, syncBar, uninstallApp} from './lib/root';
+import {barSig, openChannel, runningApps, setHomeBar, setHomeTakeover, syncBar, uninstallApp} from './lib/root';
 
 import {bootMark, logError, navMark} from './lib/log';
 import {isDark, LANGS, setClockMode, setLang} from './lib/i18n';
@@ -417,12 +417,8 @@ export function App () {
 			.concat(folderTiles.map((f): TileModel => ({key: 'folder:' + f.name, label: f.name, color: '#3b4256', children: f.items.map((t) => t.imageUrl), running: f.items.some((t) => open(t.key))})));
 	}, [shownApps, folderTiles, config.folders, running]);
 
-	// 2: bar.json must be written again on TVs whose signature was saved when only the bundled icons were copied (1.0.9044)
-	const BAR_EPOCH = 2;
 	// Lumen bar (Home shows the bar): its data/ folder gets the dock (the glass bar's apps), Lumen's recent list and every app with its icon
-	// file, written again only when that changes (a signature in data/sig). BAR_EPOCH is part of that signature so an update rewrites a
-	// bar.json that was saved when most icons were dropped (1.0.9044). The file path is read when the timer fires, after the TV list has
-	// filled icon paths; the cold-start list alone only knew the bundled icons.
+	// file, written again only when that changes (a signature in data/sig, lib/root.ts barSig). The file path is read when the timer fires.
 	useEffect(() => {
 		if (!config.homeBar || !isWebOS() || !allApps.length) return;
 		const dir = appDir();
@@ -431,11 +427,12 @@ export function App () {
 		const t = TILES_FOR[config.firstRow] || TILES_FOR[6];
 		const style = {size: t.size, height: t.height, gap: t.gap, perRow: config.firstRow, scale: BAR_FOCUS_SCALE[config.focusStrength] || BAR_FOCUS_SCALE.normal};
 		const id = window.setTimeout(() => {
-			const list = real.map((a) => ({id: a.id, title: a.title, color: a.color, plain: a.plain, file: iconFile(a, dir)}));
-			const text = JSON.stringify([BAR_EPOCH, dock, config.recentIds, list, style]);
-			let h = 5381;
-			for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
-			syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, h.toString(36), style)
+			const pictures = iconPathByPicture();
+			const list = real.map((a) => {
+				const chosen = barIcon(a, dir, pictures);
+				return {id: a.id, title: a.title, color: a.color, plain: chosen.plain, file: chosen.file};
+			});
+			syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, barSig(dock, config.recentIds, list, style), style)
 				.then((r) => {
 					if (r === 'written') bootMark('bar: data written');
 					// the bar then shows no icons or titles; lumen.log says why (a data/ or data/icons/ in the bar's folder that is not root's,

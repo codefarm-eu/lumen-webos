@@ -172,6 +172,7 @@ test('backlight: saved with its picture mode and put back only into that mode; a
 	assert.deepEqual(o.st.sets, [75]);
 });
 
+const png = (extra = '') => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(String(extra))]);
 const modeOf = (p) => execFileSync('sh', ['-c', `stat -c %a '${p}'`], {encoding: 'utf8'}).trim();
 const read = (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } };
 const b64 = (obj) => Buffer.from(JSON.stringify(obj), 'utf8').toString('base64');
@@ -198,7 +199,8 @@ test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpa
 	const bar = mkdtempSync(join(tmpdir(), 'sync-bar-'));
 	const root = mkdtempSync(join(tmpdir(), 'sync-apps-'));
 	mkdirSync(join(root, 'app'), {recursive: true});
-	writeFileSync(join(root, 'app', 'icon.png'), 'png-bytes');
+	const bytes = png('png-bytes');
+	writeFileSync(join(root, 'app', 'icon.png'), bytes);
 	const secret = join(root, 'secret');
 	writeFileSync(secret, 'secret');
 	symlinkSync(secret, join(root, 'app', 'leak.png'));
@@ -216,8 +218,9 @@ test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpa
 	assert.equal(runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'written');
 	const data = join(bar, 'data');
 	assert.equal(JSON.parse(read(join(data, 'bar.json'))).title, 'a "b"');
-	assert.equal(read(join(data, 'sig')), 'abc\n');
-	assert.equal(read(join(data, 'icons', 'yt.png')), 'png-bytes');
+	// the link was not copied, so the signature is not written and the next start tries again
+	assert.equal(read(join(data, 'sig')), null);
+	assert.equal(Buffer.compare(readFileSync(join(data, 'icons', 'yt.png')), bytes), 0);
 	assert.equal(modeOf(join(data, 'icons', 'yt.png')), '644');
 	assert.equal(read(join(data, 'icons', 'leak.png')), null);
 	assert.equal(read(secret), 'secret');
@@ -227,13 +230,14 @@ test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpa
 	assert.equal(modeOf(join(data, 'wallpapers', 'keep')), '600');
 	assert.equal(modeOf(join(data, 'wallpapers')), '700');
 	assert.equal(lstatSync(join(data, 'icons', 'yt.png')).isSymbolicLink(), false);
-	writeFileSync(join(root, 'app', 'icon.png'), 'changed');
-	assert.equal(runSync(bar, {icons, roots: join(root, 'app')}), 'same');
-	assert.equal(read(join(data, 'icons', 'yt.png')), 'png-bytes');
+	const only = [icons[0]];
+	assert.equal(runSync(bar, {icons: only, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'written');
+	assert.equal(read(join(data, 'sig')), 'abc\n');
+	writeFileSync(join(root, 'app', 'icon.png'), png('changed'));
+	assert.equal(runSync(bar, {icons: only, roots: join(root, 'app')}), 'same');
+	assert.equal(Buffer.compare(readFileSync(join(data, 'icons', 'yt.png')), bytes), 0);
 	const rootSrc = readFileSync(new URL('../../app/src/lib/root.ts', import.meta.url), 'utf8');
 	assert.match(rootSrc, /syncBarShell\(dir, sig, toBase64\(json\), icons\)/);
-	assert.match(rootSrc, /syncBarResult\(outText\)/);
-	assert.match(rootSrc, /bar: icon skipped/);
 	assert.doesNotMatch(rootSrc, /rm -rf \$\{dir\}/);
 	assert.doesNotMatch(rootSrc, /cat \$\{dir\}\/data\/sig/);
 	assert.doesNotMatch(rootSrc, /> \$\{dir\}\/data\/bar\.json/);
@@ -363,7 +367,7 @@ test('syncBar: a picture swapped for a link while it is copied is not kept, and 
 	const root = mkdtempSync(join(tmpdir(), 'sync-src-'));
 	const bar = mkdtempSync(join(tmpdir(), 'sync-dst-'));
 	mkdirSync(join(root, 'app'), {recursive: true});
-	writeFileSync(join(root, 'app', 'icon.png'), 'png');
+	writeFileSync(join(root, 'app', 'icon.png'), png('png'));
 	const secret = join(root, 'secret');
 	writeFileSync(secret, 'secret');
 	chmodSync(secret, 0o600);
@@ -401,7 +405,7 @@ test('syncBar: C8 developer and cryptofs icons are copied, including an app outs
 	mkdirSync(bar);
 	for (const key of ['moonfin', 'music', 'netflix']) {
 		mkdirSync(dirname(mirror(real[key])), {recursive: true});
-		writeFileSync(mirror(real[key]), key);
+		writeFileSync(mirror(real[key]), png(key));
 	}
 	const secret = join(base, 'secret');
 	writeFileSync(secret, 'secret');
@@ -425,16 +429,81 @@ test('syncBar: C8 developer and cryptofs icons are copied, including an app outs
 	assert.equal(got.apps['org.moonfin.webos'].icon, 'data/icons/org.moonfin.webos.png?c8sig');
 	assert.equal(got.apps['com.theadelab.amclient-lg'].icon, 'data/icons/com.theadelab.amclient-lg.png?c8sig');
 	assert.equal(got.apps.netflix.icon, 'data/icons/netflix.png?c8sig');
-	assert.equal(got.apps['bbc.iplayer.3.0'].icon, undefined);
-	assert.equal(got.apps['org.evil.app'].icon, undefined);
-	assert.equal(read(join(bar, 'data', 'icons', 'org.moonfin.webos.png')), 'moonfin');
-	assert.equal(read(join(bar, 'data', 'icons', 'com.theadelab.amclient-lg.png')), 'music');
-	assert.equal(read(join(bar, 'data', 'icons', 'netflix.png')), 'netflix');
+	assert.equal(got.apps['bbc.iplayer.3.0'].icon, null);
+	assert.equal(got.apps['org.evil.app'].icon, null);
+	assert.equal(readFileSync(join(bar, 'data', 'icons', 'org.moonfin.webos.png')).includes(Buffer.from('moonfin')), true);
+	assert.equal(readFileSync(join(bar, 'data', 'icons', 'com.theadelab.amclient-lg.png')).includes(Buffer.from('music')), true);
+	assert.equal(readFileSync(join(bar, 'data', 'icons', 'netflix.png')).includes(Buffer.from('netflix')), true);
 	assert.equal(read(join(bar, 'data', 'icons', 'bbc.iplayer.3.0.png')), null);
 	assert.equal(read(join(bar, 'data', 'icons', 'org.evil.app.png')), null);
 	assert.equal(read(secret), 'secret');
 	assert.equal(modeOf(secret), '600');
 	assert.equal(Object.hasOwn(got.apps, 'youtube.leanback.v4'), false);
+	// a skipped copy is not signed, so the next start tries again instead of answering "same"
+	assert.equal(read(join(bar, 'data', 'sig')), null);
+	assert.equal(runSync(bar, {sig: 'c8sig', json: {v: 1, apps}, icons, roots: join(base, 'media')}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), null);
+});
+
+test('syncBar: the icon token is replaced as a whole, in any key order, and a bad picture is left null', () => {
+	const base = mkdtempSync(join(tmpdir(), 'sync-tok-'));
+	const app = join(base, 'app');
+	const bar = join(base, 'bar');
+	mkdirSync(app);
+	mkdirSync(bar);
+	writeFileSync(join(app, 'a.png'), png('A'));
+	writeFileSync(join(app, 'along.png'), png('B'));
+	writeFileSync(join(app, 'text.png'), Buffer.from('not an image'));
+	const icons = [
+		{src: join(app, 'a.png'), name: 'a.png', id: 'a'},
+		{src: join(app, 'along.png'), name: 'a.png.png', id: 'a.png'},
+		{src: join(app, 'text.png'), name: 'text.png', id: 'text'}
+	];
+	// icon is not the last key, and "a.png" is a prefix of "a.png.png"
+	const json = {v: 1, apps: {
+		a: {icon: '~icon:a.png', title: 'A'},
+		'a.png': {icon: '~icon:a.png.png', title: 'Long'},
+		text: {icon: '~icon:text.png', title: 'Text', plain: true}
+	}};
+	const out = runSync(bar, {sig: 'tok1', json, icons, roots: app, full: true});
+	assert.equal(out.split('\n').pop(), 'written');
+	assert.match(out, /skip text not-image/);
+	const got = JSON.parse(read(join(bar, 'data', 'bar.json')));
+	assert.equal(got.apps.a.icon, 'data/icons/a.png?tok1');
+	assert.equal(got.apps.a.title, 'A');
+	assert.equal(got.apps['a.png'].icon, 'data/icons/a.png.png?tok1');
+	assert.equal(got.apps.text.icon, null);
+	assert.equal(got.apps.text.title, 'Text');
+	assert.equal(read(join(bar, 'data', 'sig')), null);
+});
+
+test('syncBar: a rewrite that yields no JSON is refused, and a huge file is not copied', () => {
+	const base = mkdtempSync(join(tmpdir(), 'sync-empty-'));
+	const app = join(base, 'app');
+	const bar = join(base, 'bar');
+	mkdirSync(join(app));
+	mkdirSync(join(bar, 'data'), {recursive: true});
+	writeFileSync(join(bar, 'data', 'bar.json'), '{"v":1,"keep":true}');
+	writeFileSync(join(bar, 'data', 'sig'), 'old\n');
+	writeFileSync(join(app, 'icon.png'), png('ok'));
+	const icons = [{src: join(app, 'icon.png'), name: 'a.png', id: 'a'}];
+	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
+	assert.equal(runSync(bar, {icons, json, roots: app, hook: 'sed () { return 1; }\n'}), 'refused');
+	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).keep, true);
+	assert.equal(read(join(bar, 'data', 'sig')), 'old\n');
+	const huge = mkdtempSync(join(tmpdir(), 'sync-huge-'));
+	const happ = join(huge, 'app');
+	const hbar = join(huge, 'bar');
+	mkdirSync(happ);
+	mkdirSync(hbar);
+	writeFileSync(join(happ, 'icon.png'), png('ok'));
+	const hook = 'wc () { if [ "$1" = -c ]; then echo 2000000; else command wc "$@"; fi; }\n';
+	const hout = runSync(hbar, {icons: [{src: join(happ, 'icon.png'), name: 'a.png', id: 'a'}], json, roots: happ, hook, full: true});
+	assert.match(hout, /skip a toobig/);
+	assert.equal(hout.split('\n').pop(), 'written');
+	assert.equal(JSON.parse(read(join(hbar, 'data', 'bar.json'))).apps.a.icon, null);
+	assert.equal(read(join(hbar, 'data', 'icons', 'a.png')), null);
+	assert.equal(read(join(hbar, 'data', 'sig')), null);
 });
 
 test('backlight: a value still saved for another picture mode leaves this one undimmed (else it stayed dim with nothing saved for it)', async () => {

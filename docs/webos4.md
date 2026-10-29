@@ -187,14 +187,15 @@ The same settings are used by `com.sammysco.avoverlay`.
   the bar, and the app underneath has the focus again. After 10 s without a key the bar closes by itself. A relaunch (Home pressed again)
   starts it over.
 - **Data:** an app cannot read another app's storage, so Lumen fills `data/` in Lumen bar's folder, as root. `data/bar.json` holds the dock
-  (the glass bar's apps), Lumen's recent list, every app's title and colour, and Lumen's id. `data/icons/<id>.png` are copied from each app's
-  own icon file under the app folders (developer, store, system), not only from Lumen's bundled icons. On 1.0.9044 the bar kept real icons for
-  YouTube, Prime Video, the Browser and Homebrew Channel only (the catalogue icons, and the only apps colour-sampled on the first boot). Every
-  other app's icon is a `data:` URI on this TV (`icons-file` 0/37: another app's files do not load as `file://`), and that URI was not turned
-  back into the file path when the bar list was built, so `bar.json` had no `icon` for Moonfin, Amazon Music, Netflix, iPlayer and the rest.
-  The path is kept with the app, and a `data:` URI is looked up in the icon cache. `bar.json` names an icon only after that copy is a plain
-  file; a skip is a line in `lumen.log` (`bar: icon skipped <id> <reason>`). The signature includes a generation (`BAR_EPOCH`) so an update
-  rewrites a `bar.json` left by 1.0.9044. It is written again only when a signature in `data/sig` changes, so an update of Lumen bar,
+  (the glass bar's apps), Lumen's recent list, every app's title and colour, and Lumen's id. The bar copies the same picture the tile shows:
+  a bundled icon or an icon-pack file when that is what Lumen draws, and the TV's file only when the tile's picture is a `data:` URI, a
+  `file://` URL, or there is no picture. What is known from the code, not from a captured `listLaunchPoints` on this C8: a system app never
+  had a path stored for the bar, an `http` `largeIcon` hid the file `icon` behind it, and a path was kept only when the root read of that file
+  succeeded. `tools/tv-bar-diag.sh` prints the TV's real launch points, `bar.json` and the bar lines in `lumen.log` (run it as root; see the
+  script). A copied file has to be a PNG or JPEG of at most 1 MiB, and still under the app folders after `readlink -f`. `bar.json` names an
+  icon only when that copy is a plain file (`null` otherwise). A skip is `bar: icon skipped <id> <reason>` in `lumen.log`, and the signature
+  is not written, so the next start tries again. The signature includes `BAR_EPOCH`, so an update rewrites a bar left by 1.0.9044. It is
+  written again only when a signature in `data/sig` changes, so an update of Lumen bar,
   which empties its folder, is refilled at Lumen's next start. The bar's folder is writable by others, so this write does not use a full
   path (a redirect or a recursive remove would follow a link). It enters the bar folder and then `data/` with `cd -P`, and each must be
   that directory (`pwd -P`). A `data/` or `data/icons/` that is not root's own is left as it is and nothing is written (`lumen.log`: `bar
@@ -233,7 +234,8 @@ sent through networkinput:
 
 - **Recent tiles need an icon (1.0.9013):** a recent app with no icon file in `data/icons/` (TV Settings, `com.palm.app.settings`, and other
   system apps Lumen draws with its own glyph) is left out, as in the first hand-installed test build, where the bar showed the dock plus
-  Live TV only. 1.0.9007-1.0.9012 drew TV Settings as a grey "T" tile. The bar's code and CSS were otherwise byte-identical between the
+  Live TV only. A copy that is skipped (not a PNG or JPEG, or the file could not be read) leaves that recent app out the same way, until a
+  later start copies it: the signature was not written, so it is tried again. 1.0.9007-1.0.9012 drew TV Settings as a grey "T" tile. The bar's code and CSS were otherwise byte-identical between the
   hand build and the published ones (only the version differs); the change came from Lumen's own data, refilled at its next start.
   Test: `tools/test/bar.test.mjs` (bar.js in a vm with a fake DOM and Luna bridge).
 - **Looks like Lumen's home bar (1.0.9014):** `bar/bar.css` uses the home bar's own values (`app/src/theme/global.css`,

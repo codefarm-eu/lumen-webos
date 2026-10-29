@@ -69,9 +69,10 @@ export function syncBarResult (stdout: string): 'same' | 'written' | 'missing' |
 
 /** Shell that fills the bar folder `dir`'s data/icons, data/bar.json and data/sig. `dir` is an absolute path with no quotes or ".."
  *  (the bar folder next to an app dir that passed APP_DIR). `sig` is [a-z0-9]+ and `b64` is bar.json. Each icon `src` has passed
- *  safeAppPath; `name` is `<id>.<ext>`. An entry that should show an icon carries `"icon":"~icon:<name>"`; that token becomes
- *  `data/icons/<name>?<sig>` only when the copy is a plain file afterwards, and is removed otherwise. A copy that did not happen prints
- *  `skip <id> unresolved` (the path is not a plain file still under an app folder) or `skip <id> copy` (the copy itself failed).
+ *  safeAppPath; `name` is `<id>.<ext>`. An entry that should show an icon carries the quoted token `"~icon:<name>"`. That whole token becomes
+ *  `"data/icons/<name>?<sig>"` only when the copy is a plain PNG or JPEG of at most 1 MiB, and `null` otherwise (bar.js treats a null icon
+ *  as none). The match is the quoted token, so key order does not matter and one name is not a prefix of another. A copy that did not happen
+ *  prints `skip <id> <reason>` (`unresolved`, `copy`, `toobig`, `not-image`) and the signature is not written, so the next start tries again.
  *  The bar's folder is writable by others, so nothing is written by a full path (a redirect and a recursive remove both follow a link).
  *  The bar folder and then data/ are entered with cd -P and must be that directory (pwd -P); a parent that is a link is fine, the bar
  *  folder itself being a link is not. A data/ or data/icons/ that is not this user's is left as it is. A link at data, icons, bar.json
@@ -88,21 +89,32 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 	const names = use.map((i) => i.name).join(' ');
 	const copies = use.map((i) => {
 		const id = i.id && syncNameOk(i.id) ? i.id : i.name;
-		// -P copies a link as a link; it is then not a plain file, so it is removed and not named in bar.json
-		return 'if { ' + resolvedPath(i.src) + '; }; then rm -f -- .new; '
-			+ 'if [ -e .new ]; then echo refused; exit 0; fi; '
-			+ 'cp -fP -- "$r" .new 2>/dev/null; '
-			+ 'if [ -L \'' + i.name + '\' ]; then rm -f -- \'' + i.name + '\'; fi; '
-			+ 'if [ -f .new ] && [ ! -L .new ] && chmod 644 .new && mv -f -- .new \'' + i.name + '\'; then :; else rm -f -- .new; echo \'skip ' + id + ' copy\'; fi; '
-			+ 'else echo \'skip ' + id + ' unresolved\'; fi';
+		const skip = (why: string) => 'skipped=1; echo \'skip ' + id + ' ' + why + '\'';
+		// -P copies a link as a link; it is then not a plain file, so it is removed and not named in bar.json.
+		// The file must be a PNG or JPEG of at most 1 MiB: a launch point can name any file under an app folder.
+		return [
+			'if { ' + resolvedPath(i.src) + '; }; then',
+			'sz=$(wc -c < "$r" 2>/dev/null | tr -d \'[:space:]\')',
+			'case "$sz" in \'\'|*[!0-9]*) ' + skip('copy') + ' ;; *)',
+			'if [ "$sz" -gt 1048576 ]; then ' + skip('toobig'),
+			'elif ! { dd if="$r" bs=8 count=1 2>/dev/null | cmp -s - .pngm || dd if="$r" bs=3 count=1 2>/dev/null | cmp -s - .jpgm; }; then ' + skip('not-image'),
+			'else rm -f -- .new',
+			'if [ -e .new ]; then echo refused; exit 0; fi',
+			'cp -fP -- "$r" .new 2>/dev/null',
+			'if [ -L \'' + i.name + '\' ]; then rm -f -- \'' + i.name + '\'; fi',
+			'if [ -f .new ] && [ ! -L .new ] && chmod 644 .new && mv -f -- .new \'' + i.name + '\'; then :; else rm -f -- .new; ' + skip('copy') + '; fi',
+			'fi ;; esac',
+			'else ' + skip('unresolved') + '; fi'
+		].join('\n');
 	}).join('\n');
-	// bar.json names an icon only when that copy is a plain file. The token is put there by syncBar; sed runs on the decoded text.
+	// the quoted token only. null is what bar.js already treats as no icon, and it does not depend on which key is last.
 	const rewrite = use.map((i) => {
-		// "." is any character in sed; icon names are ids plus an extension, and ids contain dots (bbc.iplayer.3.0)
 		const pat = i.name.replace(/\./g, '\\.');
+		const token = '\\"~icon:' + pat + '\\"';
+		const dest = '\\"data/icons/' + i.name + '?$sig\\"';
 		return 'if [ -f \'icons/' + i.name + '\' ] && [ ! -L \'icons/' + i.name + '\' ]; then '
-			+ 'json=$(printf \'%s\' "$json" | sed "s#~icon:' + pat + '#data/icons/' + i.name + '?$sig#g"); '
-			+ 'else json=$(printf \'%s\' "$json" | sed "s#,\\"icon\\":\\"~icon:' + pat + '\\"##g"); fi';
+			+ 'json=$(printf \'%s\' "$json" | sed "s#' + token + '#' + dest + '#g"); '
+			+ 'else json=$(printf \'%s\' "$json" | sed "s#' + token + '#null#g"); fi';
 	});
 	const dropDirs = names ? 'for n in ' + names + '; do if [ -d "$n" ] && [ ! -L "$n" ]; then echo refused; exit 0; fi; done' : ':';
 	return [
@@ -110,6 +122,7 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		"d='" + dir + "'",
 		"sig='" + sig + "'",
 		"b64='" + b64 + "'",
+		'skipped=0',
 		// a busybox without id: 0, as the watcher assumes (MYUID): the Channel's exec only ever runs as root
 		'me=$(id -u 2>/dev/null); case "$me" in \'\'|*[!0-9]*) me=0 ;; esac',
 		'[ -d "$d" ] || { echo missing; exit 0; }',
@@ -136,7 +149,9 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'[ "$(stat -c %u . 2>/dev/null)" = "$me" ] || { echo refused; exit 0; }',
 		'chmod 755 . 2>/dev/null || { echo refused; exit 0; }',
 		dropDirs,
+		"printf '\\211PNG\\r\\n\\032\\n' > .pngm; printf '\\377\\330\\377' > .jpgm",
 		copies,
+		'rm -f -- .new .pngm .jpgm',
 		"keep='" + names + "'",
 		'for f in .* *; do',
 		'case "$f" in .|..|\'*\'|\'.*\') continue ;; esac',
@@ -156,13 +171,18 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'[ -f .bar.json.new ] && [ ! -L .bar.json.new ] || { rm -f -- .bar.json.new; echo refused; exit 0; }',
 		'json=$(cat .bar.json.new) || { echo refused; exit 0; }',
 		...rewrite,
+		// a failed sed leaves json empty; writing that and a new sig would stick ("same" forever) with an empty bar
+		'[ -n "$json" ] || { rm -f -- .bar.json.new .sig.new; echo refused; exit 0; }',
+		'case "$json" in \'{\'*) ;; *) rm -f -- .bar.json.new .sig.new; echo refused; exit 0 ;; esac',
 		'printf \'%s\' "$json" > .bar.json.new',
 		'[ -f .bar.json.new ] && [ ! -L .bar.json.new ] || { rm -f -- .bar.json.new; echo refused; exit 0; }',
 		'chmod 644 .bar.json.new || { echo refused; exit 0; }',
+		'if [ -L bar.json ]; then rm -f -- bar.json; fi',
+		// a skipped copy is not signed, so the next start does not answer "same" and tries the file again
+		'if [ "$skipped" = 1 ]; then rm -f -- .sig.new; mv -f -- .bar.json.new bar.json && echo written || echo refused; exit 0; fi',
 		'printf \'%s\\n\' "$sig" > .sig.new || { echo refused; exit 0; }',
 		'[ -f .sig.new ] && [ ! -L .sig.new ] || { rm -f -- .sig.new; echo refused; exit 0; }',
 		'chmod 644 .sig.new || { echo refused; exit 0; }',
-		'if [ -L bar.json ]; then rm -f -- bar.json; fi',
 		'if [ -L sig ]; then rm -f -- sig; fi',
 		'mv -f -- .bar.json.new bar.json && mv -f -- .sig.new sig && echo written || echo refused'
 	].join('\n');

@@ -370,6 +370,15 @@ export interface BarApp { id: string; title: string; color?: string; plain?: boo
 /** The home bar's look, so Lumen bar draws its tiles at the same size: the first row's tile size, height and gap, how many tiles it shows
  *  before it scrolls, and how much the focused tile grows. */
 export interface BarStyle { size: number; height: number; gap: number; perRow: number; scale: number }
+/** Part of the bar signature. 1.0.9044 hashed the list without it, so a TV on that sig rewrites. */
+export const BAR_EPOCH = 2;
+/** The signature stored in the bar's data/sig. `epoch` is included so a change of this constant rewrites an old bar. */
+export function barSig (dock: string[], recent: string[], list: unknown, style: unknown): string {
+	const text = JSON.stringify([BAR_EPOCH, dock, recent, list, style]);
+	let h = 5381;
+	for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+	return h.toString(36);
+}
 /** Fills Lumen bar's data/ folder: copies each app's icon file to data/icons/<id>.<ext> and writes data/bar.json (the dock, Lumen's recent
  *  list, the apps, Lumen's id). Skipped when data/sig already holds `sig` (an app update wipes data/, and then it is written again).
  *  data/wallpapers/ is left alone: it holds the screensaver pictures, which tools/tv/watch.sh bar_pictures copies from Lumen.
@@ -382,12 +391,14 @@ export function syncBar (appDir: string, lumenId: string, dock: string[], recent
 	const icons: {src: string; name: string; id: string}[] = [];
 	const skipped: string[] = [];
 	apps.forEach((a) => {
-		if (!APP_ID.test(a.id)) return;
+		// "." and ".." pass APP_ID but are not file names the shell will copy; a "~icon:" token for them would be left in bar.json
+		if (!APP_ID.test(a.id) || a.id === '.' || a.id === '..') return;
 		const entry: {title: string; color?: string; plain?: boolean; icon?: string} = {title: a.title, color: a.color, plain: a.plain};
-		if (a.file && safeAppPath(a.file)) {
-			const ext = (/\.(png|jpe?g|svg|webp|gif)$/i.exec(a.file) || ['', 'png'])[1].toLowerCase();
-			const name = `${a.id}.${ext}`;
-			// the shell swaps this for data/icons/<name>?<sig> only after the copy is a plain file, and drops it when the copy did not happen
+		const ext = a.file ? (/\.(png|jpe?g|svg|webp|gif)$/i.exec(a.file) || ['', 'png'])[1].toLowerCase() : '';
+		const name = ext ? `${a.id}.${ext}` : '';
+		const nameOk = !!name && name !== '.new' && /^[A-Za-z0-9._-]+$/.test(name);
+		if (a.file && safeAppPath(a.file) && nameOk) {
+			// the shell swaps the quoted token for the copied name, or for null when the copy did not happen
 			entry.icon = `~icon:${name}`;
 			icons.push({src: a.file, name, id: a.id});
 		} else skipped.push(`bar: icon skipped ${a.id} ${a.file ? 'unsafe-path' : 'no-path'}`);
@@ -399,7 +410,7 @@ export function syncBar (appDir: string, lumenId: string, dock: string[], recent
 		if (status === 'written') {
 			const lines = skipped.slice();
 			for (const line of outText.split('\n')) {
-				const m = /^skip ([A-Za-z0-9._-]+) (copy|unresolved)$/.exec(line.trim());
+				const m = /^skip ([A-Za-z0-9._-]+) (copy|unresolved|toobig|not-image)$/.exec(line.trim());
 				if (m) lines.push(`bar: icon skipped ${m[1]} ${m[2]}`);
 			}
 			if (lines.length) appendLog(lines.join('\n') + '\n').catch(() => undefined);
