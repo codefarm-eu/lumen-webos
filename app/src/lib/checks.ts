@@ -70,11 +70,12 @@ export function syncBarResult (stdout: string): 'same' | 'written' | 'missing' |
 /** Shell that fills the bar folder `dir`'s data/icons, data/bar.json and data/sig. `dir` is an absolute path with no quotes or ".."
  *  (the bar folder next to an app dir that passed APP_DIR). `sig` is [a-z0-9]+ and `b64` is bar.json. Each icon `src` has passed
  *  safeAppPath; `name` is `<id>.<ext>`. An entry that should show an icon carries `"icon":"~icon:<name>"`. That field becomes
- *  `"icon":"data/icons/<name>?<sig>"` only when the copy is a plain PNG or JPEG of at most 1 MiB, and `"icon":null` otherwise (bar.js treats a
- *  null icon as none). The match is the icon field, so a title with the same text is left alone, key order does not matter, and one name is
- *  not a prefix of another. A copy that did not happen
- *  prints `skip <id> <reason>` (`unresolved`, `copy`, `toobig`, `not-image`). The old signature is removed, so the next start tries again
- *  and a return to the last signed list is not answered `same` with this bar left in place.
+ *  `"icon":"data/icons/<name>?<sig>"` only when the copy is a plain PNG, JPEG or WebP of at most 1 MiB. A failed re-copy leaves a previous good
+ *  file in place and the field keeps naming it; with no previous file the field is `"icon":null` (bar.js treats a null icon as none). The match
+ *  is the icon field, so a title with the same text is left alone, key order does not matter, and one name is not a prefix of another. A copy
+ *  that did not happen prints `skip <id> <reason>` (`unresolved`, `copy`, `toobig`, `not-image`). `copy` is tried again next start (the signature
+ *  is removed). The other three are permanent: the signature is stored as `<sig>-p`, so the same list then answers `same`. A different list
+ *  still rewrites.
  *  The bar's folder is writable by others, so nothing is written by a full path (a redirect and a recursive remove both follow a link).
  *  The bar folder and then data/ are entered with cd -P and must be that directory (pwd -P); a parent that is a link is fine, the bar
  *  folder itself being a link is not. A data/ or data/icons/ that is not this user's is left as it is. A link at data, icons, bar.json
@@ -91,8 +92,10 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 	const names = use.map((i) => i.name).join(' ');
 	const copies = use.map((i) => {
 		const id = i.id && syncNameOk(i.id) ? i.id : i.name;
-		const skip = (why: string) => 'skipped=1; echo \'skip ' + id + ' ' + why + '\'';
-		// size without reading the file. stat is already used above; ls -ln is the busybox fallback (size is the fifth field).
+		// copy is tried again next start. unresolved, toobig and not-image are signed so they settle.
+		const skip = (why: string) => (why === 'copy' ? 'retry=1' : 'perm=1') + '; echo \'skip ' + id + ' ' + why + '\'';
+		// size without reading the file. stat -c %s decides. ls -ln (size is the fifth field) runs only when that print is empty.
+		// The owner checks above already use stat -c %u, so a host with no stat is refused before it gets here.
 		const sizeOf = (p: string) => 'sz=$(stat -c %s ' + p + ' 2>/dev/null); case "$sz" in \'\'|*[!0-9]*) sz=$(ls -ln ' + p + ' 2>/dev/null | tr -s \' \' | cut -d\' \' -f5) ;; esac';
 		// -P copies a link as a link; it is then not a plain file, so it is removed and not named in bar.json.
 		// A launch point can name any file under an app folder. The size is read first so a huge file is not copied into the
@@ -109,7 +112,7 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 			'else ' + sizeOf('.new'),
 			'if [ -z "$sz" ] || [ -n "$(printf %s "$sz" | tr -d 0-9)" ]; then rm -f -- .new; ' + skip('copy'),
 			'elif [ "$sz" -gt 1048576 ]; then rm -f -- .new; ' + skip('toobig'),
-			'elif ! { dd if=.new bs=8 count=1 2>/dev/null | cmp -s - .pngm || dd if=.new bs=3 count=1 2>/dev/null | cmp -s - .jpgm; }; then rm -f -- .new; ' + skip('not-image'),
+			'elif ! { dd if=.new bs=8 count=1 2>/dev/null | cmp -s - .pngm || dd if=.new bs=3 count=1 2>/dev/null | cmp -s - .jpgm || { dd if=.new bs=4 count=1 2>/dev/null | cmp -s - .riffm && dd if=.new bs=1 skip=8 count=4 2>/dev/null | cmp -s - .webpm; }; }; then rm -f -- .new; ' + skip('not-image'),
 			'else if [ -L \'' + i.name + '\' ]; then rm -f -- \'' + i.name + '\'; fi',
 			'if [ -f .new ] && [ ! -L .new ] && chmod 644 .new && mv -f -- .new \'' + i.name + '\'; then :; else rm -f -- .new; ' + skip('copy') + '; fi',
 			'fi',
@@ -135,7 +138,8 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		"d='" + dir + "'",
 		"sig='" + sig + "'",
 		"b64='" + b64 + "'",
-		'skipped=0',
+		'retry=0',
+		'perm=0',
 		// a busybox without id: 0, as the watcher assumes (MYUID): the Channel's exec only ever runs as root
 		'me=$(id -u 2>/dev/null); case "$me" in \'\'|*[!0-9]*) me=0 ;; esac',
 		'[ -d "$d" ] || { echo missing; exit 0; }',
@@ -150,7 +154,7 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'cd -P data 2>/dev/null && [ "$(pwd -P)" = "$here/data" ] || { echo refused; exit 0; }',
 		'[ "$(stat -c %u . 2>/dev/null)" = "$me" ] || { echo refused; exit 0; }',
 		'chmod 755 . 2>/dev/null || { echo refused; exit 0; }',
-		'if [ -f sig ] && [ ! -L sig ] && [ "$(stat -c %u sig 2>/dev/null)" = "$me" ] && [ "$(cat sig 2>/dev/null)" = "$sig" ]; then echo same; exit 0; fi',
+		'if [ -f sig ] && [ ! -L sig ] && [ "$(stat -c %u sig 2>/dev/null)" = "$me" ]; then got=$(cat sig 2>/dev/null); if [ "$got" = "$sig" ] || [ "$got" = "$sig-p" ]; then echo same; exit 0; fi; fi',
 		'if [ -d bar.json ] && [ ! -L bar.json ]; then echo refused; exit 0; fi',
 		'if [ -d sig ] && [ ! -L sig ]; then echo refused; exit 0; fi',
 		'if [ -L icons ]; then rm -f -- icons',
@@ -162,9 +166,9 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'[ "$(stat -c %u . 2>/dev/null)" = "$me" ] || { echo refused; exit 0; }',
 		'chmod 755 . 2>/dev/null || { echo refused; exit 0; }',
 		dropDirs,
-		"printf '\\211PNG\\r\\n\\032\\n' > .pngm; printf '\\377\\330\\377' > .jpgm",
+		"printf '\\211PNG\\r\\n\\032\\n' > .pngm; printf '\\377\\330\\377' > .jpgm; printf 'RIFF' > .riffm; printf 'WEBP' > .webpm",
 		copies,
-		'rm -f -- .new .pngm .jpgm',
+		'rm -f -- .new .pngm .jpgm .riffm .webpm',
 		"keep='" + names + "'",
 		'for f in .* *; do',
 		'case "$f" in .|..|\'*\'|\'.*\') continue ;; esac',
@@ -191,10 +195,11 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'[ -f .bar.json.new ] && [ ! -L .bar.json.new ] || { rm -f -- .bar.json.new; echo refused; exit 0; }',
 		'chmod 644 .bar.json.new || { echo refused; exit 0; }',
 		'if [ -L bar.json ]; then rm -f -- bar.json; fi',
-		// a skipped copy removes the old signature. Leaving it would make a later return to that signed list answer "same"
-		// and keep this bar.json, skips and all.
-		'if [ "$skipped" = 1 ]; then rm -f -- .sig.new; rm -f -- sig; mv -f -- .bar.json.new bar.json && echo written || echo refused; exit 0; fi',
-		'printf \'%s\\n\' "$sig" > .sig.new || { echo refused; exit 0; }',
+		// a copy that failed while writing is tried again: the signature is removed, so the next start is not "same".
+		// a miss, a huge file or a non-image is signed "<sig>-p", so the same list then answers "same" and a changed list still rewrites.
+		'if [ "$retry" = 1 ]; then rm -f -- .sig.new; rm -f -- sig; mv -f -- .bar.json.new bar.json && echo written || echo refused; exit 0; fi',
+		'mark="$sig"; [ "$perm" = 1 ] && mark="$sig-p"',
+		'printf \'%s\\n\' "$mark" > .sig.new || { echo refused; exit 0; }',
 		'[ -f .sig.new ] && [ ! -L .sig.new ] || { rm -f -- .sig.new; echo refused; exit 0; }',
 		'chmod 644 .sig.new || { echo refused; exit 0; }',
 		'if [ -L sig ]; then rm -f -- sig; fi',

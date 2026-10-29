@@ -394,8 +394,8 @@ export function syncBar (appDir: string, lumenId: string, dock: string[], recent
 		// "." and ".." pass APP_ID but are not file names the shell will copy; a "~icon:" token for them would be left in bar.json
 		if (!APP_ID.test(a.id) || a.id === '.' || a.id === '..') return;
 		const entry: {title: string; color?: string; plain?: boolean; icon?: string} = {title: a.title, color: a.color, plain: a.plain};
-		// png and jpeg only: the shell's magic check refuses anything else, and sending it would rewrite the bar on every start
-		const ext = a.file && /\.(png|jpe?g)$/i.exec(a.file);
+		// png, jpeg, and webp (icon packs). svg and gif never pass the shell's header check, so they are not sent.
+		const ext = a.file && /\.(png|jpe?g|webp)$/i.exec(a.file);
 		const name = ext ? `${a.id}.${ext[1].toLowerCase()}` : '';
 		const nameOk = !!name && name !== '.new' && /^[A-Za-z0-9._-]+$/.test(name);
 		if (a.file && safeAppPath(a.file) && nameOk) {

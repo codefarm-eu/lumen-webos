@@ -206,10 +206,11 @@ The same settings are used by `com.sammysco.avoverlay`.
   a launch point, and on 9044 `addSystemApps` never stored a path.
   `tools/tv-bar-diag.sh` prints the TV's launch points, `bar.json` and the bar lines in `lumen.log`. Run it as root the way the script's header
   says (`ssh -tt` with the script decoded on the TV; `sh -s` over the pty hangs, and `timeout 90` is not this busybox). A copied file has to be
-  a PNG or JPEG of at most 1 MiB, and still under the app folders after `readlink -f`. `bar.json` names an
-  icon only when that copy is a plain file (`null` otherwise). A skip in the copy is `bar: icon skipped <id> <reason>` in `lumen.log`, and the old
-  signature is removed, so the next start tries again and a return to the last signed list does not answer `same` with the skipped bar left in
-  place. An icon that is not a PNG or JPEG is not sent to the copy, so it does not rewrite the bar on every start. The signature includes
+  a PNG, JPEG or WebP of at most 1 MiB, and still under the app folders after `readlink -f`. `bar.json` names an
+  icon when that copy is a plain file. A failed re-copy leaves the previous good file in place and keeps naming it; with no previous file the
+  field is `null`. A copy that failed while writing is not signed, so the next start tries it again. A file that is missing, too big, or not a
+  real image is signed as the signature plus `-p`, so the same list then answers `same` and is not logged again, and a changed list still
+  rewrites. An icon that is not a PNG, JPEG or WebP is not sent to the copy. The signature includes
   `BAR_EPOCH`, so an update rewrites a bar left by 1.0.9044. It is
   written again only when a signature in `data/sig` changes, so an update of Lumen bar,
   which empties its folder, is refilled at Lumen's next start. The bar's folder is writable by others, so this write does not use a full
@@ -241,7 +242,7 @@ Checked on the C8 (webOS 4.4.3), 24 Oct 2026, 00:07-00:12 BST, with a dev build 
 sent through networkinput:
 - **Over YouTube:** LG's bar came up, Back closed it 0.46 s later, and Lumen bar was visible 0.93 s after the Home press. The app list
   stayed `youtube.leanback.v4` (card) + `com.ovsteenb.lumen.bar` (overlay). Back reached the bar and closed it, and YouTube was alone in front again.
-  The dock showed the real icons from Olivier's dock (YouTube, Moonfin, Prime Video, Amazon Music, ..., Netflix), plus Live TV as recent.
+  The dock showed the real icons (YouTube, Moonfin, Prime Video, Amazon Music, ..., Netflix), plus Live TV as recent.
 - **Over Moonfin:** the same, and Back closed it.
 - **Over Netflix:** the same. After Back, a Down key changed Netflix's screen, so the remote works in the app again. OK on the YouTube tile
   opened YouTube and closed the bar.
@@ -250,8 +251,9 @@ sent through networkinput:
 
 - **Recent tiles need an icon (1.0.9013):** a recent app with no icon file in `data/icons/` (TV Settings, `com.palm.app.settings`, and other
   system apps Lumen draws with its own glyph) is left out, as in the first hand-installed test build, where the bar showed the dock plus
-  Live TV only. A copy that is skipped (not a PNG or JPEG, or the file could not be read) leaves that recent app out the same way, until a
-  later start copies it: the signature was not written, so it is tried again. 1.0.9007-1.0.9012 drew TV Settings as a grey "T" tile. The bar's code and CSS were otherwise byte-identical between the
+  Live TV only. A copy that fails while writing is tried again next start. A file that is missing, too big, or not a real image stays off the
+  recent row, and that result is signed so it is not retried on every start. A failed re-copy of an icon that was already there keeps the
+  previous file, so the recent app stays. 1.0.9007-1.0.9012 drew TV Settings as a grey "T" tile. The bar's code and CSS were otherwise byte-identical between the
   hand build and the published ones (only the version differs); the change came from Lumen's own data, refilled at its next start.
   Test: `tools/test/bar.test.mjs` (bar.js in a vm with a fake DOM and Luna bridge).
 - **Looks like Lumen's home bar (1.0.9014):** `bar/bar.css` uses the home bar's own values (`app/src/theme/global.css`,

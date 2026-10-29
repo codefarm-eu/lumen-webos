@@ -290,7 +290,7 @@ test('syncBar logs a skipped copy and a missing path, and does not keep an icon 
 	assert.doesNotMatch(logged, /skipped \./);
 });
 
-test('an svg, webp or gif is not sent to the copy, so a start does not rewrite the bar for an icon that can never pass', async () => {
+test('an svg or gif is not sent to the copy, and a webp icon pack file is', async () => {
 	T.answer = 'written';
 	T.calls = [];
 	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
@@ -303,17 +303,17 @@ test('an svg, webp or gif is not sent to the copy, so a start does not rewrite t
 	assert.equal(r, 'written');
 	const cmd = T.calls[0];
 	assert.equal(cmd.includes('icon.svg'), false);
-	assert.equal(cmd.includes('icon.webp'), false);
+	assert.equal(cmd.includes('icon.webp'), true);
 	assert.equal(cmd.includes('icon.gif'), false);
 	assert.equal(cmd.includes('icon.jpg'), true);
 	const json = JSON.parse(Buffer.from(/b64='([^']*)'/.exec(cmd)[1], 'base64').toString('utf8'));
 	assert.equal(json.apps['org.example.svgapp'].icon, undefined);
-	assert.equal(json.apps['org.example.webpapp'].icon, undefined);
+	assert.equal(json.apps['org.example.webpapp'].icon, '~icon:org.example.webpapp.webp');
 	assert.equal(json.apps['org.example.gifapp'].icon, undefined);
 	assert.equal(json.apps['org.example.jpgapp'].icon, '~icon:org.example.jpgapp.jpg');
 	const logged = Buffer.from(/echo ([A-Za-z0-9+/=]+) \| base64/.exec(T.calls[1])[1], 'base64').toString('utf8');
 	assert.match(logged, /bar: icon skipped org\.example\.svgapp not-image/);
-	assert.match(logged, /bar: icon skipped org\.example\.webpapp not-image/);
+	assert.doesNotMatch(logged, /webpapp not-image/);
 	assert.match(logged, /bar: icon skipped org\.example\.gifapp not-image/);
 	assert.doesNotMatch(logged, /jpgapp not-image/);
 });
