@@ -748,8 +748,11 @@ test('syncBar: the run lock stays in data/, and only a lock that is not this scr
 		const long = join(base, 'long');
 		mkdirSync(join(long, 'data'), {recursive: true});
 		writeFileSync(join(long, 'data', 'sig'), 'old\n');
-		plant(long, scriptPid.pid, {up: nowUp - 601});
-		assert.equal(runSync(long, {sig: 'lng', json, icons, roots: app}), 'written');
+		// A runner up for less than 601s cannot store "601s ago" as a real uptime (it would be negative, and a
+		// non-numeric start is not a ceiling). Give this run a current uptime 601s past a positive start.
+		plant(long, scriptPid.pid, {up: 1000});
+		const longHook = 'read () { if [ "$1" = up ]; then up=1601; return 0; fi; command read "$@"; }\n';
+		assert.equal(runSync(long, {sig: 'lng', json, icons, roots: app, hook: longHook}), 'written');
 		assert.equal(read(join(long, 'data', 'sig')), 'lng\n');
 		const binCm = execFileSync('sh', ['-c', `tr '\\0' ' ' < /proc/${binPid.pid}/cmdline`], {encoding: 'utf8'});
 		assert.match(binCm, /^\/bin\/sh -c # lumen-bar-sync/);
