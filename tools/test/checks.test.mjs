@@ -4,7 +4,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync} from 'node:fs';
+import {chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {createRequire} from 'node:module';
@@ -178,14 +178,22 @@ const read = (p) => { try { return readFileSync(p, 'utf8'); } catch { return nul
 const b64 = (obj) => Buffer.from(JSON.stringify(obj), 'utf8').toString('base64');
 
 /** runs the link-safe bar write in `dir`. `roots`, when set, is treated as an app-folder root so an icon under it can be copied. */
-function runSync (dir, {sig = 'abc', json = {v: 1, title: 'a "b"'}, icons = [], hook = '', roots = null, full = false} = {}) {
+function runSync (dir, {sig = 'abc', json = {v: 1, title: 'a "b"'}, icons = [], hook = '', roots = null, full = false, lock = null} = {}) {
 	let script = syncBarShell(dir, sig, b64(json), icons);
 	// every icon's resolvedPath embeds the app-root list; one replace would only retarget the first icon
 	if (roots) script = script.split(APP_ROOTS_CASE).join(roots + '/*');
+	// the lock lives in /tmp on the TV. each run gets its own directory so tests do not share one.
+	const lockRoot = lock || mkdtempSync(join(tmpdir(), 'bar-lock-'));
+	const token = "lr='/tmp'";
+	if (!script.includes(token)) throw new Error('lock root missing');
+	script = script.split(token).join("lr='" + lockRoot + "'");
 	const out = execFileSync('sh', ['-c', hook + script], {encoding: 'utf8'}).replace(/\s+$/, '');
 	// skip lines come before the status word
 	return full ? out : (out.split('\n').pop() || '').trim();
 }
+const lockDir = (root, bar) => join(root, 'lumen-bar.' + bar.split('/').pop() + '.lock');
+const gone = (p) => { try { lstatSync(p); return false; } catch { return true; } };
+const bootNow = () => execFileSync('sh', ['-c', 'cat /proc/sys/kernel/random/boot_id'], {encoding: 'utf8'}).trim();
 
 test('syncBar: a reply that is not exactly one status word is never a successful write', () => {
 	for (const s of ['written', 'written\n', 'noise\nwritten', 'skip netflix unresolved\nwritten']) assert.equal(syncBarResult(s), 'written');
@@ -318,7 +326,10 @@ test('syncBar: a busybox without id takes the writer as root, as the watcher doe
 	const theirs = mkdtempSync(join(tmpdir(), 'sync-theirs-'));
 	mkdirSync(join(theirs, 'data'));
 	assert.equal(runSync(theirs, {hook: 'stat () { case "$*" in *%u*data) echo 4242 ;; *) command stat "$@" ;; esac; }\n'}), 'refused');
-	assert.match(readFileSync(new URL('../../app/src/app.tsx', import.meta.url), 'utf8'), /r === 'refused'\) logError\('bar'/);
+	const appSrc = readFileSync(new URL('../../app/src/app.tsx', import.meta.url), 'utf8');
+	assert.match(appSrc, /r === 'refused'\) logError\('bar'/);
+	assert.match(appSrc, /not written: busy/);
+	assert.match(appSrc, /clearBarSeen\(\)/);
 });
 
 test('syncBar: a data or icons folder that is not ours is left alone, and a link swapped in at mkdir is not entered', () => {
@@ -654,53 +665,123 @@ test('syncBar: a folder is a miss, a link is signed without readlink, and a fail
 	assert.equal(JSON.parse(read(join(moveBar, 'data', 'bar.json'))).apps.c.icon, 'data/icons/c.png?mov');
 });
 
-test('syncBar: a live lock answers busy and signs nothing, and a stale lock is taken over', () => {
+test('syncBar: the run lock is in /tmp, a live one is busy, and a stale one is taken over', () => {
+	const script = syncBarShell('/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen.bar', 'abc', b64({v: 1}), []);
+	assert.match(script, /lr='\/tmp'/);
+	assert.match(script, /lumen-bar\.\$base\.lock/);
+	assert.match(script, /rm -f -- "\$lk\/p" "\$lk\/b"/);
+	assert.doesNotMatch(script, /rm -f -- "\$lr/);
+	assert.doesNotMatch(script, /rm -[a-z]*r/);
 	const dead = '99999999';
 	assert.throws(() => execFileSync('sh', ['-c', 'kill -0 ' + dead], {stdio: 'ignore'}));
+	const boot = bootNow();
 	const base = mkdtempSync(join(tmpdir(), 'sync-lock-'));
 	const app = join(base, 'app');
-	const held = join(base, 'held');
 	mkdirSync(app);
-	mkdirSync(join(held, 'data'), {recursive: true});
 	writeFileSync(join(app, 'icon.png'), png('ok'));
-	mkdirSync(join(held, 'data', '.lock'));
-	writeFileSync(join(held, 'data', '.lock', 'p'), String(process.pid) + '\n');
-	writeFileSync(join(held, 'data', 'sig'), 'old\n');
-	writeFileSync(join(held, 'data', 'bar.json'), '{"keep":true}\n');
 	const icons = [{src: join(app, 'icon.png'), name: 'a.png', id: 'a'}];
 	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
-	assert.equal(runSync(held, {sig: 'abc', json, icons, roots: app}), 'busy');
-	assert.equal(read(join(held, 'data', 'sig')), 'old\n');
-	assert.equal(read(join(held, 'data', 'bar.json')), '{"keep":true}\n');
-	assert.equal(read(join(held, 'data', '.lock', 'p')), String(process.pid) + '\n');
-	const fresh = join(base, 'fresh');
-	mkdirSync(join(fresh, 'data', '.lock'), {recursive: true});
-	writeFileSync(join(fresh, 'data', '.lock', 'p'), String(process.pid) + '\n');
-	assert.equal(runSync(fresh, {sig: 'abc', json, icons, roots: app}), 'busy');
-	assert.equal(read(join(fresh, 'data', 'sig')), null);
-	assert.equal(read(join(fresh, 'data', 'bar.json')), null);
-	const stale = join(base, 'stale');
-	mkdirSync(join(stale, 'data', 'icons'), {recursive: true});
-	mkdirSync(join(stale, 'data', '.lock'));
-	writeFileSync(join(stale, 'data', '.lock', 'p'), dead + '\n');
-	writeFileSync(join(stale, 'data', '.bar.' + dead), 'drop-bar');
-	writeFileSync(join(stale, 'data', '.sig.' + dead), 'drop-sig');
-	writeFileSync(join(stale, 'data', '.bar.' + process.pid), 'live-bar');
-	writeFileSync(join(stale, 'data', '.sig.' + process.pid), 'live-sig');
-	writeFileSync(join(stale, 'data', 'icons', '.n.' + process.pid), 'live-scratch');
-	writeFileSync(join(stale, 'data', 'icons', '.png.' + dead), 'dead-scratch');
-	assert.equal(runSync(stale, {sig: 'stl', json, icons, roots: app}), 'written');
-	assert.equal(read(join(stale, 'data', 'sig')), 'stl\n');
-	assert.equal(JSON.parse(read(join(stale, 'data', 'bar.json'))).apps.a.icon, 'data/icons/a.png?stl');
-	let lockGone = false;
-	try { lstatSync(join(stale, 'data', '.lock')); } catch { lockGone = true; }
-	assert.equal(lockGone, true);
-	assert.equal(read(join(stale, 'data', '.bar.' + dead)), null);
-	assert.equal(read(join(stale, 'data', '.sig.' + dead)), null);
-	assert.equal(read(join(stale, 'data', '.bar.' + process.pid)), 'live-bar');
-	assert.equal(read(join(stale, 'data', '.sig.' + process.pid)), 'live-sig');
-	assert.equal(read(join(stale, 'data', 'icons', '.n.' + process.pid)), 'live-scratch');
-	assert.equal(read(join(stale, 'data', 'icons', '.png.' + dead)), null);
+	const plant = (bar, pid, {boot: b = boot, age = 0, empty = false} = {}) => {
+		const dir = lockDir(bar.lock, bar.dir);
+		mkdirSync(dir);
+		writeFileSync(join(dir, 'p'), empty ? '' : String(pid) + '\n');
+		writeFileSync(join(dir, 'b'), b + '\n');
+		if (age) { const t = Date.now() / 1000 - age; utimesSync(dir, t, t); }
+		return dir;
+	};
+	const held = {dir: join(base, 'held'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(join(held.dir, 'data'), {recursive: true});
+	writeFileSync(join(held.dir, 'data', 'sig'), 'old\n');
+	writeFileSync(join(held.dir, 'data', 'bar.json'), '{"keep":true}\n');
+	const heldLock = plant(held, process.pid);
+	assert.equal(runSync(held.dir, {sig: 'abc', json, icons, roots: app, lock: held.lock}), 'busy');
+	assert.equal(read(join(held.dir, 'data', 'sig')), 'old\n');
+	assert.equal(read(join(held.dir, 'data', 'bar.json')), '{"keep":true}\n');
+	assert.equal(read(join(heldLock, 'p')), String(process.pid) + '\n');
+	const fresh = {dir: join(base, 'fresh'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(fresh.dir);
+	plant(fresh, process.pid);
+	assert.equal(runSync(fresh.dir, {sig: 'abc', json, icons, roots: app, lock: fresh.lock}), 'busy');
+	assert.equal(read(join(fresh.dir, 'data', 'sig')), null);
+	const empty = {dir: join(base, 'empty'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(join(empty.dir, 'data'), {recursive: true});
+	writeFileSync(join(empty.dir, 'data', 'sig'), 'old\n');
+	const emptyLock = plant(empty, '', {empty: true});
+	assert.equal(runSync(empty.dir, {sig: 'abc', json, icons, roots: app, lock: empty.lock}), 'busy');
+	assert.equal(read(join(empty.dir, 'data', 'sig')), 'old\n');
+	assert.equal(read(join(emptyLock, 'p')), '');
+	const own = {dir: join(base, 'own'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(join(own.dir, 'data'), {recursive: true});
+	writeFileSync(join(own.dir, 'data', 'sig'), 'old\n');
+	const ownLock = lockDir(own.lock, own.dir);
+	const ownHook = `mkdir -p '${ownLock}'\nprintf '%s\\n' "$$" > '${ownLock}/p'\ncat /proc/sys/kernel/random/boot_id > '${ownLock}/b'\n`;
+	assert.equal(runSync(own.dir, {sig: 'own', json, icons, roots: app, lock: own.lock, hook: ownHook}), 'written');
+	assert.equal(read(join(own.dir, 'data', 'sig')), 'own\n');
+	assert.equal(gone(ownLock), true);
+	const aged = {dir: join(base, 'aged'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(join(aged.dir, 'data'), {recursive: true});
+	writeFileSync(join(aged.dir, 'data', 'sig'), 'old\n');
+	plant(aged, process.pid, {age: 121});
+	assert.equal(runSync(aged.dir, {sig: 'age', json, icons, roots: app, lock: aged.lock}), 'written');
+	assert.equal(read(join(aged.dir, 'data', 'sig')), 'age\n');
+	assert.equal(gone(lockDir(aged.lock, aged.dir)), true);
+	const otherBoot = {dir: join(base, 'boot'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(join(otherBoot.dir, 'data'), {recursive: true});
+	writeFileSync(join(otherBoot.dir, 'data', 'sig'), 'old\n');
+	plant(otherBoot, process.pid, {boot: '00000000-0000-0000-0000-000000000000'});
+	assert.equal(runSync(otherBoot.dir, {sig: 'bot', json, icons, roots: app, lock: otherBoot.lock}), 'written');
+	assert.equal(read(join(otherBoot.dir, 'data', 'sig')), 'bot\n');
+	const asFile = {dir: join(base, 'file'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(asFile.dir);
+	writeFileSync(lockDir(asFile.lock, asFile.dir), 'not-a-lock');
+	assert.equal(runSync(asFile.dir, {sig: 'fil', json, icons, roots: app, lock: asFile.lock}), 'written');
+	assert.equal(gone(lockDir(asFile.lock, asFile.dir)), true);
+	const asLink = {dir: join(base, 'link'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(asLink.dir);
+	const secret = join(base, 'secret');
+	writeFileSync(secret, 'secret');
+	chmodSync(secret, 0o600);
+	symlinkSync(secret, lockDir(asLink.lock, asLink.dir));
+	assert.equal(runSync(asLink.dir, {sig: 'lnk', json, icons, roots: app, lock: asLink.lock}), 'written');
+	assert.equal(read(secret), 'secret');
+	assert.equal(modeOf(secret), '600');
+	assert.equal(gone(lockDir(asLink.lock, asLink.dir)), true);
+	const stale = {dir: join(base, 'stale'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(join(stale.dir, 'data', 'icons'), {recursive: true});
+	plant(stale, dead);
+	writeFileSync(join(stale.dir, 'data', '.bar.' + dead), 'drop-bar');
+	writeFileSync(join(stale.dir, 'data', '.sig.' + dead), 'drop-sig');
+	writeFileSync(join(stale.dir, 'data', '.bar.' + process.pid), 'live-bar');
+	writeFileSync(join(stale.dir, 'data', '.sig.' + process.pid), 'live-sig');
+	writeFileSync(join(stale.dir, 'data', 'icons', '.n.' + process.pid), 'live-scratch');
+	writeFileSync(join(stale.dir, 'data', 'icons', '.png.' + dead), 'dead-scratch');
+	assert.equal(runSync(stale.dir, {sig: 'stl', json, icons, roots: app, lock: stale.lock}), 'written');
+	assert.equal(read(join(stale.dir, 'data', 'sig')), 'stl\n');
+	assert.equal(gone(lockDir(stale.lock, stale.dir)), true);
+	assert.equal(read(join(stale.dir, 'data', '.bar.' + dead)), null);
+	assert.equal(read(join(stale.dir, 'data', '.sig.' + dead)), null);
+	assert.equal(read(join(stale.dir, 'data', '.bar.' + process.pid)), 'live-bar');
+	assert.equal(read(join(stale.dir, 'data', '.sig.' + process.pid)), 'live-sig');
+	assert.equal(read(join(stale.dir, 'data', 'icons', '.n.' + process.pid)), 'live-scratch');
+	assert.equal(read(join(stale.dir, 'data', 'icons', '.png.' + dead)), null);
+	const refused = {dir: join(base, 'refused'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(join(refused.dir, 'data', 'bar.json'), {recursive: true});
+	writeFileSync(join(refused.dir, 'data', 'bar.json', 'keep'), 'keep');
+	assert.equal(runSync(refused.dir, {lock: refused.lock}), 'refused');
+	assert.equal(read(join(refused.dir, 'data', 'bar.json', 'keep')), 'keep');
+	assert.equal(gone(lockDir(refused.lock, refused.dir)), true);
+	const retry = {dir: join(base, 'retry'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(retry.dir);
+	assert.equal(runSync(retry.dir, {sig: 'rty', json, icons, roots: app, lock: retry.lock, hook: 'cp () { return 1; }\n'}), 'written');
+	assert.equal(read(join(retry.dir, 'data', 'sig')), null);
+	assert.equal(gone(lockDir(retry.lock, retry.dir)), true);
+	const broke = {dir: join(base, 'broke'), lock: mkdtempSync(join(tmpdir(), 'bar-lock-'))};
+	mkdirSync(broke.dir);
+	assert.equal(runSync(broke.dir, {sig: 'brk', json, icons, roots: app, lock: broke.lock, hook: 'head () { echo 1; }\n'}), 'busy');
+	assert.equal(read(join(broke.dir, 'data', 'sig')), null);
+	const brokeLock = lockDir(broke.lock, broke.dir);
+	assert.equal(lstatSync(brokeLock).isDirectory(), true);
+	assert.match(read(join(brokeLock, 'p')), /^\d+\n$/);
 });
 
 test('syncBar: a skipped copy removes the old signature, so going back to that list is not "same" with the skipped bar left in place', () => {

@@ -243,7 +243,7 @@ const rootCode = (await build({
 		b.onLoad({filter: /.*/, namespace: 'stub2'}, (a) => ({contents: s[a.path], loader: 'js'}));
 	}}]
 })).outputFiles[0].text;
-const {setSetting, syncBar, barSig, BAR_EPOCH} = await import('data:text/javascript,' + encodeURIComponent(rootCode));
+const {setSetting, syncBar, barSig, BAR_EPOCH, clearBarSeen} = await import('data:text/javascript,' + encodeURIComponent(rootCode));
 
 test('a setting counts as set only on "returnValue": true; a refusal (with or without the space) or no answer is an error', async () => {
 	for (const ok of ['{"returnValue":true}', '{"returnValue": true, "method": "setSystemSettings"}']) { T.answer = ok; await setSetting('backlight', '80'); }
@@ -390,4 +390,19 @@ test('syncBar skips a second call with the signature already written or left as 
 	assert.equal(await again, 'same');
 	assert.equal(T.calls.length, 5);
 	T.gate = null;
+});
+
+test('syncBar runs the same signature again after Lumen comes to the front', async () => {
+	T.answer = 'written';
+	T.calls = [];
+	T.gate = null;
+	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
+	const app = {id: 'netflix', title: 'Netflix', file: '/media/cryptofs/apps/usr/palm/applications/netflix/icon.png'};
+	assert.equal(await syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'fr1'), 'written');
+	assert.equal(T.calls.length, 1);
+	assert.equal(await syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'fr1'), 'same');
+	assert.equal(T.calls.length, 1);
+	clearBarSeen();
+	assert.equal(await syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'fr1'), 'written');
+	assert.equal(T.calls.length, 2);
 });

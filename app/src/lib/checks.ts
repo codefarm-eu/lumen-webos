@@ -75,15 +75,16 @@ export function syncBarResult (stdout: string): 'same' | 'written' | 'missing' |
  *  file in place and the field keeps naming it; with no previous file the field is `"icon":null` (bar.js treats a null icon as none). The match
  *  is the icon field, so a title with the same text is left alone, key order does not matter, and one name is not a prefix of another. A copy
  *  that did not happen prints `skip <id> <reason>` (`unresolved`, `outside`, `copy`, `toobig`, `not-image`). A missing file or a folder at the
- *  icon path (`unresolved`) is signed `<sig>-r` the first time. The retry is the next launch of Lumen: this page does not run the shell
- *  again for a signature it has already answered `written` or `same` (lib/root.ts syncBar), so a second sync in the same start does not
- *  turn `<sig>-r` into `<sig>-p`. On that next launch, a file that is still missing is signed `<sig>-p` and one that has appeared is copied.
- *  A copy that failed while writing (`copy`) is not signed, so the next launch tries it again. A path that resolves outside the app folders
- *  (`outside`), a file that is too big, or a file that is not an image is signed `<sig>-p` at once, so the same list then answers `same`.
- *  A different list still rewrites. The whole run holds `data/.lock` (mkdir, with this shell's pid inside). A lock whose pid is still alive
- *  (`kill -0`) answers `busy` and signs nothing, so the next sync tries again. A lock whose pid is dead is removed and taken. Scratch files
- *  are named with the shell's pid. The icons cleanup leaves another live pid's scratch files, and a dead pid's `data/.bar.<pid>` and
- *  `data/.sig.<pid>` are removed.
+ *  icon path (`unresolved`) is signed `<sig>-r` the first time. The retry is the next time this script runs: the next launch, or the next
+ *  time Lumen comes to the front (that forgets a signature this page already answered `written` or `same`). A second sync during the same
+ *  stay does not run the shell, so it does not turn `<sig>-r` into `<sig>-p`. When the script does run again, a file that is still missing
+ *  is signed `<sig>-p` and one that has appeared is copied. A copy that failed while writing (`copy`) is not signed, so the next run tries
+ *  it again. A path that resolves outside the app folders (`outside`), a file that is too big, or a file that is not an image is signed
+ *  `<sig>-p` at once, so the same list then answers `same`. A different list still rewrites. The run holds
+ *  `/tmp/lumen-bar.<bar id>.lock` (mkdir, with this shell's pid and the boot id inside). `/tmp` is cleared on boot. A lock is taken over
+ *  when its boot id differs, it names this shell's pid, its pid is dead, or it is older than 120s. An empty pid counts as live until that
+ *  age. A live lock answers `busy` and signs nothing. Scratch files are named with the shell's pid. The icons cleanup leaves another live
+ *  pid's scratch files, and a dead pid's `data/.bar.<pid>` and `data/.sig.<pid>` are removed.
  *  The bar's folder is writable by others, so nothing is written by a full path (a redirect and a recursive remove both follow a link).
  *  The bar folder and then data/ are entered with cd -P and must be that directory (pwd -P); a parent that is a link is fine, the bar
  *  folder itself being a link is not. A data/ or data/icons/ that is not this user's is left as it is. A link at data, icons, bar.json
@@ -170,34 +171,37 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'cd -P data 2>/dev/null && [ "$(pwd -P)" = "$here/data" ] || { echo refused; exit 0; }',
 		'[ "$(stat -c %u . 2>/dev/null)" = "$me" ] || { echo refused; exit 0; }',
 		'chmod 755 . 2>/dev/null || { echo refused; exit 0; }',
-		// one run at a time. mkdir is the lock; the pid inside says who holds it. a live pid answers busy and signs nothing.
-		// a dead pid, or a lock that is not a directory of ours, is cleared and taken. the trap drops the lock on the way out,
-		// and only when it still holds our pid, including after cd into icons/.
-		'lockdir=$(pwd -P)',
-		'if mkdir .lock 2>/dev/null; then',
-		'printf \'%s\\n\' "$t" > .lock/p || { rm -f -- .lock/p; rmdir .lock 2>/dev/null; echo refused; exit 0; }',
-		'else',
-		'if [ -L .lock ] || { [ -e .lock ] && [ ! -d .lock ]; }; then',
-		'rm -f -- .lock',
-		'mkdir .lock 2>/dev/null || { echo busy; exit 0; }',
-		'printf \'%s\\n\' "$t" > .lock/p || { rm -f -- .lock/p; rmdir .lock 2>/dev/null; echo refused; exit 0; }',
-		'elif [ -d .lock ] && [ ! -L .lock ]; then',
-		'lp=',
-		'if [ -f .lock/p ] && [ ! -L .lock/p ]; then lp=$(cat .lock/p 2>/dev/null); fi',
-		'case "$lp" in \'\'|*[!0-9]*) ;; *) kill -0 "$lp" 2>/dev/null && { echo busy; exit 0; } ;; esac',
-		'lp2=',
-		'if [ -f .lock/p ] && [ ! -L .lock/p ]; then lp2=$(cat .lock/p 2>/dev/null); fi',
-		'[ "$lp2" = "$lp" ] || { echo busy; exit 0; }',
-		'case "$lp2" in \'\'|*[!0-9]*) ;; *) kill -0 "$lp2" 2>/dev/null && { echo busy; exit 0; } ;; esac',
-		'if [ -L .lock/p ] || [ -f .lock/p ]; then rm -f -- .lock/p; fi',
-		'if [ -e .lock/p ]; then echo busy; exit 0; fi',
-		'rmdir .lock 2>/dev/null || { echo busy; exit 0; }',
-		'mkdir .lock 2>/dev/null || { echo busy; exit 0; }',
-		'printf \'%s\\n\' "$t" > .lock/p || { rm -f -- .lock/p; rmdir .lock 2>/dev/null; echo refused; exit 0; }',
-		'else echo busy; exit 0; fi',
+		// the lock is not on the bar's flash. /tmp is cleared on boot; the boot id covers a /tmp that is not.
+		// released by cd and a relative name, like every other remove in this script.
+		'lr=\'/tmp\'',
+		'lk=lumen-bar.$base.lock',
+		'boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)',
+		'datahere=$(pwd -P)',
+		'cd -P "$lr" 2>/dev/null && [ "$(pwd -P)" = "$lr" ] || { echo refused; exit 0; }',
+		'held=0',
+		'if mkdir "$lk" 2>/dev/null; then held=1',
+		'elif [ -L "$lk" ] || { [ -e "$lk" ] && [ ! -d "$lk" ]; }; then rm -f -- "$lk"; mkdir "$lk" 2>/dev/null && held=1',
+		'elif [ -d "$lk" ] && [ ! -L "$lk" ]; then',
+		'stale=0',
+		'now=$(date +%s 2>/dev/null); old=$(stat -c %Y "$lk" 2>/dev/null)',
+		'case "$now" in \'\'|*[!0-9]*) ;; *) case "$old" in \'\'|*[!0-9]*) ;; *) [ "$((now - old))" -gt 120 ] && stale=1 ;; esac ;; esac',
+		'ob=; if [ -f "$lk/b" ] && [ ! -L "$lk/b" ]; then ob=$(cat "$lk/b" 2>/dev/null); fi',
+		'if [ -n "$boot" ] && [ -n "$ob" ] && [ "$boot" != "$ob" ]; then stale=1; fi',
+		'lp=; if [ -f "$lk/p" ] && [ ! -L "$lk/p" ]; then lp=$(head -n 1 "$lk/p" 2>/dev/null); fi',
+		'if [ "$lp" = "$t" ]; then stale=1; else case "$lp" in \'\'|*[!0-9]*) ;; *) kill -0 "$lp" 2>/dev/null || stale=1 ;; esac; fi',
+		'if [ "$stale" = 1 ]; then',
+		'if [ -L "$lk/p" ] || [ -f "$lk/p" ]; then rm -f -- "$lk/p"; fi',
+		'if [ -L "$lk/b" ] || [ -f "$lk/b" ]; then rm -f -- "$lk/b"; fi',
+		'if [ ! -e "$lk/p" ] && [ ! -e "$lk/b" ] && rmdir "$lk" 2>/dev/null && mkdir "$lk" 2>/dev/null; then held=1; fi',
 		'fi',
-		'[ -f .lock/p ] && [ ! -L .lock/p ] && [ "$(cat .lock/p 2>/dev/null)" = "$t" ] || { rm -f -- .lock/p; rmdir .lock 2>/dev/null; echo refused; exit 0; }',
-		'trap \'if [ -f "$lockdir/.lock/p" ] && [ ! -L "$lockdir/.lock/p" ] && [ "$(cat "$lockdir/.lock/p" 2>/dev/null)" = "$t" ]; then rm -f -- "$lockdir/.lock/p"; rmdir "$lockdir/.lock" 2>/dev/null; fi\' EXIT',
+		'fi',
+		'if [ "$held" != 1 ]; then echo busy; exit 0; fi',
+		'printf \'%s\\n\' "$t" > "$lk/p" || { echo busy; exit 0; }',
+		'printf \'%s\\n\' "$boot" > "$lk/b" || { echo busy; exit 0; }',
+		'vp=; [ -f "$lk/p" ] && [ ! -L "$lk/p" ] && vp=$(head -n 1 "$lk/p" 2>/dev/null)',
+		'[ "$vp" = "$t" ] && [ -f "$lk/b" ] && [ ! -L "$lk/b" ] || { echo busy; exit 0; }',
+		'trap \'cd -P "$lr" 2>/dev/null && [ "$(pwd -P)" = "$lr" ] && [ -f "$lk/p" ] && [ ! -L "$lk/p" ] && vp=$(head -n 1 "$lk/p" 2>/dev/null) && [ "$vp" = "$t" ] && rm -f -- "$lk/p" "$lk/b" && rmdir "$lk"\' EXIT',
+		'cd -P "$datahere" 2>/dev/null && [ "$(pwd -P)" = "$datahere" ] || { echo refused; exit 0; }',
 		// a dead pid's bar and sig temps. a live pid's are left, and ours are the names this run is about to use.
 		'for f in .bar.[0-9]* .sig.[0-9]*; do',
 		'case "$f" in .bar.[0-9]*|.sig.[0-9]*) ;; *) continue ;; esac',
@@ -249,9 +253,8 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'[ -f .bar.$t ] && [ ! -L .bar.$t ] || { rm -f -- .bar.$t; echo refused; exit 0; }',
 		'chmod 644 .bar.$t || { echo refused; exit 0; }',
 		'if [ -L bar.json ]; then rm -f -- bar.json; fi',
-		// a copy that failed while writing is tried again: the signature is removed, so the next launch is not "same".
+		// a copy that failed while writing is tried again: the signature is removed, so the next run is not "same".
 		// a missing file is "<sig>-r" the first time and "<sig>-p" when this script runs again and it is still missing.
-		// that next run is the next launch: this page does not call again for a signature it already wrote or matched.
 		// outside, too big and not an image are "<sig>-p" at once. busy (a live lock) never reaches here, so it does not sign.
 		// the old signature is removed before either move, so a failed move of sig cannot leave it beside a new bar.json.
 		'if [ "$retry" = 1 ]; then rm -f -- .sig.$t; rm -f -- sig; mv -f -- .bar.$t bar.json && echo written || echo refused; exit 0; fi',

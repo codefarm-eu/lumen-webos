@@ -209,11 +209,14 @@ The same settings are used by `com.sammysco.avoverlay`.
   a PNG, JPEG or WebP of at most 1 MiB, and still under the app folders after `readlink -f`. `bar.json` names an
   icon when that copy is a plain file. A failed re-copy leaves the previous good file in place and keeps naming it; with no previous file the
   field is `null`. A missing file, or a folder where the icon should be, is signed as the signature plus `-r` the first time. The one retry
-  is the next launch of Lumen (a new page). If it is still missing then, it is signed plus `-p`, so the same list answers `same`; if the file
-  has appeared, it is copied. A second sync in the same page, with the same signature, does not run the shell, so it does not turn `-r` into
-  `-p`. A copy that failed while writing is not signed, so the next launch tries it again. Two shells can overlap when a call times out or
-  Lumen reloads while the first shell is still running: the run holds `data/.lock` with its pid, and the other shell answers `busy` and does
-  not sign, so the next sync tries again. A lock whose pid is dead is taken over. A path that resolves outside the app folders, a file that
+  is the next time the shell runs: the next launch, or the next time Lumen comes to the front. If it is still missing then, it is signed plus `-p`, so the same list answers `same`; if the file
+  has appeared, it is copied. A second sync in the same stay, with the same signature, does not run the shell, so it does not turn `-r` into
+  `-p`. Coming back to Lumen forgets that signature, so the shell runs again and a bar update that emptied `data/` is written. A copy that
+  failed while writing is not signed, so the next run tries it again. Two shells can overlap when a call times out or Lumen reloads while the
+  first shell is still running. The run holds `/tmp/lumen-bar.<bar id>.lock` (webOS `/tmp` is cleared on boot), with its pid and
+  `/proc/sys/kernel/random/boot_id`. It is removed by `cd -P` into `/tmp` and a relative name, the same way the bar folder is written. The other shell answers `busy` and does not sign. Lumen tries a busy write three times, 2 seconds apart,
+  and logs `busy`. A lock is taken over when its pid is dead, when it names this shell's own pid, when its boot id differs, or when it is
+  older than 120 seconds, even if that pid is still alive. An empty pid counts as live until that age. A path that resolves outside the app folders, a file that
   is too big, or a file that is not a real image is signed plus `-p` at once. A changed list still rewrites. An icon that is not a PNG, JPEG or WebP is not
   sent to the copy. The signature includes
   `BAR_EPOCH`, so an update rewrites a bar left by 1.0.9044. It is
@@ -256,8 +259,8 @@ sent through networkinput:
 
 - **Recent tiles need an icon (1.0.9013):** a recent app with no icon file in `data/icons/` (TV Settings, `com.palm.app.settings`, and other
   system apps Lumen draws with its own glyph) is left out, as in the first hand-installed test build, where the bar showed the dock plus
-  Live TV only. A missing file is tried once more on the next launch of Lumen, then left off the recent row. A second sync in the
-  same launch does not use that retry. A copy that fails while writing is tried again on the next launch. A path
+  Live TV only. A missing file is tried once more the next time the shell runs (the next launch, or the next time Lumen comes to the front), then left off the recent row. A second sync in the
+  same stay does not use that retry. A copy that fails while writing is tried again on the next run. A path
   outside the app folders, a file that is too big, or a file that is not a real image stays off the recent row, and that result is signed so it
   is not retried on every start. A failed re-copy of an icon that was already there keeps the
   previous file, so the recent app stays. 1.0.9007-1.0.9012 drew TV Settings as a grey "T" tile. The bar's code and CSS were otherwise byte-identical between the

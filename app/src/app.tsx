@@ -36,7 +36,7 @@ import {AUTO_PLACE, POSTCODE_PLACE, findPlace, peekWeather, readWeather, type We
 import {TextPrompt} from './components/TextPrompt';
 import {useLiveTv} from './hooks/useLiveTv';
 import {channelColor, nowNextAt, rowChannels, type Channel} from './lib/livetv';
-import {barSig, openChannel, runningApps, setHomeBar, setHomeTakeover, syncBar, uninstallApp} from './lib/root';
+import {barSig, clearBarSeen, openChannel, runningApps, setHomeBar, setHomeTakeover, syncBar, uninstallApp} from './lib/root';
 
 import {bootMark, logError, navMark} from './lib/log';
 import {isDark, LANGS, setClockMode, setLang} from './lib/i18n';
@@ -117,6 +117,8 @@ export function App () {
 	const toastTimer = useRef(0);
 	// a fresh install first looks for the settings backup on the TV (lib/backup.ts); nothing is seeded until that has answered
 	const [restoring, setRestoring] = useState(() => !hasSavedConfig());
+	// bumped when Lumen comes to the front, so the bar write runs again after a bar update that emptied data/
+	const [barFront, setBarFront] = useState(0);
 	const [focusRow, setFocusRow] = useState<{id: string; seq: number} | undefined>(undefined);
 	// Settings > Home Screen > Live TV (off by default): off, the hook makes no Luna call and reads no cache (hooks/useLiveTv.ts)
 	const live = useLiveTv(config.liveTv, config.liveTv && screen === 'guide', config.liveChannels);
@@ -152,16 +154,17 @@ export function App () {
 	// launch parameters: {"view":"recent"} opens on the app grid (it opened the Recent row, which has gone: every app is in the grid)
 	useEffect(() => {
 		let seq = 0;
-		const apply = (p: LaunchParams) => {
+		const apply = (p: LaunchParams, front: boolean) => {
 			const a = launchAction(p, configRef.current, screenRef.current);
 			if (a.focusDock) setFocusRow({id: ROW.dock, seq: ++seq});
 			if (a.back !== undefined) ambientBack.current = a.back;
 			if (a.screen === 'ambient') ambientOpening.current = null;
 			if (a.screen) setScreen(a.screen as Screen);
 			if (a.closeControls) setControls(false);
+			if (front) { clearBarSeen(); setBarFront((n) => n + 1); }
 		};
-		apply(startParams());
-		return onRelaunch(apply);
+		apply(startParams(), false);
+		return onRelaunch((p) => apply(p, true));
 	}, []);
 
 	// Start in remote (5-way) mode: hide the Magic Remote pointer whenever we come to the
@@ -340,7 +343,7 @@ export function App () {
 	useEffect(() => { setAmbientShowing(screen === 'ambient'); }, [screen === 'ambient']);
 	// the watcher's flag files again each time Lumen comes to the front, in case a write was lost (lib/flagSync.ts)
 	useEffect(() => {
-		const onVisibility = () => { if (!document.hidden) resyncFlags(); };
+		const onVisibility = () => { if (document.hidden) return; resyncFlags(); clearBarSeen(); setBarFront((n) => n + 1); };
 		document.addEventListener('visibilitychange', onVisibility);
 		return () => document.removeEventListener('visibilitychange', onVisibility);
 	}, []);
@@ -426,7 +429,11 @@ export function App () {
 		const dock = homeTiles.slice(0, config.firstRow).map((t) => t.key).filter((k) => real.some((a) => a.id === k));
 		const t = TILES_FOR[config.firstRow] || TILES_FOR[6];
 		const style = {size: t.size, height: t.height, gap: t.gap, perRow: config.firstRow, scale: BAR_FOCUS_SCALE[config.focusStrength] || BAR_FOCUS_SCALE.normal};
-		const id = window.setTimeout(() => {
+		let stopped = false;
+		let wait = 0;
+		let n = 0;
+		const run = () => {
+			if (stopped) return;
 			const pictures = iconPathByPicture();
 			const list = real.map((a) => {
 				const chosen = barIcon(a, dir, pictures);
@@ -434,15 +441,21 @@ export function App () {
 			});
 			syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, barSig(dock, config.recentIds, list, style), style)
 				.then((r) => {
+					if (stopped) return;
 					if (r === 'written') bootMark('bar: data written');
 					// the bar then shows no icons or titles; lumen.log says why (a data/ or data/icons/ in the bar's folder that is not root's,
 					// or a folder where a file should be: lib/checks.ts syncBarShell)
 					else if (r === 'refused') logError('bar', 'data/ not written: refused (a folder in the bar\'s data/ that is not root\'s own, or a folder where a file should be)');
+					else if (r === 'busy') {
+						logError('bar', 'data/ not written: busy (another icon write is still running)');
+						if (n < 2) { n += 1; wait = window.setTimeout(run, 2000); }
+					}
 				})
 				.catch(() => undefined);
-		}, 3000);
-		return () => window.clearTimeout(id);
-	}, [config.homeBar, allApps, homeTiles, config.firstRow, config.recentIds, config.focusStrength]);
+		};
+		const id = window.setTimeout(run, 3000);
+		return () => { stopped = true; window.clearTimeout(id); window.clearTimeout(wait); };
+	}, [config.homeBar, allApps, homeTiles, config.firstRow, config.recentIds, config.focusStrength, barFront]);
 
 	// the first row (in the glass bar) holds config.firstRow apps; the rest make a grid of rows as wide below it, like the tvOS home screen
 	// (the grid rows are 'dock', 'dock:1', 'dock:2'...)

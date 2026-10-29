@@ -384,11 +384,13 @@ export function barSig (dock: string[], recent: string[], list: unknown, style: 
  *  data/wallpapers/ is left alone: it holds the screensaver pictures, which tools/tv/watch.sh bar_pictures copies from Lumen.
  *  The bar's folder is writable by others, so the write is syncBarShell: relative names after cd -P, a temp file then mv, and a data/
  *  or icons/ that is not root's own is refused rather than removed. One write at a time in this page. The last signature answered
- *  `written` or `same` is not sent again, so a second sync in the same start does not spend the one retry of a missing file (`<sig>-r`
- *  becomes `<sig>-p` only on the next launch). A shell that is still running, after this call times out or after a reload, holds
- *  data/.lock and the new shell answers `busy` without signing. */
+ *  `written` or `same` is not sent again, so a second sync in the same stay does not spend the one retry of a missing file.
+ *  Coming to the front clears that memory (clearBarSeen). A shell still running after a timeout or a reload holds
+ *  /tmp/lumen-bar.<id>.lock and the new shell answers `busy` without signing. */
 let barQueue: Promise<unknown> = Promise.resolve();
 let barSeen = '';
+/** Forget the signature this page already wrote. The next sync runs the shell, so a bar update that emptied data/ is noticed. */
+export function clearBarSeen (): void { barSeen = ''; }
 export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused' | 'busy'> {
 	if (!APP_DIR.test(appDir) || !APP_ID.test(lumenId) || !/^[a-z0-9]+$/.test(sig)) return Promise.reject(new Error('refused'));
 	const next = barQueue.then(() => {
