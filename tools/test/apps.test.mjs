@@ -7,7 +7,13 @@ const require = createRequire(new URL('../../app/package.json', import.meta.url)
 const {build} = require('esbuild');
 
 const STUBS = {
-	'../config/catalog': "export const APP_CATALOG = [{id: 'youtube.leanback.v4', title: 'YouTube', icon: 'youtube.leanback.v4.png'}];",
+	'../config/catalog': "export const APP_CATALOG = ["
+		+ "{id: 'youtube.leanback.v4', title: 'YouTube', icon: 'youtube.leanback.v4.png'},"
+		+ "{id: 'netflix', title: 'Netflix', color: '#b1060f'},"
+		+ "{id: 'amazon', title: 'Prime Video', icon: 'amazon.png'},"
+		+ "{id: 'com.webos.app.browser', title: 'Browser', icon: 'com.webos.app.browser.png'},"
+		+ "{id: 'com.webos.app.discovery', title: 'App Store', color: '#a50034'},"
+		+ "{id: 'org.webosbrew.hbchannel', title: 'Homebrew', icon: 'org.webosbrew.hbchannel.png'}];",
 	'../config/constants': "export const APP_ID = 'com.ovsteenb.lumen';",
 	'./luna': 'export const isWebOS = () => true; export const lunaCall = () => Promise.reject(new Error("no"));',
 	'./root': 'export const listLaunchPoints = () => Promise.resolve(JSON.stringify({launchPoints: globalThis.T.points}));'
@@ -36,8 +42,9 @@ globalThis.window = globalThis;
 // icon files never load as files here (as on the C8), so each icon is read as root
 globalThis.Image = function () { const img = this; Object.defineProperty(img, 'src', {set () { setTimeout(() => img.onerror && img.onerror()); }}); };
 globalThis.T = {points: [], rootReads: []};
-const {listApps, iconFile, barIcon, iconPathByPicture, saveAppsCache, cachedApps} = await import('data:text/javascript,' + encodeURIComponent(code));
+const {listApps, iconFile, barIcon, iconPathByPicture, saveAppsCache, cachedApps, sameApps} = await import('data:text/javascript,' + encodeURIComponent(code));
 const cold = await import('data:text/javascript,' + encodeURIComponent(code + '\n/* cold */'));
+const bareMod = await import('data:text/javascript,' + encodeURIComponent(code + '\n/* bare */'));
 const CACHE = 'launcher-icon-cache-v1';
 
 test('icon cache: pruned once against both lists (launch points and system apps), so a second start reads nothing as root', async () => {
@@ -118,6 +125,63 @@ test('bar icon matches the tile: a catalogue icon and an icon-pack icon win over
 	assert.equal(hb.iconUrl, 'iconpack/hb.png');
 	assert.equal(hb.plain, false);
 	assert.deepEqual(barIcon(hb, dir), {file: dir + '/iconpack/hb.png', plain: false});
+});
+
+test('C8 listLaunchPoints: catalogue icons stay Lumen\'s files, and Moonfin, Amazon Music, iPlayer and Netflix use their largeIcon', async () => {
+	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
+	const moon = '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-130.png';
+	const music = '/media/cryptofs/apps/usr/palm/applications/com.theadelab.amclient-lg/largeIcon.png';
+	const iplayer = '/media/cryptofs/apps/usr/palm/applications/bbc.iplayer.3.0/bbc_130x130.png';
+	const netflix = '/media/cryptofs/apps/usr/palm/applications/netflix/LARGE_APP_ICON.png';
+	T.points = [
+		{id: 'youtube.leanback.v4', title: 'YouTube', largeIcon: '/media/cryptofs/apps/usr/palm/applications/youtube.leanback.v4/yt_lg_130x130.png', icon: '/media/cryptofs/apps/usr/palm/applications/youtube.leanback.v4/yt_lg_80x80.png', iconColor: '#ffffff'},
+		{id: 'netflix', title: 'Netflix', largeIcon: netflix, icon: '/media/cryptofs/apps/usr/palm/applications/netflix/SMALL_APP_ICON.png', iconColor: '#ffffff'},
+		{id: 'org.moonfin.webos', title: 'Moonfin', largeIcon: moon, icon: '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-80.png', iconColor: '#000000'},
+		{id: 'com.theadelab.amclient-lg', title: 'Amazon Music', largeIcon: music, icon: '/media/cryptofs/apps/usr/palm/applications/com.theadelab.amclient-lg/icon.png', iconColor: '#25d1da'},
+		{id: 'org.webosbrew.hbchannel', title: 'Homebrew Channel', largeIcon: '/media/developer/apps/usr/palm/applications/org.webosbrew.hbchannel/assets/icon130.png', icon: '/media/developer/apps/usr/palm/applications/org.webosbrew.hbchannel/assets/icon80.png', iconColor: '#cf0652'},
+		{id: 'bbc.iplayer.3.0', title: 'BBC iPlayer', largeIcon: iplayer, icon: '/media/cryptofs/apps/usr/palm/applications/bbc.iplayer.3.0/bbc_80x80.png', iconColor: '#101010'},
+		{id: 'amazon', title: 'Prime Video', largeIcon: '/media/cryptofs/apps/usr/palm/applications/amazon/aiv_white_130x130.png', icon: '/media/cryptofs/apps/usr/palm/applications/amazon/aiv_white_80x80.png', iconColor: '#0578ff'},
+		{id: 'com.webos.app.browser', title: 'Web Browser', largeIcon: '/media/system/apps/usr/palm/applications/com.webos.app.browser/assets/hd1080/webbrowser_large_icon.png', icon: '/media/system/apps/usr/palm/applications/com.webos.app.browser/assets/hd1080/webbrowser_icon.png', iconColor: '#FFFFFF'}
+	];
+	const {apps} = await listApps(true, false);
+	const file = (id) => barIcon(apps.find((a) => a.id === id), dir, iconPathByPicture()).file;
+	// the four files on the 1.0.9044 bar: a relative catalogue (or pack) icon, not the TV's largeIcon
+	assert.equal(file('youtube.leanback.v4'), dir + '/icons/apps/youtube.leanback.v4.png');
+	assert.equal(file('amazon'), dir + '/icons/apps/amazon.png');
+	assert.equal(file('com.webos.app.browser'), dir + '/icons/apps/com.webos.app.browser.png');
+	assert.equal(file('org.webosbrew.hbchannel'), dir + '/iconpack/hb.png');
+	assert.equal(file('org.moonfin.webos'), moon);
+	assert.equal(file('com.theadelab.amclient-lg'), music);
+	assert.equal(file('bbc.iplayer.3.0'), iplayer);
+	assert.equal(file('netflix'), netflix);
+	assert.equal(barIcon(apps.find((a) => a.id === 'netflix'), dir).plain, true);
+	// 1.0.9044's sameApps ignores a newly learned path, so a saved list of data: URIs stays on screen and the bar
+	// effect does not run again. The path has to count. Once listApps has filled iconPaths, that same data: entry
+	// (no path of its own) resolves: the write reads the file when its timer fires, not when the effect starts.
+	const shown = apps.map((a) => ({...a, iconPath: undefined}));
+	assert.equal(sameApps(shown, apps), false);
+	assert.equal(iconFile({id: 'org.moonfin.webos', title: 'Moonfin', iconUrl: 'data:image/png;base64,MOON', plain: true}, dir), moon);
+	assert.equal(iconFile({id: 'com.theadelab.amclient-lg', title: 'Amazon Music', iconUrl: 'data:image/png;base64,MUSIC', plain: true}, dir), music);
+	assert.equal(iconFile({id: 'bbc.iplayer.3.0', title: 'BBC iPlayer', iconUrl: 'data:image/png;base64,IPLAYER', plain: true}, dir), iplayer);
+	assert.equal(iconFile({id: 'netflix', title: 'Netflix', iconUrl: 'data:image/png;base64,NETFLIX', plain: true}, dir), netflix);
+	// two icons can share bytes; the picture map keeps the first path. The app's own path wins.
+	assert.equal(bareMod.iconFile({id: 'org.moonfin.webos', title: 'Moonfin', iconUrl: 'data:image/png;base64,MOON', iconPath: moon, plain: true}, dir, {'data:image/png;base64,MOON': music}), moon);
+	// cold start as 1.0.9044 stored it: the picture is a data URI and the entry has no path.
+	// main's iconFile returns nothing; the cache map gives each app its own largeIcon.
+	const prev = store[CACHE];
+	store[CACHE] = JSON.stringify({[moon]: 'data:image/png;base64,MOON', [music]: 'data:image/png;base64,MUSIC', [iplayer]: 'data:image/png;base64,IPLAYER', [netflix]: 'data:image/png;base64,NETFLIX'});
+	const map = bareMod.iconPathByPicture();
+	const bare = (id, title, url) => ({id, title, iconUrl: url, plain: true});
+	// a module that has never listed apps: main's iconFile drops the data URI. The map keeps each largeIcon.
+	assert.equal(bareMod.iconFile(bare('bbc.iplayer.3.0', 'BBC iPlayer', 'data:image/png;base64,IPLAYER'), dir), undefined);
+	assert.equal(bareMod.iconFile(bare('com.theadelab.amclient-lg', 'Amazon Music', 'data:image/png;base64,MUSIC'), dir), undefined);
+	assert.equal(bareMod.iconFile(bare('org.moonfin.webos', 'Moonfin', 'data:image/png;base64,MOON'), dir), undefined);
+	assert.equal(bareMod.iconFile(bare('netflix', 'Netflix', 'data:image/png;base64,NETFLIX'), dir), undefined);
+	assert.equal(bareMod.barIcon(bare('org.moonfin.webos', 'Moonfin', 'data:image/png;base64,MOON'), dir, map).file, moon);
+	assert.equal(bareMod.barIcon(bare('com.theadelab.amclient-lg', 'Amazon Music', 'data:image/png;base64,MUSIC'), dir, map).file, music);
+	assert.equal(bareMod.barIcon(bare('bbc.iplayer.3.0', 'BBC iPlayer', 'data:image/png;base64,IPLAYER'), dir, map).file, iplayer);
+	assert.equal(bareMod.barIcon(bare('netflix', 'Netflix', 'data:image/png;base64,NETFLIX'), dir, map).file, netflix);
+	store[CACHE] = prev;
 });
 
 test('a TV path is forgotten once that app is no longer installed', async () => {

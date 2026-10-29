@@ -189,10 +189,24 @@ The same settings are used by `com.sammysco.avoverlay`.
 - **Data:** an app cannot read another app's storage, so Lumen fills `data/` in Lumen bar's folder, as root. `data/bar.json` holds the dock
   (the glass bar's apps), Lumen's recent list, every app's title and colour, and Lumen's id. The bar copies the same picture the tile shows:
   a bundled icon or an icon-pack file when that is what Lumen draws, and the TV's file only when the tile's picture is a `data:` URI, a
-  `file://` URL, or there is no picture. What is known from the code, not from a captured `listLaunchPoints` on this C8: a system app never
-  had a path stored for the bar, an `http` `largeIcon` hid the file `icon` behind it, and a path was kept only when the root read of that file
-  succeeded. `tools/tv-bar-diag.sh` prints the TV's real launch points, `bar.json` and the bar lines in `lumen.log` (run it as root; see the
-  script). A copied file has to be a PNG or JPEG of at most 1 MiB, and still under the app folders after `readlink -f`. `bar.json` names an
+  `file://` URL, or there is no picture. On this C8, 1.0.9044 (`ce2d8a2`, `data/sig` `l9d5e4`) wrote icons for four apps only. The files in
+  `data/icons/` are Lumen's catalogue PNGs: YouTube 4689 bytes, Prime Video 6488, the Browser 2539, Homebrew 5246. The dock also has Moonfin,
+  Amazon Music, BBC iPlayer and Netflix, and `listLaunchPoints` has a safe file for each (`org.moonfin.webos/icon-130.png`, Amazon Music
+  `largeIcon.png`, `bbc.iplayer.3.0/bbc_130x130.png`, Netflix `LARGE_APP_ICON.png`). That signature is the hash of the dock, the recent list,
+  the style and an app list whose `file` is set only for those four catalogue icons
+  (`/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen/icons/apps/…`). That is what `iconFile` returns when `iconPaths` is empty: a
+  relative catalogue icon becomes a path in Lumen's folder, and a `data:` URI becomes a path only from `iconPaths`. The boot log's icon cache is
+  already full (328–333KB). `icons-file` is not run for these apps (the only lines are `0/1`, for App Store and a test app), and the colours in
+  `bar.json` are sampled `rgb()`, so the tiles are `data:` URIs, not missing pictures. A direct `listApps` of these launch points does fill
+  `iconPaths` and `iconFile` then returns each `largeIcon`. `sameApps` compares the icon URL's length and prefix, not the path, so a saved list
+  of `data:` URIs is left on screen. The bar effect calls `iconFile` as the effect starts and freezes that list for the 3s write, so the paths
+  `listApps` learns never reach `syncBar`. `cachedApps` fills `iconPaths` only for an `@icon:` ref. Boots on 23–26 Oct log `iconcache` before
+  `listLaunchPoints`, which happens only when the saved list contains `@icon:`, so those sessions had paths at first paint. This 9044 file has
+  no boot line (Lumen was closed before the 20s flush) and its signature is the empty-map write. TV Settings is the same shape for a second
+  reason: it is not a launch point, and `addSystemApps` never stored a path, so `iconFile` stays empty even after the list is read.
+  `tools/tv-bar-diag.sh` prints the TV's launch points, `bar.json` and the bar lines in `lumen.log`. Run it as root the way the script's header
+  says (`ssh -tt` with the script decoded on the TV; `sh -s` over the pty hangs, and `timeout 90` is not this busybox). A copied file has to be
+  a PNG or JPEG of at most 1 MiB, and still under the app folders after `readlink -f`. `bar.json` names an
   icon only when that copy is a plain file (`null` otherwise). A skip is `bar: icon skipped <id> <reason>` in `lumen.log`, and the signature
   is not written, so the next start tries again. The signature includes `BAR_EPOCH`, so an update rewrites a bar left by 1.0.9044. It is
   written again only when a signature in `data/sig` changes, so an update of Lumen bar,

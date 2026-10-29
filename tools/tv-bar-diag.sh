@@ -2,15 +2,16 @@
 # Read-only look at Lumen bar's icons on the TV. Run as root. The only files it
 # writes are under /tmp, and it removes them. It does not change the bar.
 #
-# luna-send prints nothing when its stdout is not a tty. A piped ssh is not a
-# tty, which is why `luna-send -n 1 -f luna://com.webos.applicationManager/listLaunchPoints '{}'`
-# came back empty. Give the session a tty, and do not pass -f (Lumen does not):
+# luna-send prints nothing when its stdout is not a tty, and this TV's busybox
+# has no `timeout 90` (it wants `timeout -t 90`). Piping the script into
+# `ssh -tt ... 'sh -s'` also hangs: the pty never sees EOF. What works is to
+# put the script on the TV and run it there, with ssh's stdin closed:
 #
-#   ssh -tt root@<tv> 'sh -s' < tools/tv-bar-diag.sh
+#   B64=$(base64 < tools/tv-bar-diag.sh | tr -d '\n')
+#   ssh -tt root@<tv> "echo $B64 | base64 -d > /tmp/x.sh; sh /tmp/x.sh; rm -f /tmp/x.sh" < /dev/null
 #
-# Or copy the script onto the TV and run it in a shell that has a tty:
-#
-#   sh /tmp/tv-bar-diag.sh
+# Do not pass -f to luna-send. Lumen's own call does not. The first URI that
+# returns launchPoints is the one printed.
 #
 # Prints which listLaunchPoints URI answered, that JSON, the installed bar's
 # data/bar.json, data/sig and data/icons, and recent bar lines from lumen.log.

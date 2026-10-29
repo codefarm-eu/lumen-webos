@@ -411,7 +411,8 @@ export function iconFile (a: AppEntry, dir: string, byPicture?: Record<string, s
 		} catch { /* a broken percent-encoding is not a path */ }
 		return tv;
 	}
-	if (u.indexOf('data:') === 0) return (byPicture && picked(byPicture[u])) || tv;
+	// the app's own path wins over the picture map: two icons can share bytes, and the map keeps only the first path
+	if (u.indexOf('data:') === 0) return tv || (byPicture && picked(byPicture[u]));
 	return undefined;
 }
 
