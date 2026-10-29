@@ -383,15 +383,22 @@ export function barSig (dock: string[], recent: string[], list: unknown, style: 
  *  list, the apps, Lumen's id). Skipped when data/sig already holds `sig` (an app update wipes data/, and then it is written again).
  *  data/wallpapers/ is left alone: it holds the screensaver pictures, which tools/tv/watch.sh bar_pictures copies from Lumen.
  *  The bar's folder is writable by others, so the write is syncBarShell: relative names after cd -P, a temp file then mv, and a data/
- *  or icons/ that is not root's own is refused rather than removed. One write at a time: two overlapping runs would share the scratch files. */
+ *  or icons/ that is not root's own is refused rather than removed. One write at a time in this page. The last signature answered
+ *  `written` or `same` is not sent again, so a second sync in the same start does not spend the one retry of a missing file (`<sig>-r`
+ *  becomes `<sig>-p` only on the next launch). A shell that is still running, after this call times out or after a reload, holds
+ *  data/.lock and the new shell answers `busy` without signing. */
 let barQueue: Promise<unknown> = Promise.resolve();
-export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused'> {
+let barSeen = '';
+export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused' | 'busy'> {
 	if (!APP_DIR.test(appDir) || !APP_ID.test(lumenId) || !/^[a-z0-9]+$/.test(sig)) return Promise.reject(new Error('refused'));
-	const next = barQueue.then(() => syncBarNow(appDir, lumenId, dock, recent, apps, sig, style));
+	const next = barQueue.then(() => {
+		if (barSeen === sig) return Promise.resolve('same' as const);
+		return syncBarNow(appDir, lumenId, dock, recent, apps, sig, style);
+	});
 	barQueue = next.catch(() => undefined);
 	return next;
 }
-function syncBarNow (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused'> {
+function syncBarNow (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused' | 'busy'> {
 	const dir = barDir(appDir);
 	const out: Record<string, {title: string; color?: string; plain?: boolean; icon?: string}> = {};
 	const icons: {src: string; name: string; id: string}[] = [];
@@ -415,6 +422,8 @@ function syncBarNow (appDir: string, lumenId: string, dock: string[], recent: st
 	const json = JSON.stringify({v: 1, lumen: lumenId, dock: dock.filter((x) => APP_ID.test(x)), recent: recent.filter((x) => APP_ID.test(x)), apps: out, style});
 	return run(syncBarShell(dir, sig, toBase64(json), icons), 15000).then((outText) => {
 		const status = syncBarResult(outText);
+		// busy, refused, and missing are not remembered: the next call with this signature still runs. a rejection is not either.
+		if (status === 'written' || status === 'same') barSeen = sig;
 		if (status === 'written') {
 			const lines = skipped.slice();
 			for (const line of outText.split('\n')) {

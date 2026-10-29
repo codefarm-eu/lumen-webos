@@ -238,7 +238,7 @@ const rootCode = (await build({
 	entryPoints: [new URL('../../app/src/lib/root.ts', import.meta.url).pathname], bundle: true, format: 'esm', write: false,
 	plugins: [{name: 'stubs', setup (b) {
 		const s = {'../config/constants': "export const LUNA = {homebrewExec: 'luna://org.webosbrew.hbchannel.service/exec'};",
-			'./luna': 'export const isWebOS = () => true; export const lunaCall = (uri, params) => { const cmd = (params && params.command) || ""; (globalThis.T.calls = globalThis.T.calls || []).push(cmd); if (globalThis.T.gate) return new Promise((resolve) => { globalThis.T.gate.push(() => resolve({stdoutString: globalThis.T.answer || ""})); }); return Promise.resolve({stdoutString: globalThis.T.answer || ""}); };'};
+			'./luna': 'export const isWebOS = () => true; export const lunaCall = (uri, params) => { const cmd = (params && params.command) || ""; (globalThis.T.calls = globalThis.T.calls || []).push(cmd); if (globalThis.T.gate) return new Promise((resolve, reject) => { globalThis.T.gate.push((err) => err ? reject(err) : resolve({stdoutString: globalThis.T.answer || ""})); }); return Promise.resolve({stdoutString: globalThis.T.answer || ""}); };'};
 		b.onResolve({filter: /^\.\.?\//}, (a) => (s[a.path] !== undefined ? {path: a.path, namespace: 'stub2'} : undefined));
 		b.onLoad({filter: /.*/, namespace: 'stub2'}, (a) => ({contents: s[a.path], loader: 'js'}));
 	}}]
@@ -277,7 +277,7 @@ test('syncBar logs a skipped copy and a missing path, and does not keep an icon 
 		{id: 'com.webos.app.livetv', title: 'Live TV'},
 		{id: '.', title: 'dot', file: '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon.png'},
 		{id: '..', title: 'dotdot', file: '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon.png'}
-	], 'abc');
+	], 'log1');
 	assert.equal(r, 'written');
 	const b64 = /b64='([^']*)'/.exec(T.calls[0]);
 	const json = JSON.parse(Buffer.from(b64[1], 'base64').toString('utf8'));
@@ -299,7 +299,7 @@ test('an svg or gif is not sent to the copy, and a webp icon pack file is', asyn
 		{id: 'org.example.webpapp', title: 'WebP', file: '/media/developer/apps/usr/palm/applications/org.example.webpapp/icon.webp'},
 		{id: 'org.example.gifapp', title: 'GIF', file: '/media/developer/apps/usr/palm/applications/org.example.gifapp/icon.gif'},
 		{id: 'org.example.jpgapp', title: 'JPEG', file: '/media/developer/apps/usr/palm/applications/org.example.jpgapp/icon.jpg'}
-	], 'abc');
+	], 'img1');
 	assert.equal(r, 'written');
 	const cmd = T.calls[0];
 	assert.equal(cmd.includes('icon.svg'), false);
@@ -324,16 +324,70 @@ test('syncBar runs one write at a time', async () => {
 	T.gate = [];
 	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
 	const app = {id: 'netflix', title: 'Netflix', file: '/media/cryptofs/apps/usr/palm/applications/netflix/icon.png'};
-	const first = syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'abc');
-	const second = syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'abd');
+	const first = syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'q1');
+	const second = syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'q2');
 	await Promise.resolve();
 	assert.equal(T.calls.length, 1);
 	T.gate.shift()();
 	assert.equal(await first, 'same');
 	await Promise.resolve();
 	assert.equal(T.calls.length, 2);
-	assert.equal(T.calls[1].includes("sig='abd'"), true);
+	assert.equal(T.calls[1].includes("sig='q2'"), true);
 	T.gate.shift()();
 	assert.equal(await second, 'same');
+	T.gate = null;
+});
+
+test('syncBar: a rejected write, as on a timeout, does not block the next one', async () => {
+	T.answer = 'written';
+	T.calls = [];
+	T.gate = [];
+	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
+	const app = {id: 'netflix', title: 'Netflix', file: '/media/cryptofs/apps/usr/palm/applications/netflix/icon.png'};
+	const first = syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'rej1');
+	const second = syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'rej1');
+	await Promise.resolve();
+	assert.equal(T.calls.length, 1);
+	T.gate.shift()(new Error('timeout'));
+	await assert.rejects(first);
+	await Promise.resolve();
+	assert.equal(T.calls.length, 2);
+	assert.equal(T.calls[1].includes("sig='rej1'"), true);
+	T.gate.shift()();
+	assert.equal(await second, 'written');
+	T.gate = null;
+});
+
+test('syncBar skips a second call with the signature already written or left as same', async () => {
+	T.answer = 'written';
+	T.calls = [];
+	T.gate = null;
+	const dir = '/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen';
+	const app = {id: 'netflix', title: 'Netflix', file: '/media/cryptofs/apps/usr/palm/applications/netflix/icon.png'};
+	assert.equal(await syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'skp'), 'written');
+	assert.equal(T.calls.length, 1);
+	assert.equal(await syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'skp'), 'same');
+	assert.equal(T.calls.length, 1);
+	T.answer = 'same';
+	assert.equal(await syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'skq'), 'same');
+	assert.equal(T.calls.length, 2);
+	assert.equal(await syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'skq'), 'same');
+	assert.equal(T.calls.length, 2);
+	T.answer = 'busy';
+	assert.equal(await syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'skr'), 'busy');
+	assert.equal(T.calls.length, 3);
+	T.answer = 'written';
+	assert.equal(await syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'skr'), 'written');
+	assert.equal(T.calls.length, 4);
+	T.gate = [];
+	T.answer = 'written';
+	const queued = syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'sks');
+	const again = syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'sks');
+	await Promise.resolve();
+	assert.equal(T.calls.length, 5);
+	T.gate.shift()();
+	assert.equal(await queued, 'written');
+	assert.equal(await again, 'same');
+	assert.equal(T.calls.length, 5);
 	T.gate = null;
 });

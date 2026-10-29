@@ -192,7 +192,9 @@ test('syncBar: a reply that is not exactly one status word is never a successful
 	assert.equal(syncBarResult('same'), 'same');
 	assert.equal(syncBarResult('missing'), 'missing');
 	assert.equal(syncBarResult('refused'), 'refused');
-	for (const s of ['', 'oops', 'written extra', 'not written']) assert.equal(syncBarResult(s), 'refused', JSON.stringify(s));
+	assert.equal(syncBarResult('busy'), 'busy');
+	assert.equal(syncBarResult('skip a unresolved\nbusy'), 'busy');
+	for (const s of ['', 'oops', 'written extra', 'not written', 'busy extra']) assert.equal(syncBarResult(s), 'refused', JSON.stringify(s));
 });
 
 test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpapers stay, and the shell never removes recursively', () => {
@@ -624,6 +626,10 @@ test('syncBar: a folder is a miss, a link is signed without readlink, and a fail
 	assert.match(fold, /skip a unresolved/);
 	assert.equal(fold.split('\n').pop(), 'written');
 	assert.equal(read(join(bar, 'data', 'sig')), 'abc-r\n');
+	const fold2 = runSync(bar, {sig: 'abc', json, icons, roots: app, full: true});
+	assert.match(fold2, /skip a unresolved/);
+	assert.equal(fold2.split('\n').pop(), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abc-p\n');
 	const linkBar = join(base, 'link');
 	mkdirSync(linkBar);
 	const secret = join(base, 'secret');
@@ -646,6 +652,55 @@ test('syncBar: a folder is a miss, a link is signed without readlink, and a fail
 	assert.equal(runSync(moveBar, {sig: 'mov', json: moveJson, icons: moveIcons, roots: app}), 'written');
 	assert.equal(read(join(moveBar, 'data', 'sig')), 'mov\n');
 	assert.equal(JSON.parse(read(join(moveBar, 'data', 'bar.json'))).apps.c.icon, 'data/icons/c.png?mov');
+});
+
+test('syncBar: a live lock answers busy and signs nothing, and a stale lock is taken over', () => {
+	const dead = '99999999';
+	assert.throws(() => execFileSync('sh', ['-c', 'kill -0 ' + dead], {stdio: 'ignore'}));
+	const base = mkdtempSync(join(tmpdir(), 'sync-lock-'));
+	const app = join(base, 'app');
+	const held = join(base, 'held');
+	mkdirSync(app);
+	mkdirSync(join(held, 'data'), {recursive: true});
+	writeFileSync(join(app, 'icon.png'), png('ok'));
+	mkdirSync(join(held, 'data', '.lock'));
+	writeFileSync(join(held, 'data', '.lock', 'p'), String(process.pid) + '\n');
+	writeFileSync(join(held, 'data', 'sig'), 'old\n');
+	writeFileSync(join(held, 'data', 'bar.json'), '{"keep":true}\n');
+	const icons = [{src: join(app, 'icon.png'), name: 'a.png', id: 'a'}];
+	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
+	assert.equal(runSync(held, {sig: 'abc', json, icons, roots: app}), 'busy');
+	assert.equal(read(join(held, 'data', 'sig')), 'old\n');
+	assert.equal(read(join(held, 'data', 'bar.json')), '{"keep":true}\n');
+	assert.equal(read(join(held, 'data', '.lock', 'p')), String(process.pid) + '\n');
+	const fresh = join(base, 'fresh');
+	mkdirSync(join(fresh, 'data', '.lock'), {recursive: true});
+	writeFileSync(join(fresh, 'data', '.lock', 'p'), String(process.pid) + '\n');
+	assert.equal(runSync(fresh, {sig: 'abc', json, icons, roots: app}), 'busy');
+	assert.equal(read(join(fresh, 'data', 'sig')), null);
+	assert.equal(read(join(fresh, 'data', 'bar.json')), null);
+	const stale = join(base, 'stale');
+	mkdirSync(join(stale, 'data', 'icons'), {recursive: true});
+	mkdirSync(join(stale, 'data', '.lock'));
+	writeFileSync(join(stale, 'data', '.lock', 'p'), dead + '\n');
+	writeFileSync(join(stale, 'data', '.bar.' + dead), 'drop-bar');
+	writeFileSync(join(stale, 'data', '.sig.' + dead), 'drop-sig');
+	writeFileSync(join(stale, 'data', '.bar.' + process.pid), 'live-bar');
+	writeFileSync(join(stale, 'data', '.sig.' + process.pid), 'live-sig');
+	writeFileSync(join(stale, 'data', 'icons', '.n.' + process.pid), 'live-scratch');
+	writeFileSync(join(stale, 'data', 'icons', '.png.' + dead), 'dead-scratch');
+	assert.equal(runSync(stale, {sig: 'stl', json, icons, roots: app}), 'written');
+	assert.equal(read(join(stale, 'data', 'sig')), 'stl\n');
+	assert.equal(JSON.parse(read(join(stale, 'data', 'bar.json'))).apps.a.icon, 'data/icons/a.png?stl');
+	let lockGone = false;
+	try { lstatSync(join(stale, 'data', '.lock')); } catch { lockGone = true; }
+	assert.equal(lockGone, true);
+	assert.equal(read(join(stale, 'data', '.bar.' + dead)), null);
+	assert.equal(read(join(stale, 'data', '.sig.' + dead)), null);
+	assert.equal(read(join(stale, 'data', '.bar.' + process.pid)), 'live-bar');
+	assert.equal(read(join(stale, 'data', '.sig.' + process.pid)), 'live-sig');
+	assert.equal(read(join(stale, 'data', 'icons', '.n.' + process.pid)), 'live-scratch');
+	assert.equal(read(join(stale, 'data', 'icons', '.png.' + dead)), null);
 });
 
 test('syncBar: a skipped copy removes the old signature, so going back to that list is not "same" with the skipped bar left in place', () => {
