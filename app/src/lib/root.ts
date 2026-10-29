@@ -385,12 +385,28 @@ export function barSig (dock: string[], recent: string[], list: unknown, style: 
  *  The bar's folder is writable by others, so the write is syncBarShell: relative names after cd -P, a temp file then mv, and a data/
  *  or icons/ that is not root's own is refused rather than removed. One write at a time in this page. The last signature answered
  *  `written` or `same` is not sent again, so a second sync in the same stay does not spend the one retry of a missing file.
- *  Coming to the front clears that memory (clearBarSeen). A shell still running after a timeout or a reload holds
- *  /tmp/lumen-bar.<id>.lock and the new shell answers `busy` without signing. */
+ *  Coming to the front clears that memory (clearBarSeen) and the shell runs once; when nothing changed it answers `same`.
+ *  A shell still running after a timeout or a reload holds data/.lock and the new shell answers `busy` without signing.
+ *  retryBarBusy tries a busy write three times. */
 let barQueue: Promise<unknown> = Promise.resolve();
 let barSeen = '';
 /** Forget the signature this page already wrote. The next sync runs the shell, so a bar update that emptied data/ is noticed. */
 export function clearBarSeen (): void { barSeen = ''; }
+/** Calls `go` at once, and again while it answers `busy`, three times in all, `gap` ms apart. The returned function drops a pending retry. */
+export function retryBarBusy (go: () => Promise<string>, gap = 2000, schedule: (fn: () => void, ms: number) => number = (fn, ms) => window.setTimeout(fn, ms), cancel: (id: number) => void = (id) => window.clearTimeout(id)): () => void {
+	let stopped = false;
+	let wait = 0;
+	let n = 0;
+	const run = () => {
+		if (stopped) return;
+		go().then((r) => {
+			if (stopped) return;
+			if (r === 'busy' && n < 2) { n += 1; wait = schedule(run, gap); }
+		}, () => undefined);
+	};
+	run();
+	return () => { stopped = true; cancel(wait); };
+}
 export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused' | 'busy'> {
 	if (!APP_DIR.test(appDir) || !APP_ID.test(lumenId) || !/^[a-z0-9]+$/.test(sig)) return Promise.reject(new Error('refused'));
 	const next = barQueue.then(() => {

@@ -80,11 +80,12 @@ export function syncBarResult (stdout: string): 'same' | 'written' | 'missing' |
  *  stay does not run the shell, so it does not turn `<sig>-r` into `<sig>-p`. When the script does run again, a file that is still missing
  *  is signed `<sig>-p` and one that has appeared is copied. A copy that failed while writing (`copy`) is not signed, so the next run tries
  *  it again. A path that resolves outside the app folders (`outside`), a file that is too big, or a file that is not an image is signed
- *  `<sig>-p` at once, so the same list then answers `same`. A different list still rewrites. The run holds
- *  `/tmp/lumen-bar.<bar id>.lock` (mkdir, with this shell's pid and the boot id inside). `/tmp` is cleared on boot. A lock is taken over
- *  when its boot id differs, it names this shell's pid, its pid is dead, or it is older than 120s. An empty pid counts as live until that
- *  age. A live lock answers `busy` and signs nothing. Scratch files are named with the shell's pid. The icons cleanup leaves another live
- *  pid's scratch files, and a dead pid's `data/.bar.<pid>` and `data/.sig.<pid>` are removed.
+ *  `<sig>-p` at once, so the same list then answers `same`. A different list still rewrites. The run holds `data/.lock` (mkdir, with this
+ *  shell's pid and the boot id inside). A lock is taken over when its boot id differs, it names this shell's pid, or its pid is dead.
+ *  An empty pid counts as live until the lock is 120s old. A live pid is stolen for age only when `/proc/<pid>/cmdline` is not this script,
+ *  the same way the watcher checks its own command line. A live pid that is this script is never stolen. A live lock answers `busy` and
+ *  signs nothing. Scratch files are named with the shell's pid. The icons cleanup leaves another live pid's scratch files, and a dead
+ *  pid's `data/.bar.<pid>` and `data/.sig.<pid>` are removed.
  *  The bar's folder is writable by others, so nothing is written by a full path (a redirect and a recursive remove both follow a link).
  *  The bar folder and then data/ are entered with cd -P and must be that directory (pwd -P); a parent that is a link is fine, the bar
  *  folder itself being a link is not. A data/ or data/icons/ that is not this user's is left as it is. A link at data, icons, bar.json
@@ -148,6 +149,7 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 	});
 	const dropDirs = names ? 'for n in ' + names + '; do if [ -d "$n" ] && [ ! -L "$n" ]; then echo refused; exit 0; fi; done' : ':';
 	return [
+		'# lumen-bar-sync',
 		'# relative names only, after cd -P. a folder that is not ours is left alone. never a recursive remove.',
 		"d='" + dir + "'",
 		"sig='" + sig + "'",
@@ -171,37 +173,39 @@ export function syncBarShell (dir: string, sig: string, b64: string, icons: {src
 		'cd -P data 2>/dev/null && [ "$(pwd -P)" = "$here/data" ] || { echo refused; exit 0; }',
 		'[ "$(stat -c %u . 2>/dev/null)" = "$me" ] || { echo refused; exit 0; }',
 		'chmod 755 . 2>/dev/null || { echo refused; exit 0; }',
-		// the lock is not on the bar's flash. /tmp is cleared on boot; the boot id covers a /tmp that is not.
-		// released by cd and a relative name, like every other remove in this script.
-		'lr=\'/tmp\'',
-		'lk=lumen-bar.$base.lock',
+		// data/ is already ours. the lock stays here. a live pid is this script when its command line says so,
+		// the same way the watcher reads /proc/<pid>/cmdline. age never takes the lock from that pid.
 		'boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)',
 		'datahere=$(pwd -P)',
-		'cd -P "$lr" 2>/dev/null && [ "$(pwd -P)" = "$lr" ] || { echo refused; exit 0; }',
 		'held=0',
-		'if mkdir "$lk" 2>/dev/null; then held=1',
-		'elif [ -L "$lk" ] || { [ -e "$lk" ] && [ ! -d "$lk" ]; }; then rm -f -- "$lk"; mkdir "$lk" 2>/dev/null && held=1',
-		'elif [ -d "$lk" ] && [ ! -L "$lk" ]; then',
+		'if mkdir .lock 2>/dev/null; then held=1',
+		'elif [ -L .lock ] || { [ -e .lock ] && [ ! -d .lock ]; }; then rm -f -- .lock; mkdir .lock 2>/dev/null && held=1',
+		'elif [ -d .lock ] && [ ! -L .lock ]; then',
 		'stale=0',
-		'now=$(date +%s 2>/dev/null); old=$(stat -c %Y "$lk" 2>/dev/null)',
-		'case "$now" in \'\'|*[!0-9]*) ;; *) case "$old" in \'\'|*[!0-9]*) ;; *) [ "$((now - old))" -gt 120 ] && stale=1 ;; esac ;; esac',
-		'ob=; if [ -f "$lk/b" ] && [ ! -L "$lk/b" ]; then ob=$(cat "$lk/b" 2>/dev/null); fi',
+		'ob=; if [ -f .lock/b ] && [ ! -L .lock/b ]; then ob=$(cat .lock/b 2>/dev/null); fi',
+		'lp=; if [ -f .lock/p ] && [ ! -L .lock/p ]; then lp=$(head -n 1 .lock/p 2>/dev/null); fi',
+		'ours=0; live=0',
+		'case "$lp" in \'\'|*[!0-9]*) ;; *) cm=$(cat /proc/$lp/cmdline 2>/dev/null | tr \'\\0\' \' \'); case "$cm" in *lumen-bar-sync*) ours=1 ;; esac; kill -0 "$lp" 2>/dev/null && live=1 ;; esac',
+		'if [ "$ours" = 1 ] && [ "$live" = 1 ] && [ "$lp" != "$t" ]; then :',
+		'else',
 		'if [ -n "$boot" ] && [ -n "$ob" ] && [ "$boot" != "$ob" ]; then stale=1; fi',
-		'lp=; if [ -f "$lk/p" ] && [ ! -L "$lk/p" ]; then lp=$(head -n 1 "$lk/p" 2>/dev/null); fi',
-		'if [ "$lp" = "$t" ]; then stale=1; else case "$lp" in \'\'|*[!0-9]*) ;; *) kill -0 "$lp" 2>/dev/null || stale=1 ;; esac; fi',
+		'if [ "$lp" = "$t" ]; then stale=1; else case "$lp" in \'\'|*[!0-9]*) ;; *) [ "$live" = 1 ] || stale=1 ;; esac; fi',
+		'now=$(date +%s 2>/dev/null); old=$(stat -c %Y .lock 2>/dev/null); aged=0',
+		'case "$now" in \'\'|*[!0-9]*) ;; *) case "$old" in \'\'|*[!0-9]*) ;; *) [ "$((now - old))" -gt 120 ] && aged=1 ;; esac ;; esac',
+		'if [ "$aged" = 1 ]; then case "$lp" in \'\'|*[!0-9]*) stale=1 ;; *) [ "$ours" = 1 ] || stale=1 ;; esac; fi',
+		'fi',
 		'if [ "$stale" = 1 ]; then',
-		'if [ -L "$lk/p" ] || [ -f "$lk/p" ]; then rm -f -- "$lk/p"; fi',
-		'if [ -L "$lk/b" ] || [ -f "$lk/b" ]; then rm -f -- "$lk/b"; fi',
-		'if [ ! -e "$lk/p" ] && [ ! -e "$lk/b" ] && rmdir "$lk" 2>/dev/null && mkdir "$lk" 2>/dev/null; then held=1; fi',
+		'if [ -L .lock/p ] || [ -f .lock/p ]; then rm -f -- .lock/p; fi',
+		'if [ -L .lock/b ] || [ -f .lock/b ]; then rm -f -- .lock/b; fi',
+		'if [ ! -e .lock/p ] && [ ! -e .lock/b ] && rmdir .lock 2>/dev/null && mkdir .lock 2>/dev/null; then held=1; fi',
 		'fi',
 		'fi',
 		'if [ "$held" != 1 ]; then echo busy; exit 0; fi',
-		'printf \'%s\\n\' "$t" > "$lk/p" || { echo busy; exit 0; }',
-		'printf \'%s\\n\' "$boot" > "$lk/b" || { echo busy; exit 0; }',
-		'vp=; [ -f "$lk/p" ] && [ ! -L "$lk/p" ] && vp=$(head -n 1 "$lk/p" 2>/dev/null)',
-		'[ "$vp" = "$t" ] && [ -f "$lk/b" ] && [ ! -L "$lk/b" ] || { echo busy; exit 0; }',
-		'trap \'cd -P "$lr" 2>/dev/null && [ "$(pwd -P)" = "$lr" ] && [ -f "$lk/p" ] && [ ! -L "$lk/p" ] && vp=$(head -n 1 "$lk/p" 2>/dev/null) && [ "$vp" = "$t" ] && rm -f -- "$lk/p" "$lk/b" && rmdir "$lk"\' EXIT',
-		'cd -P "$datahere" 2>/dev/null && [ "$(pwd -P)" = "$datahere" ] || { echo refused; exit 0; }',
+		'printf \'%s\\n\' "$t" > .lock/p || { echo busy; exit 0; }',
+		'printf \'%s\\n\' "$boot" > .lock/b || { echo busy; exit 0; }',
+		'vp=; [ -f .lock/p ] && [ ! -L .lock/p ] && vp=$(head -n 1 .lock/p 2>/dev/null)',
+		'[ "$vp" = "$t" ] && [ -f .lock/b ] && [ ! -L .lock/b ] || { echo busy; exit 0; }',
+		'trap \'cd -P "$datahere" 2>/dev/null && [ "$(pwd -P)" = "$datahere" ] && [ -f .lock/p ] && [ ! -L .lock/p ] && vp=$(head -n 1 .lock/p 2>/dev/null) && [ "$vp" = "$t" ] && rm -f -- .lock/p .lock/b && rmdir .lock\' EXIT',
 		// a dead pid's bar and sig temps. a live pid's are left, and ours are the names this run is about to use.
 		'for f in .bar.[0-9]* .sig.[0-9]*; do',
 		'case "$f" in .bar.[0-9]*|.sig.[0-9]*) ;; *) continue ;; esac',

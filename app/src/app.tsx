@@ -36,7 +36,7 @@ import {AUTO_PLACE, POSTCODE_PLACE, findPlace, peekWeather, readWeather, type We
 import {TextPrompt} from './components/TextPrompt';
 import {useLiveTv} from './hooks/useLiveTv';
 import {channelColor, nowNextAt, rowChannels, type Channel} from './lib/livetv';
-import {barSig, clearBarSeen, openChannel, runningApps, setHomeBar, setHomeTakeover, syncBar, uninstallApp} from './lib/root';
+import {barSig, clearBarSeen, openChannel, retryBarBusy, runningApps, setHomeBar, setHomeTakeover, syncBar, uninstallApp} from './lib/root';
 
 import {bootMark, logError, navMark} from './lib/log';
 import {isDark, LANGS, setClockMode, setLang} from './lib/i18n';
@@ -430,31 +430,26 @@ export function App () {
 		const t = TILES_FOR[config.firstRow] || TILES_FOR[6];
 		const style = {size: t.size, height: t.height, gap: t.gap, perRow: config.firstRow, scale: BAR_FOCUS_SCALE[config.focusStrength] || BAR_FOCUS_SCALE.normal};
 		let stopped = false;
-		let wait = 0;
-		let n = 0;
-		const run = () => {
+		let stopRetry = () => {};
+		const id = window.setTimeout(() => {
 			if (stopped) return;
 			const pictures = iconPathByPicture();
 			const list = real.map((a) => {
 				const chosen = barIcon(a, dir, pictures);
 				return {id: a.id, title: a.title, color: a.color, plain: chosen.plain, file: chosen.file};
 			});
-			syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, barSig(dock, config.recentIds, list, style), style)
+			stopRetry = retryBarBusy(() => syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, barSig(dock, config.recentIds, list, style), style)
 				.then((r) => {
-					if (stopped) return;
+					if (stopped) return r;
 					if (r === 'written') bootMark('bar: data written');
 					// the bar then shows no icons or titles; lumen.log says why (a data/ or data/icons/ in the bar's folder that is not root's,
 					// or a folder where a file should be: lib/checks.ts syncBarShell)
 					else if (r === 'refused') logError('bar', 'data/ not written: refused (a folder in the bar\'s data/ that is not root\'s own, or a folder where a file should be)');
-					else if (r === 'busy') {
-						logError('bar', 'data/ not written: busy (another icon write is still running)');
-						if (n < 2) { n += 1; wait = window.setTimeout(run, 2000); }
-					}
-				})
-				.catch(() => undefined);
-		};
-		const id = window.setTimeout(run, 3000);
-		return () => { stopped = true; window.clearTimeout(id); window.clearTimeout(wait); };
+					else if (r === 'busy') logError('bar', 'data/ not written: busy (another icon write is still running)');
+					return r;
+				}));
+		}, 3000);
+		return () => { stopped = true; window.clearTimeout(id); stopRetry(); };
 	}, [config.homeBar, allApps, homeTiles, config.firstRow, config.recentIds, config.focusStrength, barFront]);
 
 	// the first row (in the glass bar) holds config.firstRow apps; the rest make a grid of rows as wide below it, like the tvOS home screen

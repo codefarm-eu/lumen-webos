@@ -243,7 +243,7 @@ const rootCode = (await build({
 		b.onLoad({filter: /.*/, namespace: 'stub2'}, (a) => ({contents: s[a.path], loader: 'js'}));
 	}}]
 })).outputFiles[0].text;
-const {setSetting, syncBar, barSig, BAR_EPOCH, clearBarSeen} = await import('data:text/javascript,' + encodeURIComponent(rootCode));
+const {setSetting, syncBar, barSig, BAR_EPOCH, clearBarSeen, retryBarBusy} = await import('data:text/javascript,' + encodeURIComponent(rootCode));
 
 test('a setting counts as set only on "returnValue": true; a refusal (with or without the space) or no answer is an error', async () => {
 	for (const ok of ['{"returnValue":true}', '{"returnValue": true, "method": "setSystemSettings"}']) { T.answer = ok; await setSetting('backlight', '80'); }
@@ -405,4 +405,38 @@ test('syncBar runs the same signature again after Lumen comes to the front', asy
 	clearBarSeen();
 	assert.equal(await syncBar(dir, 'com.ovsteenb.lumen', [], [], [app], 'fr1'), 'written');
 	assert.equal(T.calls.length, 2);
+});
+
+test('a busy bar write is tried three times, and cleanup stops the rest', async () => {
+	const pending = [];
+	const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+	let calls = 0;
+	const stop = retryBarBusy(async () => { calls += 1; return 'busy'; }, 2000, (fn) => { pending.push(fn); return pending.length; }, () => {});
+	await flush();
+	assert.equal(calls, 1);
+	assert.equal(pending.length, 1);
+	pending.shift()();
+	await flush();
+	assert.equal(calls, 2);
+	pending.shift()();
+	await flush();
+	assert.equal(calls, 3);
+	assert.equal(pending.length, 0);
+	stop();
+	calls = 0;
+	const queued = [];
+	const stopEarly = retryBarBusy(async () => { calls += 1; return 'busy'; }, 2000, (fn) => { queued.push(fn); return queued.length; }, (id) => { queued[id - 1] = null; });
+	await flush();
+	assert.equal(calls, 1);
+	const next = queued[0];
+	stopEarly();
+	next();
+	await flush();
+	assert.equal(calls, 1);
+	calls = 0;
+	const once = [];
+	retryBarBusy(async () => { calls += 1; return 'written'; }, 2000, (fn) => { once.push(fn); return once.length; }, () => {});
+	await flush();
+	assert.equal(calls, 1);
+	assert.equal(once.length, 0);
 });

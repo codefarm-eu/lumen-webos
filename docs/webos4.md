@@ -211,12 +211,14 @@ The same settings are used by `com.sammysco.avoverlay`.
   field is `null`. A missing file, or a folder where the icon should be, is signed as the signature plus `-r` the first time. The one retry
   is the next time the shell runs: the next launch, or the next time Lumen comes to the front. If it is still missing then, it is signed plus `-p`, so the same list answers `same`; if the file
   has appeared, it is copied. A second sync in the same stay, with the same signature, does not run the shell, so it does not turn `-r` into
-  `-p`. Coming back to Lumen forgets that signature, so the shell runs again and a bar update that emptied `data/` is written. A copy that
+  `-p`. Coming back to Lumen forgets that signature, so the shell runs once more and a bar update that emptied `data/` is written. When the
+  bar is already up to date that run answers `same` and changes nothing; one such run on each return is the cost of noticing the update. A copy that
   failed while writing is not signed, so the next run tries it again. Two shells can overlap when a call times out or Lumen reloads while the
-  first shell is still running. The run holds `/tmp/lumen-bar.<bar id>.lock` (webOS `/tmp` is cleared on boot), with its pid and
-  `/proc/sys/kernel/random/boot_id`. It is removed by `cd -P` into `/tmp` and a relative name, the same way the bar folder is written. The other shell answers `busy` and does not sign. Lumen tries a busy write three times, 2 seconds apart,
-  and logs `busy`. A lock is taken over when its pid is dead, when it names this shell's own pid, when its boot id differs, or when it is
-  older than 120 seconds, even if that pid is still alive. An empty pid counts as live until that age. A path that resolves outside the app folders, a file that
+  first shell is still running. The run holds `data/.lock` (root's own `data/`, already checked), with its pid and the boot id. The other
+  shell answers `busy`, logs it, and does not sign. Lumen tries a busy write three times, 2 seconds apart. A lock is taken over when its boot
+  id differs, when it names this shell's own pid, or when its pid is dead. An empty pid counts as live until the lock is 120 seconds old. A
+  live pid is taken for that age only when `/proc/<pid>/cmdline` is not this bar script, the same check the watcher uses for its own command
+  line. A live pid that is this script is left alone. A path that resolves outside the app folders, a file that
   is too big, or a file that is not a real image is signed plus `-p` at once. A changed list still rewrites. An icon that is not a PNG, JPEG or WebP is not
   sent to the copy. The signature includes
   `BAR_EPOCH`, so an update rewrites a bar left by 1.0.9044. It is
