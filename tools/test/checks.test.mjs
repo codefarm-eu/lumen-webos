@@ -668,17 +668,19 @@ test('syncBar: the run lock stays in data/, and only a lock that is not this scr
 	const dead = '99999999';
 	assert.throws(() => execFileSync('sh', ['-c', 'kill -0 ' + dead], {stdio: 'ignore'}));
 	const boot = bootNow();
+	const upNow = () => Number(execFileSync('sh', ['-c', 'read u _ < /proc/uptime; printf %s "${u%%.*}"'], {encoding: 'utf8'}));
 	const base = mkdtempSync(join(tmpdir(), 'sync-lock-'));
 	const app = join(base, 'app');
 	mkdirSync(app);
 	writeFileSync(join(app, 'icon.png'), png('ok'));
 	const icons = [{src: join(app, 'icon.png'), name: 'a.png', id: 'a'}];
 	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
-	const plant = (bar, pid, {boot: b = boot, age = 0, empty = false} = {}) => {
+	const plant = (bar, pid, {boot: b = boot, age = 0, empty = false, up = null} = {}) => {
 		const dir = lockDir(bar);
 		mkdirSync(dir, {recursive: true});
 		writeFileSync(join(dir, 'p'), empty ? '' : String(pid) + '\n');
 		writeFileSync(join(dir, 'b'), b + '\n');
+		if (up != null) writeFileSync(join(dir, 'u'), String(up) + '\n');
 		if (age) { const t = Date.now() / 1000 - age; utimesSync(dir, t, t); }
 		return dir;
 	};
@@ -717,25 +719,51 @@ test('syncBar: the run lock stays in data/, and only a lock that is not this scr
 	assert.equal(runSync(own, {sig: 'own', json, icons, roots: app, hook: ownHook}), 'written');
 	assert.equal(read(join(own, 'data', 'sig')), 'own\n');
 	assert.equal(gone(ownLock), true);
-	const scriptPid = spawn('sh', ['-c', 'sleep 60 # lumen-bar-sync'], {stdio: 'ignore'});
+	const scriptPid = spawn('sh', ['-c', '# lumen-bar-sync\nsleep 60'], {stdio: 'ignore'});
+	const buried = spawn('sh', ['-c', 'sleep 60 # lumen-bar-sync'], {stdio: 'ignore'});
 	try {
 		const cm = execFileSync('sh', ['-c', `tr '\\0' ' ' < /proc/${scriptPid.pid}/cmdline`], {encoding: 'utf8'});
-		assert.match(cm, /lumen-bar-sync/);
+		assert.match(cm, /^sh -c # lumen-bar-sync/);
+		const nowUp = upNow();
 		const kept = join(base, 'kept');
 		mkdirSync(join(kept, 'data'), {recursive: true});
 		writeFileSync(join(kept, 'data', 'sig'), 'old\n');
-		const keptLock = plant(kept, scriptPid.pid, {age: 121});
+		const keptLock = plant(kept, scriptPid.pid, {age: 121, up: nowUp});
 		assert.equal(runSync(kept, {sig: 'kpt', json, icons, roots: app}), 'busy');
 		assert.equal(read(join(kept, 'data', 'sig')), 'old\n');
 		assert.equal(read(join(keptLock, 'p')), String(scriptPid.pid) + '\n');
-	} finally { scriptPid.kill('SIGKILL'); }
+		const wrongBoot = join(base, 'wrongboot');
+		mkdirSync(join(wrongBoot, 'data'), {recursive: true});
+		writeFileSync(join(wrongBoot, 'data', 'sig'), 'old\n');
+		plant(wrongBoot, scriptPid.pid, {boot: '00000000-0000-0000-0000-000000000000', up: nowUp});
+		assert.equal(runSync(wrongBoot, {sig: 'wbt', json, icons, roots: app}), 'written');
+		assert.equal(read(join(wrongBoot, 'data', 'sig')), 'wbt\n');
+		const mid = join(base, 'mid');
+		mkdirSync(join(mid, 'data'), {recursive: true});
+		writeFileSync(join(mid, 'data', 'sig'), 'old\n');
+		plant(mid, buried.pid, {age: 121, up: nowUp});
+		assert.equal(runSync(mid, {sig: 'mid', json, icons, roots: app}), 'written');
+		assert.equal(read(join(mid, 'data', 'sig')), 'mid\n');
+		const long = join(base, 'long');
+		mkdirSync(join(long, 'data'), {recursive: true});
+		writeFileSync(join(long, 'data', 'sig'), 'old\n');
+		plant(long, scriptPid.pid, {up: nowUp - 601});
+		assert.equal(runSync(long, {sig: 'lng', json, icons, roots: app}), 'written');
+		assert.equal(read(join(long, 'data', 'sig')), 'lng\n');
+	} finally { scriptPid.kill('SIGKILL'); buried.kill('SIGKILL'); }
 	const other = join(base, 'other');
 	mkdirSync(join(other, 'data'), {recursive: true});
 	writeFileSync(join(other, 'data', 'sig'), 'old\n');
-	plant(other, process.pid, {age: 121});
+	plant(other, process.pid, {age: 121, up: upNow()});
 	assert.equal(runSync(other, {sig: 'oth', json, icons, roots: app}), 'written');
 	assert.equal(read(join(other, 'data', 'sig')), 'oth\n');
 	assert.equal(gone(lockDir(other)), true);
+	const future = join(base, 'future');
+	mkdirSync(join(future, 'data'), {recursive: true});
+	writeFileSync(join(future, 'data', 'sig'), 'old\n');
+	plant(future, process.pid, {age: -200, up: upNow()});
+	assert.equal(runSync(future, {sig: 'fut', json, icons, roots: app}), 'written');
+	assert.equal(read(join(future, 'data', 'sig')), 'fut\n');
 	const otherBoot = join(base, 'boot');
 	mkdirSync(join(otherBoot, 'data'), {recursive: true});
 	writeFileSync(join(otherBoot, 'data', 'sig'), 'old\n');
@@ -786,6 +814,15 @@ test('syncBar: the run lock stays in data/, and only a lock that is not this scr
 	assert.equal(runSync(retry, {sig: 'rty', json, icons, roots: app, hook: 'cp () { return 1; }\n'}), 'written');
 	assert.equal(read(join(retry, 'data', 'sig')), null);
 	assert.equal(gone(lockDir(retry)), true);
+	const swapped = join(base, 'swapped');
+	mkdirSync(join(swapped, 'data'), {recursive: true});
+	writeFileSync(join(swapped, 'data', 'sig'), 'old\n');
+	plant(swapped, dead);
+	const count = join(base, 'head-count');
+	const swapHook = `head () { c=$(cat '${count}' 2>/dev/null || echo 0); c=$((c+1)); printf '%s' "$c" > '${count}'; if [ "$c" -gt 1 ]; then echo 1; return; fi; command head "$@"; }\n`;
+	assert.equal(runSync(swapped, {sig: 'swp', json, icons, roots: app, hook: swapHook}), 'busy');
+	assert.equal(read(join(swapped, 'data', 'sig')), 'old\n');
+	assert.equal(read(join(lockDir(swapped), 'p')), dead + '\n');
 	const broke = join(base, 'broke');
 	mkdirSync(broke);
 	assert.equal(runSync(broke, {sig: 'brk', json, icons, roots: app, hook: 'head () { echo 1; }\n'}), 'busy');

@@ -215,10 +215,12 @@ The same settings are used by `com.sammysco.avoverlay`.
   bar is already up to date that run answers `same` and changes nothing; one such run on each return is the cost of noticing the update. A copy that
   failed while writing is not signed, so the next run tries it again. Two shells can overlap when a call times out or Lumen reloads while the
   first shell is still running. The run holds `data/.lock` (root's own `data/`, already checked), with its pid and the boot id. The other
-  shell answers `busy`, logs it, and does not sign. Lumen tries a busy write three times, 2 seconds apart. A lock is taken over when its boot
-  id differs, when it names this shell's own pid, or when its pid is dead. An empty pid counts as live until the lock is 120 seconds old. A
-  live pid is taken for that age only when `/proc/<pid>/cmdline` is not this bar script, the same check the watcher uses for its own command
-  line. A live pid that is this script is left alone. A path that resolves outside the app folders, a file that
+  shell answers `busy`, logs it, and does not sign. Lumen tries a busy write three times, 2 seconds apart. A different boot id is stale
+  before any command line is trusted. A live pid counts as this script only on that boot, and only when its command line starts with
+  `sh -c # lumen-bar-sync`. That pid is left alone for the wall clock, and taken once `/proc/uptime` is 600 seconds past the start stored in
+  the lock. An empty pid, or a pid whose command line is not that prefix, counts as live until the lock is 120 seconds off (either way).
+  The pid is read again before a stale lock is removed; if it changed, the answer is `busy`. A lock is also taken over when it names this
+  shell's own pid, or when its pid is dead. A path that resolves outside the app folders, a file that
   is too big, or a file that is not a real image is signed plus `-p` at once. A changed list still rewrites. An icon that is not a PNG, JPEG or WebP is not
   sent to the copy. The signature includes
   `BAR_EPOCH`, so an update rewrites a bar left by 1.0.9044. It is

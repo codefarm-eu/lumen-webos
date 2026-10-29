@@ -430,6 +430,7 @@ test('a busy bar write is tried three times, and cleanup stops the rest', async 
 	assert.equal(calls, 1);
 	const next = queued[0];
 	stopEarly();
+	assert.equal(queued[0], null);
 	next();
 	await flush();
 	assert.equal(calls, 1);
