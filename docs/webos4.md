@@ -208,9 +208,9 @@ The same settings are used by `com.sammysco.avoverlay`.
   says (`ssh -tt` with the script decoded on the TV; `sh -s` over the pty hangs, and `timeout 90` is not this busybox). A copied file has to be
   a PNG, JPEG or WebP of at most 1 MiB, and still under the app folders after `readlink -f`. `bar.json` names an
   icon when that copy is a plain file. A failed re-copy leaves the previous good file in place and keeps naming it; with no previous file the
-  field is `null`. A copy that failed while writing is not signed, so the next start tries it again. A file that is missing, too big, or not a
-  real image is signed as the signature plus `-p`, so the same list then answers `same` and is not logged again, and a changed list still
-  rewrites. An icon that is not a PNG, JPEG or WebP is not sent to the copy. The signature includes
+  field is `null`. A missing file, and a copy that failed while writing, are not signed, so the next start tries them again. A file that is too
+  big or not a real image is signed as the signature plus `-p`, so the same list then answers `same` and is not logged again, and a changed
+  list still rewrites. An icon that is not a PNG, JPEG or WebP is not sent to the copy. The signature includes
   `BAR_EPOCH`, so an update rewrites a bar left by 1.0.9044. It is
   written again only when a signature in `data/sig` changes, so an update of Lumen bar,
   which empties its folder, is refilled at Lumen's next start. The bar's folder is writable by others, so this write does not use a full
@@ -251,8 +251,8 @@ sent through networkinput:
 
 - **Recent tiles need an icon (1.0.9013):** a recent app with no icon file in `data/icons/` (TV Settings, `com.palm.app.settings`, and other
   system apps Lumen draws with its own glyph) is left out, as in the first hand-installed test build, where the bar showed the dock plus
-  Live TV only. A copy that fails while writing is tried again next start. A file that is missing, too big, or not a real image stays off the
-  recent row, and that result is signed so it is not retried on every start. A failed re-copy of an icon that was already there keeps the
+  Live TV only. A missing file, and a copy that fails while writing, are tried again next start. A file that is too big or not a real image stays
+  off the recent row, and that result is signed so it is not retried on every start. A failed re-copy of an icon that was already there keeps the
   previous file, so the recent app stays. 1.0.9007-1.0.9012 drew TV Settings as a grey "T" tile. The bar's code and CSS were otherwise byte-identical between the
   hand build and the published ones (only the version differs); the change came from Lumen's own data, refilled at its next start.
   Test: `tools/test/bar.test.mjs` (bar.js in a vm with a fake DOM and Luna bridge).

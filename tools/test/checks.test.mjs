@@ -218,9 +218,10 @@ test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpa
 	assert.equal(runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'written');
 	const data = join(bar, 'data');
 	assert.equal(JSON.parse(read(join(data, 'bar.json'))).title, 'a "b"');
-	// the link resolves outside the app folder: a permanent miss, signed so the same list is not rewritten
-	assert.equal(read(join(data, 'sig')), 'abc-p\n');
-	assert.equal(runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'same');
+	// the link resolves outside the app folder: a missing file is tried again, and the signature is not written
+	assert.equal(read(join(data, 'sig')), null);
+	assert.equal(runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'written');
+	assert.equal(read(join(data, 'sig')), null);
 	assert.equal(Buffer.compare(readFileSync(join(data, 'icons', 'yt.png')), bytes), 0);
 	assert.equal(modeOf(join(data, 'icons', 'yt.png')), '644');
 	assert.equal(read(join(data, 'icons', 'leak.png')), null);
@@ -440,10 +441,10 @@ test('syncBar: C8 developer and cryptofs icons are copied, including an app outs
 	assert.equal(read(secret), 'secret');
 	assert.equal(modeOf(secret), '600');
 	assert.equal(Object.hasOwn(got.apps, 'youtube.leanback.v4'), false);
-	// a missing file is permanent: signed with -p, so the same list next start answers "same"
-	assert.equal(read(join(bar, 'data', 'sig')), 'c8sig-p\n');
-	assert.equal(runSync(bar, {sig: 'c8sig', json: {v: 1, apps}, icons, roots: join(base, 'media')}), 'same');
-	assert.equal(read(join(bar, 'data', 'sig')), 'c8sig-p\n');
+	// a missing file is tried again: the signature is not written
+	assert.equal(read(join(bar, 'data', 'sig')), null);
+	assert.equal(runSync(bar, {sig: 'c8sig', json: {v: 1, apps}, icons, roots: join(base, 'media')}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), null);
 });
 
 test('syncBar: the icon token is replaced as a whole, in any key order, and a bad picture is left null', () => {
@@ -519,7 +520,7 @@ test('syncBar: a rewrite that yields no JSON is refused, and a huge file is not 
 
 const webp = (extra = '') => Buffer.concat([Buffer.from('RIFF'), Buffer.from([16, 0, 0, 0]), Buffer.from('WEBP'), Buffer.from(String(extra))]);
 
-test('syncBar: a miss, a huge file or a fake image is signed once, a failed write is tried again, and WebP is copied', () => {
+test('syncBar: a missing file is copied once it appears, a non-image is signed once, and WebP is copied', () => {
 	const base = mkdtempSync(join(tmpdir(), 'sync-perm-'));
 	const app = join(base, 'app');
 	const bar = join(base, 'bar');
@@ -529,9 +530,36 @@ test('syncBar: a miss, a huge file or a fake image is signed once, a failed writ
 	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
 	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'written');
 	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).apps.a.icon, null);
-	assert.equal(read(join(bar, 'data', 'sig')), 'abc-p\n');
-	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'same');
-	assert.equal(read(join(bar, 'data', 'sig')), 'abc-p\n');
+	assert.equal(read(join(bar, 'data', 'sig')), null);
+	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'written');
+	writeFileSync(join(app, 'gone.png'), png('later'));
+	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'written');
+	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).apps.a.icon, 'data/icons/a.png?abc');
+	assert.equal(readFileSync(join(bar, 'data', 'icons', 'a.png')).includes(Buffer.from('later')), true);
+	assert.equal(read(join(bar, 'data', 'sig')), 'abc\n');
+	// a stored -p with a different request sig rewrites, and the new sig has no -p
+	writeFileSync(join(app, 'bad.png'), Buffer.from('not an image'));
+	const bad = [{src: join(app, 'bad.png'), name: 'b.png', id: 'b'}];
+	const badJson = {v: 1, apps: {b: {title: 'B', icon: '~icon:b.png'}}};
+	assert.equal(runSync(bar, {sig: 'abd', json: badJson, icons: bad, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abd-p\n');
+	assert.equal(runSync(bar, {sig: 'abe', json, icons: missing, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abe\n');
+	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).apps.a.icon, 'data/icons/a.png?abe');
+	// a clean list, then a permanent skip, stores -p
+	assert.equal(runSync(bar, {sig: 'abf', json, icons: missing, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abf\n');
+	assert.equal(runSync(bar, {sig: 'abg', json: badJson, icons: bad, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abg-p\n');
+	// a failed copy next to a non-image leaves no signature, so the copy is tried again
+	const mixBar = join(base, 'mix');
+	mkdirSync(mixBar);
+	writeFileSync(join(app, 'ok.png'), png('ok'));
+	const mixHook = 'cp () { case "$3" in */ok.png) return 1 ;; esac; command cp "$@"; }\n';
+	const mixIcons = [{src: join(app, 'ok.png'), name: 'a.png', id: 'a'}, {src: join(app, 'bad.png'), name: 'b.png', id: 'b'}];
+	const mixJson = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}, b: {title: 'B', icon: '~icon:b.png'}}};
+	assert.equal(runSync(mixBar, {sig: 'abh', json: mixJson, icons: mixIcons, roots: app, hook: mixHook}), 'written');
+	assert.equal(read(join(mixBar, 'data', 'sig')), null);
 	const copyBar = join(base, 'copy');
 	mkdirSync(copyBar);
 	writeFileSync(join(app, 'ok.png'), png('ok'));
