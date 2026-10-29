@@ -11,7 +11,7 @@ import {APP_CATALOG, type CatalogApp} from '../config/catalog';
 import {APP_ID} from '../config/constants';
 import {isWebOS} from './luna';
 import {appInfo, listLaunchPoints, readIcons} from './root';
-import {keepOnly} from './checks';
+import {keepOnly, safeAppPath} from './checks';
 import {lunaCall} from './luna';
 import {appExists} from './launch';
 import {ICON_PACK} from '../config/iconpack';
@@ -25,6 +25,8 @@ export interface AppEntry {
 	title: string;
 	/** image URL (relative asset path or data: URI); undefined → monogram */
 	iconUrl?: string;
+	/** absolute path of the icon file on the TV, when it sits under an app folder (lib/checks.ts). Lumen bar copies this. */
+	iconPath?: string;
 	color?: string;
 	/** a small square icon (not full tile artwork): drawn at a sharp size on a tile coloured like it */
 	plain?: boolean;
@@ -54,7 +56,14 @@ export function listApps (useHomebrew: boolean, showSystem = false): Promise<App
 	// every icon path this listing looked up, from both lists (the TV's launch points and the system apps): the icon cache is pruned once,
 	// against all of them. Pruning in each loadIcons dropped the other list's icons, so each start read them all again as root.
 	const seen: string[] = [];
-	return listAppsBase(useHomebrew, seen).then((list) => (showSystem ? addSystemApps(list, seen) : list)).then((list) => { pruneIconCache(seen); return list; });
+	return listAppsBase(useHomebrew, seen).then((list) => (showSystem ? addSystemApps(list, seen) : list)).then((list) => {
+		pruneIconCache(seen);
+		// an app that left the list, or whose icon file went away, must not keep a path from an earlier launch
+		const keep: Record<string, boolean> = {};
+		list.apps.forEach((a) => { keep[a.id] = true; });
+		Object.keys(iconPaths).forEach((id) => { if (!keep[id]) delete iconPaths[id]; });
+		return list;
+	});
 }
 
 // ---------- the list the last launch showed (lib/boot.ts) ----------
@@ -71,21 +80,30 @@ export function cachedApps (useHomebrew: boolean, showSystem: boolean): AppEntry
 	if (!saved || saved.key !== listKey(useHomebrew, showSystem) || !Array.isArray(saved.apps)) return null;
 	const icons = saved.apps.some((a) => !!a.iconUrl && a.iconUrl.indexOf(ICON_REF) === 0) ? readIconCache() : {};
 	return saved.apps.map((a) => {
-		if (!a.iconUrl || a.iconUrl.indexOf(ICON_REF) !== 0) return a;
+		// the path is kept on the entry too (not only inside @icon:), so a cold start can copy it before this map is filled another way
+		const savedPath = a.iconPath && safeAppPath(a.iconPath) ? a.iconPath : undefined;
+		if (savedPath) iconPaths[a.id] = savedPath;
+		if (!a.iconUrl || a.iconUrl.indexOf(ICON_REF) !== 0) return savedPath ? {...a, iconPath: savedPath} : a;
 		const path = a.iconUrl.slice(ICON_REF.length);
-		iconPaths[a.id] = path;
-		return {...a, iconUrl: icons[path]};
+		if (safeAppPath(path)) iconPaths[a.id] = path;
+		const iconPath = iconPaths[a.id];
+		return {...a, iconUrl: icons[path], iconPath: iconPath && safeAppPath(iconPath) ? iconPath : undefined};
 	});
 }
 
 export function saveAppsCache (useHomebrew: boolean, showSystem: boolean, apps: AppEntry[]): void {
-	const slim = apps.map((a) => (a.iconUrl && a.iconUrl.indexOf('data:') === 0 && iconPaths[a.id] ? {...a, iconUrl: ICON_REF + iconPaths[a.id]} : a));
+	const slim = apps.map((a) => {
+		const path = (a.iconPath && safeAppPath(a.iconPath) && a.iconPath) || (iconPaths[a.id] && safeAppPath(iconPaths[a.id]) && iconPaths[a.id]) || '';
+		const iconUrl = a.iconUrl && a.iconUrl.indexOf('data:') === 0 && path ? ICON_REF + path : a.iconUrl;
+		return path ? {...a, iconUrl, iconPath: path} : {...a, iconUrl};
+	});
 	writeCache(LIST_CACHE_KEY, {key: listKey(useHomebrew, showSystem), apps: slim});
 }
 
-/** True when two lists would draw the same tiles (the icons compared by length and start, not in full). */
+/** True when two lists would draw the same tiles (the icons compared by length and start, not in full). A path gained for the bar counts: the
+ *  cold-start list often has the picture already and would otherwise be left as it is, and the bar would keep the copy from that list. */
 export function sameApps (a: AppEntry[], b: AppEntry[]): boolean {
-	const sig = (list: AppEntry[]) => JSON.stringify(list.map((x) => [x.id, x.title, x.color, !!x.plain, x.iconUrl ? x.iconUrl.length + x.iconUrl.slice(0, 80) : '']));
+	const sig = (list: AppEntry[]) => JSON.stringify(list.map((x) => [x.id, x.title, x.color, !!x.plain, x.iconPath || '', x.iconUrl ? x.iconUrl.length + x.iconUrl.slice(0, 80) : '']));
 	return sig(a) === sig(b);
 }
 
@@ -104,7 +122,10 @@ function addSystemApps (list: AppList, seen: string[]): Promise<AppList> {
 			: Promise.resolve(found.map((a): LaunchPoint => ({id: a.id, title: a.title})));
 		return points.then((pts) => loadIcons(pts, list.source === 'homebrew', seen).then((icons) => Promise.all(found.map((a, i) => {
 			const pack = packIcon(a.id, a.title);
-			return withIconColor({id: a.id, title: a.title, iconUrl: pack || icons[a.id], color: tvColor(pts[i]) || a.color, plain: !pack && !!icons[a.id]});
+			const iconPath = fileIcon(pts[i]);
+			if (iconPath) iconPaths[a.id] = iconPath;
+			else delete iconPaths[a.id];
+			return withIconColor({id: a.id, title: a.title, iconUrl: pack || icons[a.id], color: tvColor(pts[i]) || a.color, plain: !pack && !!icons[a.id], iconPath});
 		})))).then((apps) => ({...list, apps: list.apps.concat(apps)}));
 	});
 }
@@ -146,12 +167,30 @@ function listViaCatalog (): Promise<AppEntry[]> {
 
 /** a launch point as applicationManager/listLaunchPoints (and getAppInfo) gives it: absolute icon paths on the TV
  *  (/usr/palm/applications/<id>/..., /media/cryptofs/apps/usr/palm/applications/<id>/...), and the colours LG's launcher draws them on */
-interface LaunchPoint { id: string; title: string; largeIcon?: string; mediumLargeIcon?: string; icon?: string; iconColor?: string; bgColor?: string; }
+interface LaunchPoint { id: string; title: string; folderPath?: string; largeIcon?: string; mediumLargeIcon?: string; icon?: string; iconColor?: string; bgColor?: string; }
 
 const LIST_LAUNCH_POINTS = 'luna://com.webos.applicationManager/listLaunchPoints';
 
-/** the sharpest icon: largeIcon (130 px on webOS 4), then mediumLargeIcon, then icon (80 px) */
-const bestIcon = (p: LaunchPoint): string | undefined => p.largeIcon || p.mediumLargeIcon || p.icon;
+/** The icon as a file under an app folder, for Lumen bar and for the root read. An http icon is skipped (it is not a file); a relative name is
+ *  joined to folderPath. The first of large, medium, icon that lands under APP_ROOTS wins. */
+function fileIcon (p: LaunchPoint): string | undefined {
+	const folder = p.folderPath && p.folderPath.charAt(0) === '/' ? p.folderPath.replace(/\/$/, '') : '';
+	for (const raw of [p.largeIcon, p.mediumLargeIcon, p.icon]) {
+		if (!raw || raw.indexOf('://') !== -1) continue;
+		const abs = raw.charAt(0) === '/' ? raw : folder ? `${folder}/${raw.replace(/^\.?\//, '')}` : '';
+		if (abs && safeAppPath(abs)) return abs;
+	}
+	return undefined;
+}
+
+/** The icon the old loader would try as a file:// URL when it is not under an app folder: the first of large, medium, icon that is a plain
+ *  absolute path. `..` is not tried. It is never read as root (that stays fileIcon). */
+function looseIcon (p: LaunchPoint): string | undefined {
+	const raw = p.largeIcon || p.mediumLargeIcon || p.icon;
+	if (!raw || !/^\/[A-Za-z0-9._\/+@-]+$/.test(raw)) return undefined;
+	if (raw.slice(1).split('/').some((s) => s === '' || s === '.' || s === '..')) return undefined;
+	return raw;
+}
 
 const COLOR = /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9., %]+\))$/;
 /** LG's tile colour for the app: iconColor, else bgColor (white is LG's "not set" for both, so it is skipped) */
@@ -181,8 +220,10 @@ function fromLaunchPoints (all: LaunchPoint[] | undefined, root: boolean, seen: 
 	if (!points.length) return Promise.reject(new Error('no launch points'));
 	bootMark('apps-parsed', `${points.length}`);
 	return loadIcons(points, root, seen).then((icons) => Promise.all(points.map((p) => {
-		const path = bestIcon(p);
-		if (path && icons[p.id]) iconPaths[p.id] = path;
+		// kept even when the tile shows a bundled icon or a data: URI: the bar copies the file, it does not reuse the picture bytes
+		const iconPath = fileIcon(p);
+		if (iconPath) iconPaths[p.id] = iconPath;
+		else delete iconPaths[p.id];
 		const known = APP_CATALOG.find((c) => c.id === p.id);
 		return {
 			id: p.id,
@@ -191,7 +232,8 @@ function fromLaunchPoints (all: LaunchPoint[] | undefined, root: boolean, seen: 
 			// the catalogue's own icon before the TV's: they are full squares picked to fill a tile, the TV's often have a margin
 			iconUrl: packIcon(p.id, known ? known.title : p.title) || (known && known.icon ? ICON_DIR + known.icon : undefined) || icons[p.id],
 			color: (known && known.color) || tvColor(p),
-			plain: !packIcon(p.id, known ? known.title : p.title) && !!(icons[p.id] || (known && known.icon))
+			plain: !packIcon(p.id, known ? known.title : p.title) && !!(icons[p.id] || (known && known.icon)),
+			iconPath
 		} as AppEntry;
 	}).map(withIconColor)).then((list) => { bootMark('apps-colours'); return list; }));
 }
@@ -218,26 +260,30 @@ const ICON_BATCH = 8;
 function loadIcons (points: LaunchPoint[], root: boolean, seen: string[]): Promise<Record<string, string>> {
 	const cache = readIconCache();
 	const result: Record<string, string> = {};
-	const missing: {id: string; path: string}[] = [];
+	const missing: {id: string; path: string; asRoot: boolean}[] = [];
 	for (const p of points) {
-		const path = bestIcon(p);
-		if (!path || !/^\/[A-Za-z0-9._\/+@-]+$/.test(path)) continue;
+		// fileIcon skips an http largeIcon and uses the file icon under it. A path outside the app folders is still tried as a file the
+		// app itself can load (as before); only a path under APP_ROOTS is read as root.
+		const rooted = fileIcon(p);
+		const path = rooted || looseIcon(p);
+		if (!path) continue;
 		seen.push(path);
 		if (cache[path]) result[p.id] = cache[path];
-		else missing.push({id: p.id, path});
+		else missing.push({id: p.id, path, asRoot: !!rooted});
 	}
 	if (!missing.length) return Promise.resolve(result);
 
 	return Promise.all(missing.map((m) => probeFile(m.path))).then((urls) => {
-		const unread: {id: string; path: string}[] = [];
+		const unread: {id: string; path: string; asRoot: boolean}[] = [];
 		missing.forEach((m, i) => {
 			const url = urls[i];
 			if (url) { result[m.id] = url; cache[m.path] = url; } else unread.push(m);
 		});
 		bootMark('icons-file', `${missing.length - unread.length}/${missing.length}`);
-		if (!unread.length || !root) { writeIconCache(cache); return result; }
+		const forRoot = root ? unread.filter((m) => m.asRoot) : [];
+		if (!forRoot.length) { writeIconCache(cache); return result; }
 		const batches: {id: string; path: string}[][] = [];
-		for (let i = 0; i < unread.length; i += ICON_BATCH) batches.push(unread.slice(i, i + ICON_BATCH));
+		for (let i = 0; i < forRoot.length; i += ICON_BATCH) batches.push(forRoot.slice(i, i + ICON_BATCH));
 		// one batch after another: one line per icon, "<index> <base64>" (lib/root.ts skips any path that is not a plain absolute path)
 		return batches.reduce((chain, batch) => chain.then(() => readIcons(batch.map((m) => m.path)).then((out) => {
 			for (const line of out.split('\n')) {
@@ -348,13 +394,46 @@ export function seedAppIds (apps: AppEntry[], preferred: string[]): string[] {
 	return first.concat(rest).slice(0, 24);
 }
 
-/** Where an app's icon is as a file on the TV, for Lumen bar (it copies the files): a TV icon read through the Homebrew Channel → its TV path;
- *  a bundled icon (relative) → that path in Lumen's folder (`dir`); a file:// URL → its path. A data: URI with no known path, or no icon → undefined. */
-export function iconFile (a: AppEntry, dir: string): string | undefined {
+/** picture URL → file path, built once per bar sync. Parsing the icon cache per app re-reads about a megabyte of data: URIs. */
+export function iconPathByPicture (): Record<string, string> {
+	const cache = readIconCache();
+	const out: Record<string, string> = {};
+	Object.keys(cache).forEach((path) => {
+		const url = cache[path];
+		if (url && safeAppPath(path) && out[url] === undefined) out[url] = path;
+	});
+	return out;
+}
+
+/** Where an app's icon is as a file on the TV, for Lumen bar. A bundled or icon-pack picture (a relative `iconUrl`, the same one the tile
+ *  draws) wins. The TV path is used only for a `data:` URI, a `file://` URL, an `@icon:` ref, or no picture. `byPicture` is from
+ *  iconPathByPicture. An http URL is not a file, and a path outside the app folders is left out. */
+export function iconFile (a: AppEntry, dir: string, byPicture?: Record<string, string>): string | undefined {
+	const picked = (p?: string) => (p && safeAppPath(p) ? p : undefined);
 	const u = a.iconUrl;
-	if (!u) return undefined;
-	if (u.indexOf('data:') === 0) return iconPaths[a.id];
-	if (u.indexOf('file://') === 0) return decodeURIComponent(u.slice(7));
-	if (/^[a-z]+:/i.test(u)) return undefined;
-	return dir + '/' + u.replace(/^\.?\//, '');
+	const relative = !!u && u.indexOf('data:') !== 0 && u.indexOf('file://') !== 0 && u.indexOf(ICON_REF) !== 0 && !/^[a-z]+:/i.test(u);
+	if (relative && u) return picked(dir.replace(/\/$/, '') + '/' + u.replace(/^\.?\//, ''));
+	const tv = picked(a.iconPath) || picked(iconPaths[a.id]);
+	if (!u) return tv;
+	if (u.indexOf(ICON_REF) === 0) return picked(u.slice(ICON_REF.length)) || tv;
+	if (u.indexOf('file://') === 0) {
+		try {
+			const p = picked(decodeURIComponent(u.slice(7)));
+			if (p) return p;
+		} catch { /* a broken percent-encoding is not a path */ }
+		return tv;
+	}
+	// the app's own path wins over the picture map: two icons can share bytes, and the map keeps only the first path
+	if (u.indexOf('data:') === 0) return tv || (byPicture && picked(byPicture[u]));
+	return undefined;
+}
+
+/** The file the bar copies and whether that picture is a small icon. A bundled or pack file keeps the tile's `plain` (the same picture).
+ *  A TV file is a small icon, so `plain` is true even when the tile has no picture yet (an http largeIcon, or a root read that failed). */
+export function barIcon (a: AppEntry, dir: string, byPicture?: Record<string, string>): {file?: string; plain?: boolean} {
+	const file = iconFile(a, dir, byPicture);
+	if (!file) return {plain: a.plain};
+	const u = a.iconUrl || '';
+	const relative = !!u && u.indexOf('data:') !== 0 && u.indexOf('file://') !== 0 && u.indexOf(ICON_REF) !== 0 && !/^[a-z]+:/i.test(u);
+	return {file, plain: relative ? a.plain : true};
 }

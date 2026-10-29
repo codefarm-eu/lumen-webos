@@ -2,11 +2,11 @@
 // lib/backlightSaver.ts, each turned into JS by esbuild (they have no imports)
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
+import {execFileSync, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync} from 'node:fs';
+import {chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {createRequire} from 'node:module';
 const require = createRequire(new URL('../../app/package.json', import.meta.url));
 const {transformSync} = require('esbuild');
@@ -19,6 +19,9 @@ test('icon paths: only plain paths under the app folders, no "." or ".." segment
 	assert.equal(safeAppPath('/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon.png'), true);
 	assert.equal(safeAppPath('/usr/palm/applications/com.webos.app.hdmi1/icon.png'), true);
 	assert.equal(safeAppPath('/media/cryptofs/apps/usr/palm/applications/youtube.leanback.v4/largeIcon.png'), true);
+	assert.equal(safeAppPath('/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-130.png'), true);
+	assert.equal(safeAppPath('/media/cryptofs/apps/usr/palm/applications/com.theadelab.amclient-lg/largeIcon.png'), true);
+	assert.equal(safeAppPath('/media/cryptofs/apps/usr/palm/applications/netflix/icon.png'), true);
 	for (const bad of ['/media/developer/apps/x/../../../../etc/shadow', '/media/developer/apps/./x.png', '/media/developer/apps//x.png',
 		'/etc/shadow', '/var/lib/homehook/immich.json', '/home/root/.ssh/id_rsa', 'media/developer/apps/x.png', "/media/developer/apps/a'b.png",
 		'/media/developer/apps/a b.png', '/media/developer/apps/x/..', '/usr/palmx/a.png']) assert.equal(safeAppPath(bad), false, bad);
@@ -169,30 +172,40 @@ test('backlight: saved with its picture mode and put back only into that mode; a
 	assert.deepEqual(o.st.sets, [75]);
 });
 
+const png = (extra = '') => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(String(extra))]);
 const modeOf = (p) => execFileSync('sh', ['-c', `stat -c %a '${p}'`], {encoding: 'utf8'}).trim();
 const read = (p) => { try { return readFileSync(p, 'utf8'); } catch { return null; } };
 const b64 = (obj) => Buffer.from(JSON.stringify(obj), 'utf8').toString('base64');
 
 /** runs the link-safe bar write in `dir`. `roots`, when set, is treated as an app-folder root so an icon under it can be copied. */
-function runSync (dir, {sig = 'abc', json = {v: 1, title: 'a "b"'}, icons = [], hook = '', roots = null} = {}) {
+function runSync (dir, {sig = 'abc', json = {v: 1, title: 'a "b"'}, icons = [], hook = '', roots = null, full = false} = {}) {
 	let script = syncBarShell(dir, sig, b64(json), icons);
-	if (roots) script = script.replace(APP_ROOTS_CASE, roots + '/*');
-	return execFileSync('sh', ['-c', hook + script], {encoding: 'utf8'}).trim();
+	// every icon's resolvedPath embeds the app-root list; one replace would only retarget the first icon
+	if (roots) script = script.split(APP_ROOTS_CASE).join(roots + '/*');
+	const out = execFileSync('sh', ['-c', hook + script], {encoding: 'utf8'}).replace(/\s+$/, '');
+	// skip lines come before the status word
+	return full ? out : (out.split('\n').pop() || '').trim();
 }
+const lockDir = (bar) => join(bar, 'data', '.lock');
+const gone = (p) => { try { lstatSync(p); return false; } catch { return true; } };
+const bootNow = () => execFileSync('sh', ['-c', 'cat /proc/sys/kernel/random/boot_id'], {encoding: 'utf8'}).trim();
 
 test('syncBar: a reply that is not exactly one status word is never a successful write', () => {
-	for (const s of ['written', 'written\n', 'noise\nwritten']) assert.equal(syncBarResult(s), 'written');
+	for (const s of ['written', 'written\n', 'noise\nwritten', 'skip netflix unresolved\nwritten']) assert.equal(syncBarResult(s), 'written');
 	assert.equal(syncBarResult('same'), 'same');
 	assert.equal(syncBarResult('missing'), 'missing');
 	assert.equal(syncBarResult('refused'), 'refused');
-	for (const s of ['', 'oops', 'written extra', 'not written']) assert.equal(syncBarResult(s), 'refused', JSON.stringify(s));
+	assert.equal(syncBarResult('busy'), 'busy');
+	assert.equal(syncBarResult('skip a unresolved\nbusy'), 'busy');
+	for (const s of ['', 'oops', 'written extra', 'not written', 'busy extra']) assert.equal(syncBarResult(s), 'refused', JSON.stringify(s));
 });
 
 test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpapers stay, and the shell never removes recursively', () => {
 	const bar = mkdtempSync(join(tmpdir(), 'sync-bar-'));
 	const root = mkdtempSync(join(tmpdir(), 'sync-apps-'));
 	mkdirSync(join(root, 'app'), {recursive: true});
-	writeFileSync(join(root, 'app', 'icon.png'), 'png-bytes');
+	const bytes = png('png-bytes');
+	writeFileSync(join(root, 'app', 'icon.png'), bytes);
 	const secret = join(root, 'secret');
 	writeFileSync(secret, 'secret');
 	symlinkSync(secret, join(root, 'app', 'leak.png'));
@@ -207,11 +220,15 @@ test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpa
 	const script = syncBarShell(bar, 'abc', b64({v: 1}), icons);
 	assert.doesNotMatch(script, /rm -[a-z]*r/);
 	assert.doesNotMatch(script, /wallpapers/);
-	assert.equal(runSync(bar, {icons, roots: root, json: {v: 1, title: 'a "b"'}}), 'written');
+	const first = runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}, full: true});
+	assert.equal(first.split('\n').pop(), 'written');
+	assert.match(first, /skip leak\.png outside/);
 	const data = join(bar, 'data');
 	assert.equal(JSON.parse(read(join(data, 'bar.json'))).title, 'a "b"');
-	assert.equal(read(join(data, 'sig')), 'abc\n');
-	assert.equal(read(join(data, 'icons', 'yt.png')), 'png-bytes');
+	// the link resolves outside the app folder: signed, so the same list answers "same" and is not rewritten
+	assert.equal(read(join(data, 'sig')), 'abc-p\n');
+	assert.equal(runSync(bar, {icons, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'same');
+	assert.equal(Buffer.compare(readFileSync(join(data, 'icons', 'yt.png')), bytes), 0);
 	assert.equal(modeOf(join(data, 'icons', 'yt.png')), '644');
 	assert.equal(read(join(data, 'icons', 'leak.png')), null);
 	assert.equal(read(secret), 'secret');
@@ -221,12 +238,14 @@ test('syncBar: bar.json and sig round-trip, a matching sig is left alone, wallpa
 	assert.equal(modeOf(join(data, 'wallpapers', 'keep')), '600');
 	assert.equal(modeOf(join(data, 'wallpapers')), '700');
 	assert.equal(lstatSync(join(data, 'icons', 'yt.png')).isSymbolicLink(), false);
-	writeFileSync(join(root, 'app', 'icon.png'), 'changed');
-	assert.equal(runSync(bar, {icons, roots: root}), 'same');
-	assert.equal(read(join(data, 'icons', 'yt.png')), 'png-bytes');
+	const only = [icons[0]];
+	assert.equal(runSync(bar, {sig: 'abd', icons: only, roots: join(root, 'app'), json: {v: 1, title: 'a "b"'}}), 'written');
+	assert.equal(read(join(data, 'sig')), 'abd\n');
+	writeFileSync(join(root, 'app', 'icon.png'), png('changed'));
+	assert.equal(runSync(bar, {sig: 'abd', icons: only, roots: join(root, 'app')}), 'same');
+	assert.equal(Buffer.compare(readFileSync(join(data, 'icons', 'yt.png')), bytes), 0);
 	const rootSrc = readFileSync(new URL('../../app/src/lib/root.ts', import.meta.url), 'utf8');
 	assert.match(rootSrc, /syncBarShell\(dir, sig, toBase64\(json\), icons\)/);
-	assert.match(rootSrc, /\.then\(syncBarResult\)/);
 	assert.doesNotMatch(rootSrc, /rm -rf \$\{dir\}/);
 	assert.doesNotMatch(rootSrc, /cat \$\{dir\}\/data\/sig/);
 	assert.doesNotMatch(rootSrc, /> \$\{dir\}\/data\/bar\.json/);
@@ -302,7 +321,9 @@ test('syncBar: a busybox without id takes the writer as root, as the watcher doe
 	const theirs = mkdtempSync(join(tmpdir(), 'sync-theirs-'));
 	mkdirSync(join(theirs, 'data'));
 	assert.equal(runSync(theirs, {hook: 'stat () { case "$*" in *%u*data) echo 4242 ;; *) command stat "$@" ;; esac; }\n'}), 'refused');
-	assert.match(readFileSync(new URL('../../app/src/app.tsx', import.meta.url), 'utf8'), /r === 'refused'\) logError\('bar'/);
+	const appSrc = readFileSync(new URL('../../app/src/app.tsx', import.meta.url), 'utf8');
+	assert.match(appSrc, /r === 'refused'\) logError\('bar'/);
+	assert.match(appSrc, /clearBarSeen\(\)/);
 });
 
 test('syncBar: a data or icons folder that is not ours is left alone, and a link swapped in at mkdir is not entered', () => {
@@ -356,11 +377,11 @@ test('syncBar: a picture swapped for a link while it is copied is not kept, and 
 	const root = mkdtempSync(join(tmpdir(), 'sync-src-'));
 	const bar = mkdtempSync(join(tmpdir(), 'sync-dst-'));
 	mkdirSync(join(root, 'app'), {recursive: true});
-	writeFileSync(join(root, 'app', 'icon.png'), 'png');
+	writeFileSync(join(root, 'app', 'icon.png'), png('png'));
 	const secret = join(root, 'secret');
 	writeFileSync(secret, 'secret');
 	chmodSync(secret, 0o600);
-	const hook = `cp () { command cp "$@"; rm -f -- .new; ln -s '${secret}' .new; }\n`;
+	const hook = `cp () { command cp "$@"; rm -f -- .n."$t"; ln -s '${secret}' .n."$t"; }\n`;
 	assert.equal(runSync(bar, {icons: [{src: join(root, 'app', 'icon.png'), name: 'yt.png'}], roots: root, hook}), 'written');
 	assert.equal(modeOf(secret), '600');
 	assert.equal(read(secret), 'secret');
@@ -376,6 +397,489 @@ test('syncBar: a picture swapped for a link while it is copied is not kept, and 
 	assert.equal(modeOf(target), '600');
 	assert.equal(lstatSync(join(pre, 'data', 'bar.json')).isSymbolicLink(), false);
 	assert.equal(JSON.parse(read(join(pre, 'data', 'bar.json'))).v, 1);
+});
+
+test('syncBar: C8 developer and cryptofs icons are copied, including an app outside the first boot sample, and a miss is not listed', () => {
+	// the paths the C8 actually has. /media is not writable here, so the copy runs on a mirror of the same suffixes.
+	const real = {
+		moonfin: '/media/developer/apps/usr/palm/applications/org.moonfin.webos/icon-130.png',
+		music: '/media/cryptofs/apps/usr/palm/applications/com.theadelab.amclient-lg/largeIcon.png',
+		netflix: '/media/cryptofs/apps/usr/palm/applications/netflix/icon.png',
+		iplayer: '/media/cryptofs/apps/usr/palm/applications/bbc.iplayer.3.0/icon.png',
+		evil: '/media/developer/apps/usr/palm/applications/org.evil.app/icon.png'
+	};
+	for (const p of Object.values(real)) assert.equal(safeAppPath(p), true, p);
+	const base = mkdtempSync(join(tmpdir(), 'sync-c8-'));
+	const mirror = (p) => join(base, p.replace(/^\//, ''));
+	const bar = join(base, 'bar');
+	mkdirSync(bar);
+	for (const key of ['moonfin', 'music', 'netflix']) {
+		mkdirSync(dirname(mirror(real[key])), {recursive: true});
+		writeFileSync(mirror(real[key]), png(key));
+	}
+	const secret = join(base, 'secret');
+	writeFileSync(secret, 'secret');
+	chmodSync(secret, 0o600);
+	mkdirSync(dirname(mirror(real.evil)), {recursive: true});
+	symlinkSync(secret, mirror(real.evil));
+	const icons = [
+		{src: mirror(real.moonfin), name: 'org.moonfin.webos.png', id: 'org.moonfin.webos'},
+		{src: mirror(real.music), name: 'com.theadelab.amclient-lg.png', id: 'com.theadelab.amclient-lg'},
+		{src: mirror(real.netflix), name: 'netflix.png', id: 'netflix'},
+		{src: mirror(real.iplayer), name: 'bbc.iplayer.3.0.png', id: 'bbc.iplayer.3.0'},
+		{src: mirror(real.evil), name: 'org.evil.app.png', id: 'org.evil.app'}
+	];
+	const apps = {};
+	for (const i of icons) apps[i.id] = {title: i.id, plain: true, icon: '~icon:' + i.name};
+	const out = runSync(bar, {sig: 'c8sig', json: {v: 1, apps}, icons, roots: join(base, 'media'), full: true});
+	assert.equal(out.split('\n').pop(), 'written');
+	assert.match(out, /skip bbc\.iplayer\.3\.0 unresolved/);
+	assert.match(out, /skip org\.evil\.app outside/);
+	const got = JSON.parse(read(join(bar, 'data', 'bar.json')));
+	assert.equal(got.apps['org.moonfin.webos'].icon, 'data/icons/org.moonfin.webos.png?c8sig');
+	assert.equal(got.apps['com.theadelab.amclient-lg'].icon, 'data/icons/com.theadelab.amclient-lg.png?c8sig');
+	assert.equal(got.apps.netflix.icon, 'data/icons/netflix.png?c8sig');
+	assert.equal(got.apps['bbc.iplayer.3.0'].icon, null);
+	assert.equal(got.apps['org.evil.app'].icon, null);
+	assert.equal(readFileSync(join(bar, 'data', 'icons', 'org.moonfin.webos.png')).includes(Buffer.from('moonfin')), true);
+	assert.equal(readFileSync(join(bar, 'data', 'icons', 'com.theadelab.amclient-lg.png')).includes(Buffer.from('music')), true);
+	assert.equal(readFileSync(join(bar, 'data', 'icons', 'netflix.png')).includes(Buffer.from('netflix')), true);
+	assert.equal(read(join(bar, 'data', 'icons', 'bbc.iplayer.3.0.png')), null);
+	assert.equal(read(join(bar, 'data', 'icons', 'org.evil.app.png')), null);
+	assert.equal(read(secret), 'secret');
+	assert.equal(modeOf(secret), '600');
+	assert.equal(Object.hasOwn(got.apps, 'youtube.leanback.v4'), false);
+	// a missing file is signed -r once, then -p, so it is not rewritten on every start. The link out is outside.
+	assert.equal(read(join(bar, 'data', 'sig')), 'c8sig-r\n');
+	assert.equal(runSync(bar, {sig: 'c8sig', json: {v: 1, apps}, icons, roots: join(base, 'media')}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'c8sig-p\n');
+	assert.equal(runSync(bar, {sig: 'c8sig', json: {v: 1, apps}, icons, roots: join(base, 'media')}), 'same');
+});
+
+test('syncBar: the icon token is replaced as a whole, in any key order, and a bad picture is left null', () => {
+	const base = mkdtempSync(join(tmpdir(), 'sync-tok-'));
+	const app = join(base, 'app');
+	const bar = join(base, 'bar');
+	mkdirSync(app);
+	mkdirSync(bar);
+	writeFileSync(join(app, 'a.png'), png('A'));
+	writeFileSync(join(app, 'along.png'), png('B'));
+	writeFileSync(join(app, 'text.png'), Buffer.from('not an image'));
+	const icons = [
+		{src: join(app, 'a.png'), name: 'a.png', id: 'a'},
+		{src: join(app, 'along.png'), name: 'a.png.png', id: 'a.png'},
+		{src: join(app, 'text.png'), name: 'text.png', id: 'text'}
+	];
+	// icon is not the last key, and "a.png" is a prefix of "a.png.png"
+	const json = {v: 1, apps: {
+		a: {icon: '~icon:a.png', title: 'A'},
+		'a.png': {icon: '~icon:a.png.png', title: 'Long'},
+		text: {icon: '~icon:text.png', title: 'Text', plain: true}
+	}};
+	const out = runSync(bar, {sig: 'tok1', json, icons, roots: app, full: true});
+	assert.equal(out.split('\n').pop(), 'written');
+	assert.match(out, /skip text not-image/);
+	const got = JSON.parse(read(join(bar, 'data', 'bar.json')));
+	assert.equal(got.apps.a.icon, 'data/icons/a.png?tok1');
+	assert.equal(got.apps.a.title, 'A');
+	assert.equal(got.apps['a.png'].icon, 'data/icons/a.png.png?tok1');
+	assert.equal(got.apps.text.icon, null);
+	assert.equal(got.apps.text.title, 'Text');
+	assert.equal(read(join(bar, 'data', 'sig')), 'tok1-p\n');
+	// a title that is the token text is not an icon field, so it stays
+	const titled = {v: 1, apps: {a: {title: '~icon:a.png', icon: '~icon:a.png'}}};
+	const bar2 = join(base, 'bar2');
+	mkdirSync(bar2);
+	assert.equal(runSync(bar2, {sig: 'tok2', json: titled, icons: [icons[0]], roots: app}).split('\n').pop(), 'written');
+	const got2 = JSON.parse(read(join(bar2, 'data', 'bar.json')));
+	assert.equal(got2.apps.a.title, '~icon:a.png');
+	assert.equal(got2.apps.a.icon, 'data/icons/a.png?tok2');
+});
+
+test('syncBar: a rewrite that yields no JSON is refused, and a huge file is not copied', () => {
+	const base = mkdtempSync(join(tmpdir(), 'sync-empty-'));
+	const app = join(base, 'app');
+	const bar = join(base, 'bar');
+	mkdirSync(join(app));
+	mkdirSync(join(bar, 'data'), {recursive: true});
+	writeFileSync(join(bar, 'data', 'bar.json'), '{"v":1,"keep":true}');
+	writeFileSync(join(bar, 'data', 'sig'), 'old\n');
+	writeFileSync(join(app, 'icon.png'), png('ok'));
+	const icons = [{src: join(app, 'icon.png'), name: 'a.png', id: 'a'}];
+	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
+	assert.equal(runSync(bar, {icons, json, roots: app, hook: 'sed () { return 1; }\n'}), 'refused');
+	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).keep, true);
+	assert.equal(read(join(bar, 'data', 'sig')), 'old\n');
+	const huge = mkdtempSync(join(tmpdir(), 'sync-huge-'));
+	const happ = join(huge, 'app');
+	const hbar = join(huge, 'bar');
+	mkdirSync(happ);
+	mkdirSync(hbar);
+	writeFileSync(join(happ, 'icon.png'), png('ok'));
+	// the source is a small PNG. Only the copied file's size is reported huge, so the check has to be on .new.
+	const hook = 'stat () { if [ "$1" = -c ] && [ "$2" = %s ] && [ "$3" != "$r" ]; then echo 2000000; return; fi; command stat "$@"; }\n';
+	const hout = runSync(hbar, {icons: [{src: join(happ, 'icon.png'), name: 'a.png', id: 'a'}], json, roots: happ, hook, full: true});
+	assert.match(hout, /skip a toobig/);
+	assert.equal(hout.split('\n').pop(), 'written');
+	assert.equal(JSON.parse(read(join(hbar, 'data', 'bar.json'))).apps.a.icon, null);
+	assert.equal(read(join(hbar, 'data', 'icons', 'a.png')), null);
+	assert.equal(read(join(hbar, 'data', 'sig')), 'abc-p\n');
+	assert.equal(runSync(hbar, {icons: [{src: join(happ, 'icon.png'), name: 'a.png', id: 'a'}], json, roots: happ, hook}), 'same');
+});
+
+const webp = (extra = '') => Buffer.concat([Buffer.from('RIFF'), Buffer.from([16, 0, 0, 0]), Buffer.from('WEBP'), Buffer.from(String(extra))]);
+
+test('syncBar: a missing file is copied once it appears, a non-image is signed once, and WebP is copied', () => {
+	const base = mkdtempSync(join(tmpdir(), 'sync-perm-'));
+	const app = join(base, 'app');
+	const bar = join(base, 'bar');
+	mkdirSync(app);
+	mkdirSync(bar);
+	const missing = [{src: join(app, 'gone.png'), name: 'a.png', id: 'a'}];
+	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
+	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'written');
+	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).apps.a.icon, null);
+	assert.equal(read(join(bar, 'data', 'sig')), 'abc-r\n');
+	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abc-p\n');
+	assert.equal(runSync(bar, {sig: 'abc', json, icons: missing, roots: app}), 'same');
+	const laterBar = join(base, 'later');
+	mkdirSync(laterBar);
+	assert.equal(runSync(laterBar, {sig: 'lat', json, icons: missing, roots: app}), 'written');
+	assert.equal(read(join(laterBar, 'data', 'sig')), 'lat-r\n');
+	writeFileSync(join(app, 'gone.png'), png('later'));
+	assert.equal(runSync(laterBar, {sig: 'lat', json, icons: missing, roots: app}), 'written');
+	assert.equal(JSON.parse(read(join(laterBar, 'data', 'bar.json'))).apps.a.icon, 'data/icons/a.png?lat');
+	assert.equal(readFileSync(join(laterBar, 'data', 'icons', 'a.png')).includes(Buffer.from('later')), true);
+	assert.equal(read(join(laterBar, 'data', 'sig')), 'lat\n');
+	// a stored -p with a different request sig rewrites, and the new sig has no -p
+	writeFileSync(join(app, 'bad.png'), Buffer.from('not an image'));
+	const bad = [{src: join(app, 'bad.png'), name: 'b.png', id: 'b'}];
+	const badJson = {v: 1, apps: {b: {title: 'B', icon: '~icon:b.png'}}};
+	assert.equal(runSync(bar, {sig: 'abd', json: badJson, icons: bad, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abd-p\n');
+	assert.equal(runSync(bar, {sig: 'abe', json, icons: missing, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abe\n');
+	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).apps.a.icon, 'data/icons/a.png?abe');
+	// a clean list, then a permanent skip, stores -p
+	assert.equal(runSync(bar, {sig: 'abf', json, icons: missing, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abf\n');
+	assert.equal(runSync(bar, {sig: 'abg', json: badJson, icons: bad, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abg-p\n');
+	// a failed copy next to a non-image leaves no signature, so the copy is tried again
+	const mixBar = join(base, 'mix');
+	mkdirSync(mixBar);
+	writeFileSync(join(app, 'ok.png'), png('ok'));
+	const mixHook = 'cp () { case "$3" in */ok.png) return 1 ;; esac; command cp "$@"; }\n';
+	const mixIcons = [{src: join(app, 'ok.png'), name: 'a.png', id: 'a'}, {src: join(app, 'bad.png'), name: 'b.png', id: 'b'}];
+	const mixJson = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}, b: {title: 'B', icon: '~icon:b.png'}}};
+	assert.equal(runSync(mixBar, {sig: 'abh', json: mixJson, icons: mixIcons, roots: app, hook: mixHook}), 'written');
+	assert.equal(read(join(mixBar, 'data', 'sig')), null);
+	const copyBar = join(base, 'copy');
+	mkdirSync(copyBar);
+	writeFileSync(join(app, 'ok.png'), png('ok'));
+	const hook = 'cp () { return 1; }\n';
+	const copyIcons = [{src: join(app, 'ok.png'), name: 'a.png', id: 'a'}];
+	assert.equal(runSync(copyBar, {sig: 'abc', json, icons: copyIcons, roots: app, hook}), 'written');
+	assert.equal(read(join(copyBar, 'data', 'sig')), null);
+	assert.equal(runSync(copyBar, {sig: 'abc', json, icons: copyIcons, roots: app, hook}), 'written');
+	assert.equal(read(join(copyBar, 'data', 'sig')), null);
+	const pack = join(base, 'pack');
+	const packBar = join(base, 'packbar');
+	mkdirSync(pack);
+	mkdirSync(packBar);
+	writeFileSync(join(pack, 'tile.webp'), webp('tile'));
+	writeFileSync(join(pack, 'fake.webp'), Buffer.concat([Buffer.from('RIFF'), Buffer.from([16, 0, 0, 0]), Buffer.from('XXXX')]));
+	const packJson = {v: 1, apps: {tile: {title: 'Tile', icon: '~icon:tile.webp'}, fake: {title: 'Fake', icon: '~icon:fake.webp'}}};
+	const packIcons = [
+		{src: join(pack, 'tile.webp'), name: 'tile.webp', id: 'tile'},
+		{src: join(pack, 'fake.webp'), name: 'fake.webp', id: 'fake'}
+	];
+	const pout = runSync(packBar, {sig: 'wp1', json: packJson, icons: packIcons, roots: pack, full: true});
+	assert.equal(pout.split('\n').pop(), 'written');
+	assert.match(pout, /skip fake not-image/);
+	const pgot = JSON.parse(read(join(packBar, 'data', 'bar.json')));
+	assert.equal(pgot.apps.tile.icon, 'data/icons/tile.webp?wp1');
+	assert.equal(pgot.apps.fake.icon, null);
+	assert.equal(readFileSync(join(packBar, 'data', 'icons', 'tile.webp')).includes(Buffer.from('WEBP')), true);
+	assert.equal(read(join(packBar, 'data', 'sig')), 'wp1-p\n');
+	assert.equal(runSync(packBar, {sig: 'wp1', json: packJson, icons: packIcons, roots: pack}), 'same');
+	const again = join(base, 'again');
+	mkdirSync(again);
+	writeFileSync(join(app, 'a.png'), png('kept'));
+	const keepJson = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
+	const keepIcons = [{src: join(app, 'a.png'), name: 'a.png', id: 'a'}];
+	assert.equal(runSync(again, {sig: 'k1', json: keepJson, icons: keepIcons, roots: app}), 'written');
+	writeFileSync(join(app, 'a.png'), Buffer.from('not an image'));
+	assert.equal(runSync(again, {sig: 'k2', json: keepJson, icons: keepIcons, roots: app}), 'written');
+	const kept = JSON.parse(read(join(again, 'data', 'bar.json')));
+	assert.equal(kept.apps.a.icon, 'data/icons/a.png?k2');
+	assert.equal(readFileSync(join(again, 'data', 'icons', 'a.png')).includes(Buffer.from('kept')), true);
+	assert.equal(read(join(again, 'data', 'sig')), 'k2-p\n');
+});
+
+test('syncBar: a folder is a miss, a link is signed without readlink, and a failed sig move leaves no signature', () => {
+	const base = mkdtempSync(join(tmpdir(), 'sync-fold-'));
+	const app = join(base, 'app');
+	const bar = join(base, 'bar');
+	mkdirSync(app);
+	mkdirSync(join(app, 'icon.png'));
+	mkdirSync(bar);
+	const icons = [{src: join(app, 'icon.png'), name: 'a.png', id: 'a'}];
+	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
+	const fold = runSync(bar, {sig: 'abc', json, icons, roots: app, full: true});
+	assert.match(fold, /skip a unresolved/);
+	assert.equal(fold.split('\n').pop(), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abc-r\n');
+	const fold2 = runSync(bar, {sig: 'abc', json, icons, roots: app, full: true});
+	assert.match(fold2, /skip a unresolved/);
+	assert.equal(fold2.split('\n').pop(), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'abc-p\n');
+	const linkBar = join(base, 'link');
+	mkdirSync(linkBar);
+	const secret = join(base, 'secret');
+	writeFileSync(secret, png('no'));
+	symlinkSync(secret, join(app, 'leak.png'));
+	const linkIcons = [{src: join(app, 'leak.png'), name: 'b.png', id: 'b'}];
+	const linkJson = {v: 1, apps: {b: {title: 'B', icon: '~icon:b.png'}}};
+	const linked = runSync(linkBar, {sig: 'lnk', json: linkJson, icons: linkIcons, roots: app, hook: 'readlink () { return 1; }\n', full: true});
+	assert.match(linked, /skip b outside/);
+	assert.equal(read(join(linkBar, 'data', 'sig')), 'lnk-p\n');
+	assert.equal(runSync(linkBar, {sig: 'lnk', json: linkJson, icons: linkIcons, roots: app, hook: 'readlink () { return 1; }\n'}), 'same');
+	const moveBar = join(base, 'move');
+	mkdirSync(moveBar);
+	writeFileSync(join(app, 'ok.png'), png('ok'));
+	const moveIcons = [{src: join(app, 'ok.png'), name: 'c.png', id: 'c'}];
+	const moveJson = {v: 1, apps: {c: {title: 'C', icon: '~icon:c.png'}}};
+	const moveHook = 'mv () { case "$3" in .sig.*) return 1 ;; esac; command mv "$@"; }\n';
+	assert.equal(runSync(moveBar, {sig: 'mov', json: moveJson, icons: moveIcons, roots: app, hook: moveHook}), 'refused');
+	assert.equal(read(join(moveBar, 'data', 'sig')), null);
+	assert.equal(runSync(moveBar, {sig: 'mov', json: moveJson, icons: moveIcons, roots: app}), 'written');
+	assert.equal(read(join(moveBar, 'data', 'sig')), 'mov\n');
+	assert.equal(JSON.parse(read(join(moveBar, 'data', 'bar.json'))).apps.c.icon, 'data/icons/c.png?mov');
+});
+
+test('syncBar: the run lock stays in data/, and only a lock that is not this script is taken over', () => {
+	const script = syncBarShell('/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen.bar', 'abc', b64({v: 1}), []);
+	assert.match(script, /lumen-bar-sync/);
+	assert.match(script, /mkdir \.lock/);
+	assert.doesNotMatch(script, /\/tmp/);
+	assert.doesNotMatch(script, /rm -[a-z]*r/);
+	const dead = '99999999';
+	assert.throws(() => execFileSync('sh', ['-c', 'kill -0 ' + dead], {stdio: 'ignore'}));
+	const boot = bootNow();
+	const upNow = () => Number(execFileSync('sh', ['-c', 'read u _ < /proc/uptime; printf %s "${u%%.*}"'], {encoding: 'utf8'}));
+	const base = mkdtempSync(join(tmpdir(), 'sync-lock-'));
+	const app = join(base, 'app');
+	mkdirSync(app);
+	writeFileSync(join(app, 'icon.png'), png('ok'));
+	const icons = [{src: join(app, 'icon.png'), name: 'a.png', id: 'a'}];
+	const json = {v: 1, apps: {a: {title: 'A', icon: '~icon:a.png'}}};
+	const plant = (bar, pid, {boot: b = boot, age = 0, empty = false, up = null} = {}) => {
+		const dir = lockDir(bar);
+		mkdirSync(dir, {recursive: true});
+		writeFileSync(join(dir, 'p'), empty ? '' : String(pid) + '\n');
+		writeFileSync(join(dir, 'b'), b + '\n');
+		if (up != null) writeFileSync(join(dir, 'u'), String(up) + '\n');
+		if (age) { const t = Date.now() / 1000 - age; utimesSync(dir, t, t); }
+		return dir;
+	};
+	const held = join(base, 'held');
+	mkdirSync(join(held, 'data'), {recursive: true});
+	writeFileSync(join(held, 'data', 'sig'), 'old\n');
+	writeFileSync(join(held, 'data', 'bar.json'), '{"keep":true}\n');
+	const heldLock = plant(held, process.pid);
+	assert.equal(runSync(held, {sig: 'abc', json, icons, roots: app}), 'busy');
+	assert.equal(read(join(held, 'data', 'sig')), 'old\n');
+	assert.equal(read(join(held, 'data', 'bar.json')), '{"keep":true}\n');
+	assert.equal(read(join(heldLock, 'p')), String(process.pid) + '\n');
+	const fresh = join(base, 'fresh');
+	mkdirSync(fresh);
+	plant(fresh, process.pid);
+	assert.equal(runSync(fresh, {sig: 'abc', json, icons, roots: app}), 'busy');
+	assert.equal(read(join(fresh, 'data', 'sig')), null);
+	const empty = join(base, 'empty');
+	mkdirSync(join(empty, 'data'), {recursive: true});
+	writeFileSync(join(empty, 'data', 'sig'), 'old\n');
+	const emptyLock = plant(empty, '', {empty: true});
+	assert.equal(runSync(empty, {sig: 'abc', json, icons, roots: app}), 'busy');
+	assert.equal(read(join(empty, 'data', 'sig')), 'old\n');
+	assert.equal(read(join(emptyLock, 'p')), '');
+	const emptyOld = join(base, 'emptyold');
+	mkdirSync(join(emptyOld, 'data'), {recursive: true});
+	writeFileSync(join(emptyOld, 'data', 'sig'), 'old\n');
+	plant(emptyOld, '', {empty: true, age: 121});
+	assert.equal(runSync(emptyOld, {sig: 'eod', json, icons, roots: app}), 'written');
+	assert.equal(read(join(emptyOld, 'data', 'sig')), 'eod\n');
+	const own = join(base, 'own');
+	mkdirSync(join(own, 'data'), {recursive: true});
+	writeFileSync(join(own, 'data', 'sig'), 'old\n');
+	const ownLock = lockDir(own);
+	const ownHook = `mkdir -p '${ownLock}'\nprintf '%s\\n' "$$" > '${ownLock}/p'\ncat /proc/sys/kernel/random/boot_id > '${ownLock}/b'\n`;
+	assert.equal(runSync(own, {sig: 'own', json, icons, roots: app, hook: ownHook}), 'written');
+	assert.equal(read(join(own, 'data', 'sig')), 'own\n');
+	assert.equal(gone(ownLock), true);
+	const scriptPid = spawn('sh', ['-c', '# lumen-bar-sync\nsleep 60'], {stdio: 'ignore'});
+	const binPid = spawn('/bin/sh', ['-c', '# lumen-bar-sync\nsleep 60'], {stdio: 'ignore'});
+	const buried = spawn('sh', ['-c', 'sleep 60 # lumen-bar-sync'], {stdio: 'ignore'});
+	try {
+		const cm = execFileSync('sh', ['-c', `tr '\\0' ' ' < /proc/${scriptPid.pid}/cmdline`], {encoding: 'utf8'});
+		assert.match(cm, /^sh -c # lumen-bar-sync/);
+		const nowUp = upNow();
+		const kept = join(base, 'kept');
+		mkdirSync(join(kept, 'data'), {recursive: true});
+		writeFileSync(join(kept, 'data', 'sig'), 'old\n');
+		const keptLock = plant(kept, scriptPid.pid, {age: 121, up: nowUp});
+		assert.equal(runSync(kept, {sig: 'kpt', json, icons, roots: app}), 'busy');
+		assert.equal(read(join(kept, 'data', 'sig')), 'old\n');
+		assert.equal(read(join(keptLock, 'p')), String(scriptPid.pid) + '\n');
+		const wrongBoot = join(base, 'wrongboot');
+		mkdirSync(join(wrongBoot, 'data'), {recursive: true});
+		writeFileSync(join(wrongBoot, 'data', 'sig'), 'old\n');
+		plant(wrongBoot, scriptPid.pid, {boot: '00000000-0000-0000-0000-000000000000', up: nowUp});
+		assert.equal(runSync(wrongBoot, {sig: 'wbt', json, icons, roots: app}), 'written');
+		assert.equal(read(join(wrongBoot, 'data', 'sig')), 'wbt\n');
+		const mid = join(base, 'mid');
+		mkdirSync(join(mid, 'data'), {recursive: true});
+		writeFileSync(join(mid, 'data', 'sig'), 'old\n');
+		plant(mid, buried.pid, {age: 121, up: nowUp});
+		assert.equal(runSync(mid, {sig: 'mid', json, icons, roots: app}), 'written');
+		assert.equal(read(join(mid, 'data', 'sig')), 'mid\n');
+		const long = join(base, 'long');
+		mkdirSync(join(long, 'data'), {recursive: true});
+		writeFileSync(join(long, 'data', 'sig'), 'old\n');
+		// A runner up for less than 601s cannot store "601s ago" as a real uptime (it would be negative, and a
+		// non-numeric start is not a ceiling). Give this run a current uptime 601s past a positive start.
+		plant(long, scriptPid.pid, {up: 1000});
+		const longHook = 'read () { if [ "$1" = up ]; then up=1601; return 0; fi; command read "$@"; }\n';
+		assert.equal(runSync(long, {sig: 'lng', json, icons, roots: app, hook: longHook}), 'written');
+		assert.equal(read(join(long, 'data', 'sig')), 'lng\n');
+		const binCm = execFileSync('sh', ['-c', `tr '\\0' ' ' < /proc/${binPid.pid}/cmdline`], {encoding: 'utf8'});
+		assert.match(binCm, /^\/bin\/sh -c # lumen-bar-sync/);
+		const bins = join(base, 'bins');
+		mkdirSync(join(bins, 'data'), {recursive: true});
+		writeFileSync(join(bins, 'data', 'sig'), 'old\n');
+		const binsLock = plant(bins, binPid.pid, {age: 121, up: nowUp});
+		assert.equal(runSync(bins, {sig: 'bin', json, icons, roots: app}), 'busy');
+		assert.equal(read(join(bins, 'data', 'sig')), 'old\n');
+		assert.equal(read(join(binsLock, 'p')), String(binPid.pid) + '\n');
+		const noU = join(base, 'nou');
+		mkdirSync(join(noU, 'data'), {recursive: true});
+		writeFileSync(join(noU, 'data', 'sig'), 'old\n');
+		const noULock = plant(noU, scriptPid.pid, {age: 121});
+		writeFileSync(join(noULock, 'u'), '');
+		assert.equal(runSync(noU, {sig: 'nou', json, icons, roots: app}), 'busy');
+		assert.equal(read(join(noU, 'data', 'sig')), 'old\n');
+		assert.equal(read(join(noULock, 'p')), String(scriptPid.pid) + '\n');
+		assert.equal(read(join(noULock, 'u')), '');
+		const noUp = join(base, 'noup');
+		mkdirSync(join(noUp, 'data'), {recursive: true});
+		writeFileSync(join(noUp, 'data', 'sig'), 'old\n');
+		const noUpLock = plant(noUp, scriptPid.pid, {up: nowUp - 601});
+		assert.equal(runSync(noUp, {sig: 'nup', json, icons, roots: app, hook: 'read () { return 1; }\n'}), 'busy');
+		assert.equal(read(join(noUp, 'data', 'sig')), 'old\n');
+		assert.equal(read(join(noUpLock, 'p')), String(scriptPid.pid) + '\n');
+	} finally { scriptPid.kill('SIGKILL'); binPid.kill('SIGKILL'); buried.kill('SIGKILL'); }
+	const other = join(base, 'other');
+	mkdirSync(join(other, 'data'), {recursive: true});
+	writeFileSync(join(other, 'data', 'sig'), 'old\n');
+	plant(other, process.pid, {age: 121, up: upNow()});
+	assert.equal(runSync(other, {sig: 'oth', json, icons, roots: app}), 'written');
+	assert.equal(read(join(other, 'data', 'sig')), 'oth\n');
+	assert.equal(gone(lockDir(other)), true);
+	const future = join(base, 'future');
+	mkdirSync(join(future, 'data'), {recursive: true});
+	writeFileSync(join(future, 'data', 'sig'), 'old\n');
+	plant(future, process.pid, {age: -200, up: upNow()});
+	assert.equal(runSync(future, {sig: 'fut', json, icons, roots: app}), 'written');
+	assert.equal(read(join(future, 'data', 'sig')), 'fut\n');
+	const otherBoot = join(base, 'boot');
+	mkdirSync(join(otherBoot, 'data'), {recursive: true});
+	writeFileSync(join(otherBoot, 'data', 'sig'), 'old\n');
+	plant(otherBoot, process.pid, {boot: '00000000-0000-0000-0000-000000000000'});
+	assert.equal(runSync(otherBoot, {sig: 'bot', json, icons, roots: app}), 'written');
+	assert.equal(read(join(otherBoot, 'data', 'sig')), 'bot\n');
+	const asFile = join(base, 'file');
+	mkdirSync(join(asFile, 'data'), {recursive: true});
+	writeFileSync(lockDir(asFile), 'not-a-lock');
+	assert.equal(runSync(asFile, {sig: 'fil', json, icons, roots: app}), 'written');
+	assert.equal(gone(lockDir(asFile)), true);
+	const asLink = join(base, 'link');
+	mkdirSync(join(asLink, 'data'), {recursive: true});
+	const secret = join(base, 'secret');
+	writeFileSync(secret, 'secret');
+	chmodSync(secret, 0o600);
+	symlinkSync(secret, lockDir(asLink));
+	assert.equal(runSync(asLink, {sig: 'lnk', json, icons, roots: app}), 'written');
+	assert.equal(read(secret), 'secret');
+	assert.equal(modeOf(secret), '600');
+	assert.equal(gone(lockDir(asLink)), true);
+	const stale = join(base, 'stale');
+	mkdirSync(join(stale, 'data', 'icons'), {recursive: true});
+	plant(stale, dead);
+	writeFileSync(join(stale, 'data', '.bar.' + dead), 'drop-bar');
+	writeFileSync(join(stale, 'data', '.sig.' + dead), 'drop-sig');
+	writeFileSync(join(stale, 'data', '.bar.' + process.pid), 'live-bar');
+	writeFileSync(join(stale, 'data', '.sig.' + process.pid), 'live-sig');
+	writeFileSync(join(stale, 'data', 'icons', '.n.' + process.pid), 'live-scratch');
+	writeFileSync(join(stale, 'data', 'icons', '.png.' + dead), 'dead-scratch');
+	assert.equal(runSync(stale, {sig: 'stl', json, icons, roots: app}), 'written');
+	assert.equal(read(join(stale, 'data', 'sig')), 'stl\n');
+	assert.equal(gone(lockDir(stale)), true);
+	assert.equal(read(join(stale, 'data', '.bar.' + dead)), null);
+	assert.equal(read(join(stale, 'data', '.sig.' + dead)), null);
+	assert.equal(read(join(stale, 'data', '.bar.' + process.pid)), 'live-bar');
+	assert.equal(read(join(stale, 'data', '.sig.' + process.pid)), 'live-sig');
+	assert.equal(read(join(stale, 'data', 'icons', '.n.' + process.pid)), 'live-scratch');
+	assert.equal(read(join(stale, 'data', 'icons', '.png.' + dead)), null);
+	const refused = join(base, 'refused');
+	mkdirSync(join(refused, 'data', 'bar.json'), {recursive: true});
+	writeFileSync(join(refused, 'data', 'bar.json', 'keep'), 'keep');
+	assert.equal(runSync(refused), 'refused');
+	assert.equal(read(join(refused, 'data', 'bar.json', 'keep')), 'keep');
+	assert.equal(gone(lockDir(refused)), true);
+	const retry = join(base, 'retry');
+	mkdirSync(retry);
+	assert.equal(runSync(retry, {sig: 'rty', json, icons, roots: app, hook: 'cp () { return 1; }\n'}), 'written');
+	assert.equal(read(join(retry, 'data', 'sig')), null);
+	assert.equal(gone(lockDir(retry)), true);
+	const swapped = join(base, 'swapped');
+	mkdirSync(join(swapped, 'data'), {recursive: true});
+	writeFileSync(join(swapped, 'data', 'sig'), 'old\n');
+	plant(swapped, dead);
+	const count = join(base, 'head-count');
+	const swapHook = `head () { c=$(cat '${count}' 2>/dev/null || echo 0); c=$((c+1)); printf '%s' "$c" > '${count}'; if [ "$c" -gt 1 ]; then echo 1; return; fi; command head "$@"; }\n`;
+	assert.equal(runSync(swapped, {sig: 'swp', json, icons, roots: app, hook: swapHook}), 'busy');
+	assert.equal(read(join(swapped, 'data', 'sig')), 'old\n');
+	assert.equal(read(join(lockDir(swapped), 'p')), dead + '\n');
+	const broke = join(base, 'broke');
+	mkdirSync(broke);
+	assert.equal(runSync(broke, {sig: 'brk', json, icons, roots: app, hook: 'head () { echo 1; }\n'}), 'busy');
+	assert.equal(read(join(broke, 'data', 'sig')), null);
+	assert.equal(lstatSync(lockDir(broke)).isDirectory(), true);
+	assert.match(read(join(lockDir(broke), 'p')), /^\d+\n$/);
+});
+
+test('syncBar: a skipped copy removes the old signature, so going back to that list is not "same" with the skipped bar left in place', () => {
+	const base = mkdtempSync(join(tmpdir(), 'sync-stale-'));
+	const app = join(base, 'app');
+	const bar = join(base, 'bar');
+	mkdirSync(app);
+	mkdirSync(bar);
+	writeFileSync(join(app, 'ok.png'), png('ok'));
+	writeFileSync(join(app, 'bad.png'), Buffer.from('not an image'));
+	const ok = [{src: join(app, 'ok.png'), name: 'a.png', id: 'a'}];
+	const jsonX = {v: 1, recent: ['x'], apps: {a: {title: 'A', icon: '~icon:a.png'}}};
+	assert.equal(runSync(bar, {sig: 'sx', json: jsonX, icons: ok, roots: app}), 'written');
+	assert.equal(read(join(bar, 'data', 'sig')), 'sx\n');
+	const both = ok.concat([{src: join(app, 'bad.png'), name: 'b.png', id: 'b'}]);
+	const jsonY = {v: 1, recent: ['y'], apps: {a: {title: 'A', icon: '~icon:a.png'}, b: {title: 'B', icon: '~icon:b.png'}}};
+	assert.equal(runSync(bar, {sig: 'sy', json: jsonY, icons: both, roots: app}), 'written');
+	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).recent[0], 'y');
+	assert.equal(read(join(bar, 'data', 'sig')), 'sy-p\n');
+	assert.equal(runSync(bar, {sig: 'sx', json: jsonX, icons: ok, roots: app}), 'written');
+	assert.equal(JSON.parse(read(join(bar, 'data', 'bar.json'))).recent[0], 'x');
+	assert.equal(read(join(bar, 'data', 'sig')), 'sx\n');
 });
 
 test('backlight: a value still saved for another picture mode leaves this one undimmed (else it stayed dim with nothing saved for it)', async () => {

@@ -7,7 +7,7 @@ import type {OptionItem} from './components/SettingsList';
 import {Toast, type ToastMessage} from './components/Toast';
 import type {TileModel} from './components/Tile';
 import {BUILTIN, BUILTIN_APPS, withBuiltins} from './config/builtinApps';
-import {cachedApps, iconFile, listApps, sameApps, saveAppsCache, seedAppIds, type AppEntry} from './lib/apps';
+import {barIcon, cachedApps, iconPathByPicture, listApps, sameApps, saveAppsCache, seedAppIds, type AppEntry} from './lib/apps';
 import {afterFirstFrame, readCache, writeCache} from './lib/boot';
 import {listInputs, MOCK_INPUTS, type InputSource} from './lib/inputs';
 import {launchApp, launchLgHome} from './lib/launch';
@@ -36,7 +36,7 @@ import {AUTO_PLACE, POSTCODE_PLACE, findPlace, peekWeather, readWeather, type We
 import {TextPrompt} from './components/TextPrompt';
 import {useLiveTv} from './hooks/useLiveTv';
 import {channelColor, nowNextAt, rowChannels, type Channel} from './lib/livetv';
-import {openChannel, runningApps, setHomeBar, setHomeTakeover, syncBar, uninstallApp} from './lib/root';
+import {barSig, clearBarSeen, openChannel, retryBarBusy, runningApps, setHomeBar, setHomeTakeover, syncBar, uninstallApp} from './lib/root';
 
 import {bootMark, logError, navMark} from './lib/log';
 import {isDark, LANGS, setClockMode, setLang} from './lib/i18n';
@@ -117,6 +117,8 @@ export function App () {
 	const toastTimer = useRef(0);
 	// a fresh install first looks for the settings backup on the TV (lib/backup.ts); nothing is seeded until that has answered
 	const [restoring, setRestoring] = useState(() => !hasSavedConfig());
+	// bumped when Lumen comes to the front, so the bar write runs again after a bar update that emptied data/
+	const [barFront, setBarFront] = useState(0);
 	const [focusRow, setFocusRow] = useState<{id: string; seq: number} | undefined>(undefined);
 	// Settings > Home Screen > Live TV (off by default): off, the hook makes no Luna call and reads no cache (hooks/useLiveTv.ts)
 	const live = useLiveTv(config.liveTv, config.liveTv && screen === 'guide', config.liveChannels);
@@ -152,16 +154,17 @@ export function App () {
 	// launch parameters: {"view":"recent"} opens on the app grid (it opened the Recent row, which has gone: every app is in the grid)
 	useEffect(() => {
 		let seq = 0;
-		const apply = (p: LaunchParams) => {
+		const apply = (p: LaunchParams, front: boolean) => {
 			const a = launchAction(p, configRef.current, screenRef.current);
 			if (a.focusDock) setFocusRow({id: ROW.dock, seq: ++seq});
 			if (a.back !== undefined) ambientBack.current = a.back;
 			if (a.screen === 'ambient') ambientOpening.current = null;
 			if (a.screen) setScreen(a.screen as Screen);
 			if (a.closeControls) setControls(false);
+			if (front) { clearBarSeen(); setBarFront((n) => n + 1); }
 		};
-		apply(startParams());
-		return onRelaunch(apply);
+		apply(startParams(), false);
+		return onRelaunch((p) => apply(p, true));
 	}, []);
 
 	// Start in remote (5-way) mode: hide the Magic Remote pointer whenever we come to the
@@ -340,7 +343,7 @@ export function App () {
 	useEffect(() => { setAmbientShowing(screen === 'ambient'); }, [screen === 'ambient']);
 	// the watcher's flag files again each time Lumen comes to the front, in case a write was lost (lib/flagSync.ts)
 	useEffect(() => {
-		const onVisibility = () => { if (!document.hidden) resyncFlags(); };
+		const onVisibility = () => { if (document.hidden) return; resyncFlags(); clearBarSeen(); setBarFront((n) => n + 1); };
 		document.addEventListener('visibilitychange', onVisibility);
 		return () => document.removeEventListener('visibilitychange', onVisibility);
 	}, []);
@@ -418,30 +421,36 @@ export function App () {
 	}, [shownApps, folderTiles, config.folders, running]);
 
 	// Lumen bar (Home shows the bar): its data/ folder gets the dock (the glass bar's apps), Lumen's recent list and every app with its icon
-	// file, written again only when that changes (a signature in data/sig)
+	// file, written again only when that changes (a signature in data/sig, lib/root.ts barSig). The file path is read when the timer fires.
 	useEffect(() => {
 		if (!config.homeBar || !isWebOS() || !allApps.length) return;
 		const dir = appDir();
 		const real = allApps.filter((a) => !a.glyph && /^[A-Za-z0-9._-]+$/.test(a.id));
 		const dock = homeTiles.slice(0, config.firstRow).map((t) => t.key).filter((k) => real.some((a) => a.id === k));
-		const list = real.map((a) => ({id: a.id, title: a.title, color: a.color, plain: a.plain, file: iconFile(a, dir)}));
 		const t = TILES_FOR[config.firstRow] || TILES_FOR[6];
 		const style = {size: t.size, height: t.height, gap: t.gap, perRow: config.firstRow, scale: BAR_FOCUS_SCALE[config.focusStrength] || BAR_FOCUS_SCALE.normal};
-		const text = JSON.stringify([dock, config.recentIds, list, style]);
-		let h = 5381;
-		for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+		let stopped = false;
+		let stopRetry = () => {};
 		const id = window.setTimeout(() => {
-			syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, h.toString(36), style)
+			if (stopped) return;
+			const pictures = iconPathByPicture();
+			const list = real.map((a) => {
+				const chosen = barIcon(a, dir, pictures);
+				return {id: a.id, title: a.title, color: a.color, plain: chosen.plain, file: chosen.file};
+			});
+			stopRetry = retryBarBusy(() => syncBar(dir, dir.replace(/^.*\//, ''), dock, config.recentIds, list, barSig(dock, config.recentIds, list, style), style)
 				.then((r) => {
+					if (stopped) return r;
 					if (r === 'written') bootMark('bar: data written');
 					// the bar then shows no icons or titles; lumen.log says why (a data/ or data/icons/ in the bar's folder that is not root's,
 					// or a folder where a file should be: lib/checks.ts syncBarShell)
 					else if (r === 'refused') logError('bar', 'data/ not written: refused (a folder in the bar\'s data/ that is not root\'s own, or a folder where a file should be)');
-				})
-				.catch(() => undefined);
+					else if (r === 'busy') logError('bar', 'data/ not written: busy (another icon write is still running)');
+					return r;
+				}));
 		}, 3000);
-		return () => window.clearTimeout(id);
-	}, [config.homeBar, allApps, homeTiles, config.firstRow, config.recentIds, config.focusStrength]);
+		return () => { stopped = true; window.clearTimeout(id); stopRetry(); };
+	}, [config.homeBar, allApps, homeTiles, config.firstRow, config.recentIds, config.focusStrength, barFront]);
 
 	// the first row (in the glass bar) holds config.firstRow apps; the rest make a grid of rows as wide below it, like the tvOS home screen
 	// (the grid rows are 'dock', 'dock:1', 'dock:2'...)

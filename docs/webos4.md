@@ -187,8 +187,45 @@ The same settings are used by `com.sammysco.avoverlay`.
   the bar, and the app underneath has the focus again. After 10 s without a key the bar closes by itself. A relaunch (Home pressed again)
   starts it over.
 - **Data:** an app cannot read another app's storage, so Lumen fills `data/` in Lumen bar's folder, as root. `data/bar.json` holds the dock
-  (the glass bar's apps), Lumen's recent list, every app's title and colour, and Lumen's id. `data/icons/<id>.png` are copied from the TV
-  icon paths or from Lumen's bundled icons. It is written again only when a signature in `data/sig` changes, so an update of Lumen bar,
+  (the glass bar's apps), Lumen's recent list, every app's title and colour, and Lumen's id. The bar copies the same picture the tile shows:
+  a bundled icon or an icon-pack file when that is what Lumen draws, and the TV's file only when the tile's picture is a `data:` URI, a
+  `file://` URL, or there is no picture. On this C8, 1.0.9044 (`ce2d8a2`, `data/sig` `l9d5e4`) wrote icons for four apps only. The files in
+  `data/icons/` are Lumen's catalogue PNGs: YouTube 4689 bytes, Prime Video 6488, the Browser 2539, Homebrew 5246. The dock also has Moonfin,
+  Amazon Music, BBC iPlayer and Netflix, and `listLaunchPoints` has a safe file for each (`org.moonfin.webos/icon-130.png`, Amazon Music
+  `largeIcon.png`, `bbc.iplayer.3.0/bbc_130x130.png`, Netflix `LARGE_APP_ICON.png`). That signature is the hash of the dock, the recent list,
+  the style and an app list whose `file` is set only for those four catalogue icons
+  (`/media/developer/apps/usr/palm/applications/com.ovsteenb.lumen/icons/apps/…`). Recomputing that hash with each app's `largeIcon` does not
+  give `l9d5e4`. The 9044 write ran with no TV path for any app whose tile is a `data:` picture. The icon cache in the log is already full
+  (328–333KB, and `icons-file` is not run for them), the colours in `bar.json` are sampled `rgb()`, and a direct `listApps` of those points does
+  return each `largeIcon`. What put an empty path
+  list into that write was not in `lumen.log` (there is no boot line for it; Lumen was closed before the 20s flush). Two states of `main`'s
+  `iconFile` both hash to `l9d5e4`, and neither was seen: a saved list that still holds the raw `data:` pictures (`iconPaths` empty, and
+  `sameApps` does not count a path, so the effect keeps the list it froze at the start), or a saved list of `@icon:` refs whose icon cache is
+  missing (`cachedApps` then has no picture, and `iconFile` returns before it looks at the stored path). Boots on 23–26 Oct do log `iconcache`
+  before `listLaunchPoints`, which happens only when the saved list contains `@icon:` and the cache is read. TV Settings is separate: it is not
+  a launch point, and on 9044 `addSystemApps` never stored a path.
+  `tools/tv-bar-diag.sh` prints the TV's launch points, `bar.json` and the bar lines in `lumen.log`. Run it as root the way the script's header
+  says (`ssh -tt` with the script decoded on the TV; `sh -s` over the pty hangs, and `timeout 90` is not this busybox). A copied file has to be
+  a PNG, JPEG or WebP of at most 1 MiB, and still under the app folders after `readlink -f`. `bar.json` names an
+  icon when that copy is a plain file. A failed re-copy leaves the previous good file in place and keeps naming it; with no previous file the
+  field is `null`. A missing file, or a folder where the icon should be, is signed as the signature plus `-r` the first time. The one retry
+  is the next time the shell runs: the next launch, or the next time Lumen comes to the front. If it is still missing then, it is signed plus `-p`, so the same list answers `same`; if the file
+  has appeared, it is copied. A second sync in the same stay, with the same signature, does not run the shell, so it does not turn `-r` into
+  `-p`. Coming back to Lumen forgets that signature, so the shell runs once more and a bar update that emptied `data/` is written. When the
+  bar is already up to date that run answers `same` and changes nothing; one such run on each return is the cost of noticing the update. A copy that
+  failed while writing is not signed, so the next run tries it again. Two shells can overlap when a call times out or Lumen reloads while the
+  first shell is still running. The run holds `data/.lock` (root's own `data/`, already checked), with its pid and the boot id. The other
+  shell answers `busy`, logs it, and does not sign. Lumen tries a busy write three times, 2 seconds apart. A different boot id is stale
+  before any command line is trusted. A live pid counts as this script only on that boot, and only when its command line starts with
+  `sh -c # lumen-bar-sync`. That pid is left alone for the wall clock, and taken once `/proc/uptime` is 600 seconds past the start stored in
+  the lock. An empty pid, or a pid whose command line is not that prefix, counts as live until the lock is 120 seconds off (either way).
+  Two runs can both pass the pid check before either removes the lock; `bar.json` and `sig` are still moved into place, so a half-written pair is not left behind. A lock from an older build, with no start time stored, is not covered by the 600 second ceiling.
+  The pid is read again before a stale lock is removed; if it changed, the answer is `busy`. A lock is also taken over when it names this
+  shell's own pid, or when its pid is dead. A path that resolves outside the app folders, a file that
+  is too big, or a file that is not a real image is signed plus `-p` at once. A changed list still rewrites. An icon that is not a PNG, JPEG or WebP is not
+  sent to the copy. The signature includes
+  `BAR_EPOCH`, so an update rewrites a bar left by 1.0.9044. It is
+  written again only when a signature in `data/sig` changes, so an update of Lumen bar,
   which empties its folder, is refilled at Lumen's next start. The bar's folder is writable by others, so this write does not use a full
   path (a redirect or a recursive remove would follow a link). It enters the bar folder and then `data/` with `cd -P`, and each must be
   that directory (`pwd -P`). A `data/` or `data/icons/` that is not root's own is left as it is and nothing is written (`lumen.log`: `bar
@@ -218,7 +255,7 @@ Checked on the C8 (webOS 4.4.3), 24 Oct 2026, 00:07-00:12 BST, with a dev build 
 sent through networkinput:
 - **Over YouTube:** LG's bar came up, Back closed it 0.46 s later, and Lumen bar was visible 0.93 s after the Home press. The app list
   stayed `youtube.leanback.v4` (card) + `com.ovsteenb.lumen.bar` (overlay). Back reached the bar and closed it, and YouTube was alone in front again.
-  The dock showed the real icons from Olivier's dock (YouTube, Moonfin, Prime Video, Amazon Music, ..., Netflix), plus Live TV as recent.
+  The dock showed the real icons (YouTube, Moonfin, Prime Video, Amazon Music, ..., Netflix), plus Live TV as recent.
 - **Over Moonfin:** the same, and Back closed it.
 - **Over Netflix:** the same. After Back, a Down key changed Netflix's screen, so the remote works in the app again. OK on the YouTube tile
   opened YouTube and closed the bar.
@@ -227,7 +264,11 @@ sent through networkinput:
 
 - **Recent tiles need an icon (1.0.9013):** a recent app with no icon file in `data/icons/` (TV Settings, `com.palm.app.settings`, and other
   system apps Lumen draws with its own glyph) is left out, as in the first hand-installed test build, where the bar showed the dock plus
-  Live TV only. 1.0.9007-1.0.9012 drew TV Settings as a grey "T" tile. The bar's code and CSS were otherwise byte-identical between the
+  Live TV only. A missing file is tried once more the next time the shell runs (the next launch, or the next time Lumen comes to the front), then left off the recent row. A second sync in the
+  same stay does not use that retry. A copy that fails while writing is tried again on the next run. A path
+  outside the app folders, a file that is too big, or a file that is not a real image stays off the recent row, and that result is signed so it
+  is not retried on every start. A failed re-copy of an icon that was already there keeps the
+  previous file, so the recent app stays. 1.0.9007-1.0.9012 drew TV Settings as a grey "T" tile. The bar's code and CSS were otherwise byte-identical between the
   hand build and the published ones (only the version differs); the change came from Lumen's own data, refilled at its next start.
   Test: `tools/test/bar.test.mjs` (bar.js in a vm with a fake DOM and Luna bridge).
 - **Looks like Lumen's home bar (1.0.9014):** `bar/bar.css` uses the home bar's own values (`app/src/theme/global.css`,

@@ -370,28 +370,88 @@ export interface BarApp { id: string; title: string; color?: string; plain?: boo
 /** The home bar's look, so Lumen bar draws its tiles at the same size: the first row's tile size, height and gap, how many tiles it shows
  *  before it scrolls, and how much the focused tile grows. */
 export interface BarStyle { size: number; height: number; gap: number; perRow: number; scale: number }
+/** Part of the bar signature. 1.0.9044 hashed the list without it, so a TV on that sig rewrites. */
+export const BAR_EPOCH = 2;
+/** The signature stored in the bar's data/sig. `epoch` is included so a change of this constant rewrites an old bar. */
+export function barSig (dock: string[], recent: string[], list: unknown, style: unknown): string {
+	const text = JSON.stringify([BAR_EPOCH, dock, recent, list, style]);
+	let h = 5381;
+	for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+	return h.toString(36);
+}
 /** Fills Lumen bar's data/ folder: copies each app's icon file to data/icons/<id>.<ext> and writes data/bar.json (the dock, Lumen's recent
  *  list, the apps, Lumen's id). Skipped when data/sig already holds `sig` (an app update wipes data/, and then it is written again).
  *  data/wallpapers/ is left alone: it holds the screensaver pictures, which tools/tv/watch.sh bar_pictures copies from Lumen.
  *  The bar's folder is writable by others, so the write is syncBarShell: relative names after cd -P, a temp file then mv, and a data/
- *  or icons/ that is not root's own is refused rather than removed. */
-export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused'> {
+ *  or icons/ that is not root's own is refused rather than removed. One write at a time in this page. The last signature answered
+ *  `written` or `same` is not sent again, so a second sync in the same stay does not spend the one retry of a missing file.
+ *  Coming to the front clears that memory (clearBarSeen) and the shell runs once; when nothing changed it answers `same`.
+ *  A shell still running after a timeout or a reload holds data/.lock and the new shell answers `busy` without signing.
+ *  retryBarBusy tries a busy write three times. */
+let barQueue: Promise<unknown> = Promise.resolve();
+let barSeen = '';
+/** Forget the signature this page already wrote. The next sync runs the shell, so a bar update that emptied data/ is noticed. */
+export function clearBarSeen (): void { barSeen = ''; }
+/** Calls `go` at once, and again while it answers `busy`, three times in all, `gap` ms apart. The returned function drops a pending retry. */
+export function retryBarBusy (go: () => Promise<string>, gap = 2000, schedule: (fn: () => void, ms: number) => number = (fn, ms) => window.setTimeout(fn, ms), cancel: (id: number) => void = (id) => window.clearTimeout(id)): () => void {
+	let stopped = false;
+	let wait = 0;
+	let n = 0;
+	const run = () => {
+		if (stopped) return;
+		go().then((r) => {
+			if (stopped) return;
+			if (r === 'busy' && n < 2) { n += 1; wait = schedule(run, gap); }
+		}, () => undefined);
+	};
+	run();
+	return () => { stopped = true; cancel(wait); };
+}
+export function syncBar (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused' | 'busy'> {
 	if (!APP_DIR.test(appDir) || !APP_ID.test(lumenId) || !/^[a-z0-9]+$/.test(sig)) return Promise.reject(new Error('refused'));
+	const next = barQueue.then(() => {
+		if (barSeen === sig) return Promise.resolve('same' as const);
+		return syncBarNow(appDir, lumenId, dock, recent, apps, sig, style);
+	});
+	barQueue = next.catch(() => undefined);
+	return next;
+}
+function syncBarNow (appDir: string, lumenId: string, dock: string[], recent: string[], apps: BarApp[], sig: string, style?: BarStyle): Promise<'same' | 'written' | 'missing' | 'refused' | 'busy'> {
 	const dir = barDir(appDir);
 	const out: Record<string, {title: string; color?: string; plain?: boolean; icon?: string}> = {};
-	const icons: {src: string; name: string}[] = [];
+	const icons: {src: string; name: string; id: string}[] = [];
+	const skipped: string[] = [];
 	apps.forEach((a) => {
-		if (!APP_ID.test(a.id)) return;
+		// "." and ".." pass APP_ID but are not file names the shell will copy; a "~icon:" token for them would be left in bar.json
+		if (!APP_ID.test(a.id) || a.id === '.' || a.id === '..') return;
 		const entry: {title: string; color?: string; plain?: boolean; icon?: string} = {title: a.title, color: a.color, plain: a.plain};
-		if (a.file && safeAppPath(a.file)) {
-			const ext = (/\.(png|jpe?g|svg|webp|gif)$/i.exec(a.file) || ['', 'png'])[1].toLowerCase();
-			entry.icon = `data/icons/${a.id}.${ext}?${sig}`;
-			icons.push({src: a.file, name: `${a.id}.${ext}`});
-		}
+		// png, jpeg, and webp (icon packs). svg and gif never pass the shell's header check, so they are not sent.
+		const ext = a.file && /\.(png|jpe?g|webp)$/i.exec(a.file);
+		const name = ext ? `${a.id}.${ext[1].toLowerCase()}` : '';
+		const nameOk = !!name && name !== '.new' && /^[A-Za-z0-9._-]+$/.test(name);
+		if (a.file && safeAppPath(a.file) && nameOk) {
+			// the shell swaps this icon field for the copied name, or for null when the copy did not happen
+			entry.icon = `~icon:${name}`;
+			icons.push({src: a.file, name, id: a.id});
+		} else if (a.file && safeAppPath(a.file)) skipped.push(`bar: icon skipped ${a.id} not-image`);
+		else skipped.push(`bar: icon skipped ${a.id} ${a.file ? 'unsafe-path' : 'no-path'}`);
 		out[a.id] = entry;
 	});
 	const json = JSON.stringify({v: 1, lumen: lumenId, dock: dock.filter((x) => APP_ID.test(x)), recent: recent.filter((x) => APP_ID.test(x)), apps: out, style});
-	return run(syncBarShell(dir, sig, toBase64(json), icons), 15000).then(syncBarResult);
+	return run(syncBarShell(dir, sig, toBase64(json), icons), 15000).then((outText) => {
+		const status = syncBarResult(outText);
+		// busy, refused, and missing are not remembered: the next call with this signature still runs. a rejection is not either.
+		if (status === 'written' || status === 'same') barSeen = sig;
+		if (status === 'written') {
+			const lines = skipped.slice();
+			for (const line of outText.split('\n')) {
+				const m = /^skip ([A-Za-z0-9._-]+) (copy|unresolved|outside|toobig|not-image)$/.exec(line.trim());
+				if (m) lines.push(`bar: icon skipped ${m[1]} ${m[2]}`);
+			}
+			if (lines.length) appendLog(lines.join('\n') + '\n').catch(() => undefined);
+		}
+		return status;
+	});
 }
 
 /** Writes text to one of FILES. The text travels as base64, so nothing in it is ever read by the shell. */
