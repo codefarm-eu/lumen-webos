@@ -497,22 +497,28 @@ test('debugger-open and stop_watch.sh take out every stacked copy of the rule; s
 	assert.deepEqual(rules(h, 'iptables'), [RULE]);
 });
 
-test('hosts_write: a copy in hosts.bak before the rewrite, sync after a real change only, and a result without its localhost line is put back', () => {
+test('hosts_write: a copy in hosts.bak before the rewrite, sync after a real change only, and a build without its localhost line is not written', () => {
 	const pre = '127.0.0.1 localhost\n::1 localhost ip6-localhost\n';
 	const t = setup(pre);
 	const SYNC = '';
 	writeFileSync(join(t.d, 'bin', 'sync'), `#!/bin/sh\necho sync >> '${t.d}/sync.log'\n`, {mode: 0o755});
-	run(t, 'hosts_sync; hosts_sync', SYNC);
+	run(t, 'hosts_sync', SYNC);
 	assert.equal(readFileSync(join(t.d, 'hosts.bak'), 'utf8'), pre);
-	assert.equal(readFileSync(join(t.d, 'sync.log'), 'utf8'), 'sync\n');
-	// a build that lost localhost: written, found wrong, put back as it was, in place
-	const b = setup(pre);
-	const ino = statSync(b.env.HOMEHOOK_HOSTS).ino;
-	assert.equal(run(b, 'hosts_sync; echo "rc=$?"', `${SYNC}\nhosts_build () { printf '0.0.0.0 ad.lgsmartad.com\\n' > "$1"; }`), 'rc=1');
-	assert.equal(hostsOf(b), pre);
-	assert.equal(statSync(b.env.HOMEHOOK_HOSTS).ino, ino);
-	assert.match(logOf(b), /came out wrong .*put back as it was/);
-	assert.doesNotMatch(logOf(b), /rebuilt in place/);
+	// the copy, the "writing" mark, the write: each synced, and nothing left over
+	assert.equal(readFileSync(join(t.d, 'sync.log'), 'utf8'), 'sync\nsync\nsync\n');
+	for (const f of ['hosts.bak.part', 'hosts.writing', 'hosts.bak.new']) assert.ok(!existsSync(join(t.d, f)), f);
+	run(t, 'hosts_sync', SYNC);
+	assert.equal(readFileSync(join(t.d, 'sync.log'), 'utf8'), 'sync\nsync\nsync\n');
+	// a build that lost localhost (or one of its localhost lines): never written at all
+	for (const build of ["printf '0.0.0.0 ad.lgsmartad.com\\n'", "printf '127.0.0.1 localhost\\n0.0.0.0 ad.lgsmartad.com\\n'"]) {
+		const b = setup(pre);
+		utimesSync(b.env.HOMEHOOK_HOSTS, PAST, PAST);
+		assert.equal(run(b, 'hosts_sync; echo "rc=$?"', `${SYNC}\nhosts_build () { ${build} > "$1"; }`), 'rc=1');
+		assert.equal(hostsOf(b), pre);
+		assert.equal(statSync(b.env.HOMEHOOK_HOSTS).mtimeMs, PAST.getTime());
+		assert.match(logOf(b), /would lose a localhost line: not written/);
+		assert.doesNotMatch(logOf(b), /rebuilt in place/);
+	}
 	// a short write (a full disk): put back too
 	const c = setup(pre);
 	run(c, 'hosts_sync; true', `cat () { if [ "$1" = "$HOMEHOOK_RUN/hosts.new" ]; then command head -c 12 "$1"; return 1; fi; command cat "$@"; }`);
@@ -684,6 +690,7 @@ test('TERM in the middle of the real hosts write: the write is finished first, t
 	assert.ok(h.endsWith(`${END}\n`));
 	assert.equal(readFileSync(join(t.d, 'hosts.bak'), 'utf8'), '127.0.0.1 localhost\n');
 	assert.ok(!existsSync(join(t.d, 'hosts.bak.new')));
+	assert.ok(!existsSync(join(t.d, 'hosts.writing')));
 	assert.ok(!existsSync(join(t.d, 'synced')), 'it exits right after the write, not at the end of its pass');
 });
 
@@ -695,12 +702,13 @@ test('KILL in the middle of the real hosts write: the next pass puts the old fil
 	child.kill('SIGKILL');
 	await exited;
 	assert.ok(!hostsOf(t).endsWith(`${END}\n`), 'cut short');
-	assert.ok(existsSync(join(t.d, 'hosts.bak.new')));
+	assert.ok(existsSync(join(t.d, 'hosts.writing')));
 	run(t, 'hosts_sync');
 	const h = hostsOf(t);
 	assert.ok(h.startsWith(`127.0.0.1 localhost\n${BEGIN}\n0.0.0.0 ad.lgsmartad.com\n`));
 	assert.equal(h.split('\n').filter((l) => l === BEGIN).length, 1);
-	assert.match(logOf(t), /put back from hosts\.bak\.new/);
+	assert.match(logOf(t), /was left half written: put back from hosts\.bak$/m);
+	assert.ok(!existsSync(join(t.d, 'hosts.writing')));
 	assert.equal(readFileSync(join(t.d, 'hosts.bak'), 'utf8'), '127.0.0.1 localhost\n');
 	// and stop_watch.sh after such a kill: the file is put back and the block taken out, not left empty
 	const u = setup('127.0.0.1 localhost\n::1 localhost\n');
@@ -759,4 +767,107 @@ test('the mkdir lock: a clock step forward does not make a live holder\'s lock l
 	assert.equal(run(t, 'hosts_sync; echo "rc=$?"', LEGIT_HOLDER), 'rc=1');
 	assert.equal(hostsOf(t), '127.0.0.1 localhost\n');
 	assert.ok(existsSync(join(t.d, 'hosts.lock', 'pid')));
+});
+
+// ---- fourth review: the known-good copy, and what recovery trusts --------------------------------------------
+
+const GOOD = '127.0.0.1 localhost\n::1 localhost\n10.0.0.8 nas.home\n';
+const bakOf = (t) => readFileSync(join(t.d, 'hosts.bak'), 'utf8');
+/** hosts as a pass leaves it: every line it had, then the block */
+const keptAll = (t, pre) => { const h = hostsOf(t); assert.ok(h.startsWith(`${pre}${BEGIN}\n0.0.0.0 ad.lgsmartad.com\n`), h); };
+
+test('a leftover hosts.bak.new (empty, or cut short to its localhost line) is never written over hosts nor kept as the good copy', () => {
+	for (const leftover of ['', '127.0.0.1 localhost\n']) {
+		const t = setup(GOOD);
+		writeFileSync(join(t.d, 'hosts.bak'), GOOD);
+		writeFileSync(join(t.d, 'hosts.bak.new'), leftover);
+		run(t, 'hosts_sync');
+		keptAll(t, GOOD);
+		assert.equal(bakOf(t), GOOD);
+		assert.ok(!existsSync(join(t.d, 'hosts.bak.new')));
+		assert.doesNotMatch(logOf(t), /put back/);
+	}
+});
+
+test('KILL in the middle of the backup copy: hosts and the last good copy are both left whole, and the partial copy is never used', async () => {
+	const t = setup(GOOD);
+	writeFileSync(join(t.d, 'hosts.bak'), GOOD);
+	writeFileSync(join(t.d, 'hosts-extra'), '0.0.0.0 one.example\n');
+	run(t, 'hosts_sync');
+	const before = hostsOf(t);
+	writeFileSync(join(t.d, 'hosts-extra'), '0.0.0.0 one.example\n0.0.0.0 two.example\n');
+	// the copy of hosts stops after its first line, and the watcher is killed there
+	const child = spawn('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'
+		EXTRA='${join(t.d, 'hosts-extra')}'
+		cat () { if [ "$1" = "$HOSTS" ]; then command head -n 1 "$1"; : > "${t.d}/incopy"; sleep 5; fi; command cat "$@"; }
+		hosts_sync`], {stdio: 'ignore', env: {...process.env, ...t.env}});
+	const exited = new Promise((r) => child.on('exit', r));
+	await waitFor(join(t.d, 'incopy'));
+	child.kill('SIGKILL');
+	await exited;
+	assert.equal(hostsOf(t), before);
+	assert.equal(bakOf(t), GOOD);
+	run(t, 'hosts_sync');
+	keptAll(t, GOOD);
+	assert.match(hostsOf(t), /^0\.0\.0\.0 two\.example$/m);
+	assert.equal(bakOf(t), before);
+	assert.ok(!existsSync(join(t.d, 'hosts.bak.part')));
+});
+
+test('a failed or timed-out sync makes no good copy: hosts is not written, and hosts.bak is not replaced', () => {
+	for (const code of [1, 143]) {
+		const t = setup(GOOD);
+		writeFileSync(join(t.d, 'hosts.bak'), '127.0.0.1 localhost\n');
+		writeFileSync(join(t.d, 'bin', 'sync'), `#!/bin/sh\nexit ${code}\n`, {mode: 0o755});
+		assert.equal(run(t, 'hosts_sync; echo "rc=$?"'), 'rc=1');
+		assert.equal(hostsOf(t), GOOD);
+		assert.equal(bakOf(t), '127.0.0.1 localhost\n');
+		for (const f of ['hosts.bak.part', 'hosts.writing']) assert.ok(!existsSync(join(t.d, f)), f);
+		assert.match(logOf(t), /could not make a good copy/);
+	}
+});
+
+test('a hosts file with no localhost line at all is never rewritten, and "every localhost line kept" is never true of none', () => {
+	const t = setup('10.0.0.8 nas.home\n');
+	utimesSync(t.env.HOMEHOOK_HOSTS, PAST, PAST);
+	assert.equal(run(t, 'hosts_sync; echo "rc=$?"'), 'rc=1');
+	assert.equal(hostsOf(t), '10.0.0.8 nas.home\n');
+	assert.equal(statSync(t.env.HOMEHOOK_HOSTS).mtimeMs, PAST.getTime());
+	assert.ok(!existsSync(join(t.d, 'hosts.bak')));
+	writeFileSync(join(t.d, 'none'), '0.0.0.0 ad.lgsmartad.com\n# localhost\n');
+	writeFileSync(join(t.d, 'empty'), '');
+	assert.equal(run(t, `hosts_localhost_kept '${t.d}/empty' '${t.d}/none' && echo kept || echo no`), 'no');
+	assert.equal(run(t, `hosts_localhost_kept '${t.d}/none' '${t.d}/none' && echo kept || echo no`), 'no');
+	assert.equal(run(t, `hosts_localhost_kept '${t.d}/hosts.new.x' '${t.d}/none' && echo kept || echo no`), 'no');
+});
+
+test('a hand edit that changed a localhost line is kept: hosts.bak is put back only when hosts has no localhost line left', () => {
+	const t = setup();
+	writeFileSync(join(t.d, 'hosts.bak'), '127.0.0.1 localhost\n::1 localhost\n');
+	const live = '127.0.0.1 localhost mytv\n10.0.0.8 nas.home\n::1 localhost\n';
+	writeFileSync(t.env.HOMEHOOK_HOSTS, live);
+	run(t, 'hosts_sync; hosts_sync');
+	keptAll(t, live);
+	assert.doesNotMatch(logOf(t), /put back/);
+	// "localhost" only in a comment or as part of another name is not a localhost line: put back
+	for (const gone of ['# 127.0.0.1 localhost\n10.0.0.8 nas.home\n', '127.0.0.1 localhost.example\n', '\n']) {
+		const u = setup();
+		writeFileSync(join(u.d, 'hosts.bak'), GOOD);
+		writeFileSync(u.env.HOMEHOOK_HOSTS, gone);
+		run(u, 'hosts_sync');
+		keptAll(u, GOOD);
+		assert.match(logOf(u), /has no localhost line: put back from hosts\.bak$/m);
+	}
+});
+
+test('written wrong and not put back: the old file really is in hosts.bak, as the log says, and the next pass puts it back', () => {
+	const t = setup(GOOD);
+	// every write of the new file and of the copy back comes out short
+	assert.equal(run(t, 'hosts_sync; echo "rc=$?"',
+		'cat () { case "$1" in "$RUN/hosts.new"|"$HOSTS_BAK") command head -c 12 "$1"; return 1 ;; esac; command cat "$@"; }'), 'rc=1');
+	assert.match(logOf(t), new RegExp(`could not be put back: the old file is in ${join(t.d, 'hosts.bak').replace(/[.]/g, '\\.')},`));
+	assert.equal(bakOf(t), GOOD);
+	assert.notEqual(hostsOf(t), GOOD);
+	run(t, 'hosts_sync');
+	keptAll(t, GOOD);
 });

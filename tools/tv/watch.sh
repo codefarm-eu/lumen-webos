@@ -1027,7 +1027,7 @@ HOSTS_BEGIN="# >>> Lumen watcher (watch.sh hosts_sync): rebuilt about every 30 s
 HOSTS_END="# <<< Lumen watcher"
 HOSTS_RETRY=1800  # seconds before a bind that failed is tried again (each try would write the table on flash)
 HOSTS_OURS=${HOMEHOOK_HOSTS_OURS:-$RUN/hosts.ours}   # the block's lines as this watcher last wrote them (hosts_build)
-HOSTS_BAK=$RUN/hosts.bak      # /etc/hosts as it was before this watcher's last good rewrite of it (hosts_write)
+HOSTS_BAK=$RUN/hosts.bak      # the known-good copy of /etc/hosts, as it was before this watcher's last rewrite of it (hosts_write)
 HOSTS_LOCK=$RUN/hosts.lock    # one writer of /etc/hosts at a time (hosts_lock)
 HOSTS_LOCK_SECS=${HOMEHOOK_HOSTS_LOCK_SECS:-10}   # how many one-second tries a pass waits for that lock before it skips
 HOSTS_FLOCK=${HOMEHOOK_FLOCK-$(command -v flock 2>/dev/null)}   # flock where busybox has it, else the mkdir lock
@@ -1162,9 +1162,14 @@ hosts_unlock() {
   return 0
 }
 
-# every line of $1 that names localhost is still a line of $2
+# $1 has a localhost line: an address, then "localhost" as one of its names (comments left out)
+hosts_has_localhost() {
+  awk '{ sub(/#.*/, ""); for (i = 2; i <= NF; i++) if ($i == "localhost") f = 1 } END { exit !f }' "$1" 2>/dev/null
+}
+# $1 has a localhost line, and every line of it that names localhost is still a line of $2 (never true of a file with none)
 hosts_localhost_kept() {
-  awk 'FILENAME == ARGV[1] { l = $0; sub(/#.*/, "", l); if (l ~ /[ \t]localhost([ \t]|$)/) want[$0] = 1; next }
+  hosts_has_localhost "$1" && awk 'FILENAME == ARGV[1] { l = $0; sub(/#.*/, "", l); n = split(l, f)
+      for (i = 2; i <= n; i++) if (f[i] == "localhost") want[$0] = 1; next }
     { delete want[$0] } END { for (k in want) exit 1; exit 0 }' "$1" "$2" 2>/dev/null
 }
 
@@ -1180,38 +1185,61 @@ hosts_unkillable() {
   return $hu_r
 }
 
-# $1 into $HOSTS in place (cat >: the same inode, never mv, as app jails bind /etc/hosts into themselves). The file as it was goes to
-# $HOSTS_BAK.new first, and becomes $HOSTS_BAK only once the result is $1 byte for byte and keeps every localhost line it had, so a bad
-# write never replaces a good copy. If the result is wrong (a short write, a full disk), the old file is written back. Then sync (with the
-# 5 s limit), so a power cut does not leave it half written. 0 written; 1 it cannot be written (not opened: nothing changed); 2 written
-# wrong and put back; 3 written wrong and not even put back ($HOSTS_BAK.new holds it); 4 no copy could be made, nothing written.
+# How /etc/hosts is rewritten. It has to be written in place (cat >: the same inode, never mv, as app jails bind /etc/hosts into
+# themselves), so the write itself cannot be atomic; everything around it is kept to two files and two rules:
+#  - $HOSTS_BAK is the one known-good copy: a whole file with a localhost line. It only ever changes by mv of a $HOSTS_BAK.part that was
+#    compared byte for byte with $HOSTS, has a localhost line and was synced (with the 5 s limit; a failed or timed-out sync promotes
+#    nothing). A .part left over is never read, only removed.
+#  - $HOSTS_WRITING exists (made, then synced, before $HOSTS is opened) for as long as $HOSTS may be half written.
+# hosts_recover, before every pass: with $HOSTS_WRITING there, or with no localhost line left in $HOSTS (emptied, cut short), $HOSTS_BAK is
+# written back. Otherwise $HOSTS is left as it is, whatever it holds: a hand edit is never rolled back.
+HOSTS_WRITING=$RUN/hosts.writing
+
+# $HOSTS (with a localhost line) into $HOSTS_BAK, by the rule above. 0 the copy is there; 1 it could not be made
+hosts_backup() {
+  hosts_has_localhost "$HOSTS" || return 1
+  cmp -s "$HOSTS" "$HOSTS_BAK" 2>/dev/null && return 0
+  rm -f "$HOSTS_BAK.part"
+  if { cat "$HOSTS" > "$HOSTS_BAK.part"; } 2>/dev/null && cmp -s "$HOSTS_BAK.part" "$HOSTS" && hosts_has_localhost "$HOSTS_BAK.part" \
+    && to5 sync && mv -f "$HOSTS_BAK.part" "$HOSTS_BAK"; then return 0; fi
+  rm -f "$HOSTS_BAK.part"; return 1
+}
+
+# $1 into $HOSTS in place. Never when $1 would drop a localhost line $HOSTS has; only with the known-good copy made and $HOSTS_WRITING
+# synced first. If the result is not $1 byte for byte (a short write, a full disk), $HOSTS_BAK is written back. 0 written; 1 it cannot be
+# written (read-only, or not opened: nothing changed); 2 written wrong and put back; 3 written wrong and not even put back ($HOSTS_BAK holds
+# it, and $HOSTS_WRITING stays, so the next pass tries again); 4 no good copy could be made, nothing written; 5 $1 would lose a localhost
+# line, nothing written.
 hosts_write_now() {
-  { cat "$HOSTS" > "$HOSTS_BAK.new"; } 2>/dev/null || { rm -f "$HOSTS_BAK.new"; return 4; }
+  [ -w "$HOSTS" ] || return 1
+  hosts_has_localhost "$HOSTS" || return 4
+  hosts_localhost_kept "$HOSTS" "$1" || return 5
+  hosts_backup || return 4
+  { : > "$HOSTS_WRITING"; } 2>/dev/null && to5 sync || { rm -f "$HOSTS_WRITING"; return 4; }
   { cat "$1" > "$HOSTS"; } 2>/dev/null; hw_r=$?
-  if [ "$hw_r" -ne 0 ] && cmp -s "$HOSTS_BAK.new" "$HOSTS"; then rm -f "$HOSTS_BAK.new"; return 1; fi
-  if [ "$hw_r" -eq 0 ] && cmp -s "$1" "$HOSTS" && hosts_localhost_kept "$HOSTS_BAK.new" "$HOSTS"; then
-    to5 sync; mv -f "$HOSTS_BAK.new" "$HOSTS_BAK"; return 0
-  fi
-  if { cat "$HOSTS_BAK.new" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK.new" "$HOSTS"; then
-    to5 sync; mv -f "$HOSTS_BAK.new" "$HOSTS_BAK"; return 2
-  fi
-  to5 sync; return 3
+  if [ "$hw_r" -eq 0 ] && cmp -s "$1" "$HOSTS"; then to5 sync; rm -f "$HOSTS_WRITING"; return 0; fi
+  if [ "$hw_r" -ne 0 ] && cmp -s "$HOSTS_BAK" "$HOSTS"; then rm -f "$HOSTS_WRITING"; return 1; fi
+  if { cat "$HOSTS_BAK" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK" "$HOSTS"; then to5 sync; rm -f "$HOSTS_WRITING"; return 2; fi
+  return 3
 }
 hosts_write() { hosts_unkillable hosts_write_now "$1"; }
 
-# before a pass reads /etc/hosts: a $HOSTS_BAK.new still there means a write was cut short (KILL, a power cut), and it is the file as it was
-# before that write; else, a file that has lost a localhost line $HOSTS_BAK has (emptied) is not built on either. Either is written back
-# in place first. 0 nothing to do or put back; 1 it could not be put back (the pass stops there).
+# 0 nothing to do, or put back; 1 it had to be put back and could not be (the pass stops there)
 hosts_recover_now() {
-  if [ -f "$HOSTS_BAK.new" ]; then hr_src=$HOSTS_BAK.new
-  elif [ -f "$HOSTS_BAK" ] && ! hosts_localhost_kept "$HOSTS_BAK" "$HOSTS"; then hr_src=$HOSTS_BAK
+  # hosts.bak.new: an older build's copy, which may itself be cut short; never trusted
+  rm -f "$HOSTS_BAK.part" "$HOSTS_BAK.new"
+  if [ -f "$HOSTS_WRITING" ]; then hr_why="was left half written"
+  elif ! hosts_has_localhost "$HOSTS"; then hr_why="has no localhost line"
   else return 0; fi
-  if { cat "$hr_src" > "$HOSTS"; } 2>/dev/null && cmp -s "$hr_src" "$HOSTS"; then
-    to5 sync
-    [ "$hr_src" = "$HOSTS_BAK" ] || mv -f "$hr_src" "$HOSTS_BAK"
-    hosts_log recovered "$HOSTS was left cut short or without its localhost line: put back from ${hr_src##*/}"; return 0
+  if ! hosts_has_localhost "$HOSTS_BAK"; then
+    rm -f "$HOSTS_WRITING"
+    hosts_log recovernone "$HOSTS $hr_why and there is no good copy to put back"; return 0
   fi
-  hosts_log recoverfail "$HOSTS was left cut short or without its localhost line and could not be put back from $hr_src"; return 1
+  if { cat "$HOSTS_BAK" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK" "$HOSTS"; then
+    to5 sync; rm -f "$HOSTS_WRITING"
+    hosts_log recovered "$HOSTS $hr_why: put back from ${HOSTS_BAK##*/}"; return 0
+  fi
+  hosts_log recoverfail "$HOSTS $hr_why and could not be put back from $HOSTS_BAK"; return 1
 }
 hosts_recover() { hosts_unkillable hosts_recover_now; }
 
@@ -1238,7 +1266,7 @@ hosts_sync_locked() {
       rm -f "$HOSTS_BOUND_MARK"
       hosts_bound && hosts_log foreign "the mount on $HOSTS is not this watcher's bind of $HOSTS_TABLE: left as it is"
     elif [ -z "$(hosts_want)" ]; then
-      if to5 umount "$HOSTS" 2>/dev/null; then rm -f "$HOSTS_BOUND_MARK" "$HOSTS_OURS" "$HOSTS_BAK"; hosts_log unbound "nothing to block, $HOSTS_TABLE taken off $HOSTS"; return 0; fi
+      if to5 umount "$HOSTS" 2>/dev/null; then rm -f "$HOSTS_BOUND_MARK" "$HOSTS_OURS" "$HOSTS_BAK" "$HOSTS_WRITING"; hosts_log unbound "nothing to block, $HOSTS_TABLE taken off $HOSTS"; return 0; fi
       unbind=failed   # the mark stays, so the next pass tries the umount again
     fi
   fi
@@ -1258,9 +1286,10 @@ hosts_sync_locked() {
        if [ -n "$unbind" ]; then hosts_log unbindfail "could not take $HOSTS_TABLE off $HOSTS, emptied it in place instead"
        else hosts_log written "$HOSTS rebuilt in place"; fi
        return 0 ;;
-    2) rm -f "$tmp"; hosts_log restored "$HOSTS came out wrong (short, or a localhost line gone): put back as it was"; return 1 ;;
-    3) rm -f "$tmp"; hosts_log broken "$HOSTS came out wrong and could not be put back: the old file is in $HOSTS_BAK"; return 1 ;;
-    4) rm -f "$tmp"; hosts_log nobackup "could not copy $HOSTS to $HOSTS_BAK, so it is not rewritten"; return 1 ;;
+    2) rm -f "$tmp"; hosts_log restored "$HOSTS came out wrong (a short write): put back as it was"; return 1 ;;
+    3) rm -f "$tmp"; hosts_log broken "$HOSTS came out wrong and could not be put back: the old file is in $HOSTS_BAK, tried again next pass"; return 1 ;;
+    4) rm -f "$tmp"; hosts_log nobackup "could not make a good copy of $HOSTS in $HOSTS_BAK (no localhost line, or the copy or sync failed), so it is not rewritten"; return 1 ;;
+    5) rm -f "$tmp"; hosts_log wouldlose "the rebuilt $HOSTS would lose a localhost line: not written"; return 1 ;;
   esac
   if [ -n "$unbind" ]; then
     rm -f "$tmp"; hosts_log unbindstuck "could not take $HOSTS_TABLE off $HOSTS, nor rewrite it (read-only): its lines stay, tried again in 30 s"
