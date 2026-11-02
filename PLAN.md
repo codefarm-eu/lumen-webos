@@ -28,10 +28,21 @@ The agent installs each change on the TV over SSH (`npm run deploy:home`), so "v
 ## On the TV
 
 ### Verify on the TV (built, not yet seen working)
-- [ ] (verify) LG host blocking: `getent hosts ad.lgsmartad.com` (or `nslookup`) answers 0.0.0.0 on the TV, the watcher log says how
-      (`hosts: ... added` or `bound over it`), and the Content Store, app launching, YouTube, Netflix, Jellyfin/Moonfin and the Homebrew Channel still work.
-- [ ] (verify) Port 9998: `iptables -S INPUT` shows the DROP rule once, `http://<tv>:9998/` from a computer gets no answer, `tools/tv/cdp.mjs`
-      still works through its SSH tunnel, and the log says `debugger: port 9998 closed` (or `nofirewall`, if this kernel has none).
+- [ ] (verify) LG host blocking: `getent hosts ad.lgsmartad.com` (or `nslookup`) answers 0.0.0.0 on the TV, `/etc/hosts` has one
+      `# >>> Lumen watcher` block after its own lines (localhost first, the Homebrew Channel's `127.0.0.1` lines kept), the watcher log says
+      how (`hosts: /etc/hosts rebuilt in place` or `bound over it`) and, after a while, nothing more (no write every pass), and the Content
+      Store, app launching, YouTube, Netflix, Jellyfin/Moonfin and the Homebrew Channel still work. Then `touch /var/lib/homehook/no-lg-block`:
+      within 30 s the block is gone; delete the flag and it comes back. With the Homebrew Channel's Block system updates unticked,
+      `su.lge.com` is not in the block. `hosts: TV country xx` is logged once.
+- [ ] (verify) Port 9998: `iptables -S INPUT` and `ip6tables -S INPUT` show the DROP rule once each, `http://<tv>:9998/` from a computer
+      gets no answer, `tools/tv/cdp.mjs` still works through its SSH tunnel, and the log says `debugger: port 9998 closed`. `partial` means
+      IPv4 is closed but IPv6 is still open (it names the family; usually no ip6_tables in the kernel): then check `[<tv's IPv6>]:9998` from a
+      computer too. `nofirewall` means it stays open. (This TV has `devmode_enabled` as a folder, and iptables and ip6tables with filter tables.)
+- [ ] (on the TV, manual, needs approval) Remove the older hook `/var/lib/webosbrew/init.d/40-lg-privacy-hosts`. It is not from this repository
+      or its history. It sends 25 names to 127.0.0.1, among them `lgtvsdp.com`, `us/uk/eu.lgtvsdp.com`, `ngfts.lge.com`,
+      `aic-ngfts.lge.com` and bare `lgtvcommon.com`, which Glasshouse documents as breaking the Content Store and app updates (and
+      `nexlgsdp.com`, a typo). Until it goes, the watcher treats its lines as someone else's and leaves them in place. To remove it: move the
+      hook aside, reboot, and check that `/etc/hosts` holds only localhost, the Homebrew Channel's lines and the watcher's block.
 
 Update Lumen in the Homebrew Channel first (dev build from commit 8e2bd15 or later).
 - [ ] Down and Up at about 40 fps (verify after the next build; measured live 2026-10-23, in source, `docs/down-up-lag-review.md`): the backdrop behind the lower rows is a canvas (`components/LowerVeil.tsx`) and looks as before, with night dimming too; the bar and first grid row tiles keep a layer each. Up slides in 340 ms, Down in 276 ms. The grid's focused tile grows 1.14x. Check that the backdrop changes with the wallpaper, and that a Down within 4 s of coming back from an app still shows the backdrop (`screen--plainglass` is no longer set under Live blur, so the `settled` rule now also checks `screen--lower`).
@@ -379,7 +390,8 @@ In rough order of value:
 6. Auto-switch to an HDMI input when its device turns on; power off when idle.
 7. Profiles, and a kids mode with a PIN and allowed hours.
 8. Privacy page: LG ad and Live Plus settings. (Hosts-level blocking of LG's ad and tracking hosts is done: `hosts_sync` in `tools/tv/watch.sh`,
-   from Glasshouse's ads tier, with the Homebrew Channel's update block kept. A page could show it and switch `no-lg-block`.)
+   from Glasshouse's ads tier; LG's update servers only while the Homebrew Channel's update block is ticked. A page could show it and
+   switch `no-lg-block`.)
 9. Live TV row under the glass bar and a Now and Next guide (phase 1), full guide grid later (phase 2). Plan and mockups in
    `docs/live-tv-build.md`.
 

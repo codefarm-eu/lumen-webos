@@ -9,9 +9,16 @@ done
 # (homekey_unbind), so there is one copy of it: the installed watcher is sourced for its functions only (WATCH_SH_LIB), not run.
 W=${HOMEHOOK_WATCH_SH:-/var/lib/homehook/watch.sh}
 WATCH_SH_LIB=1 . "$W" 2>/dev/null || { echo "no $W: the Home key bind (if any) is left in Input Hook"; exit 0; }
-# and the port 9998 rule (debugger_guard), which no running watcher puts back now
+# and the port 9998 rule (debugger_guard), which no running watcher puts back now, each call with the watcher's 5 s limit
 if command -v ipt_tools >/dev/null 2>&1; then
-  for t in $(ipt_tools); do $t -C $DEBUGGER_RULE 2>/dev/null && $t -D $DEBUGGER_RULE 2>/dev/null && echo "port 9998 rule removed ($t)"; done
+  command -v to5 >/dev/null 2>&1 || to5() { "$@"; }
+  for t in $(ipt_tools); do to5 $t -C $DEBUGGER_RULE 2>/dev/null && to5 $t -D $DEBUGGER_RULE 2>/dev/null && echo "port 9998 rule removed ($t)"; done
+fi
+# and the watcher's lines in /etc/hosts (hosts_sync wanting nothing: its block goes, in place, or its own bind comes off); the TV's country
+# is not asked for, as nothing is written
+if command -v hosts_sync >/dev/null 2>&1; then
+  HOSTS_ALL_OFF=1; lgcountrytries=3
+  run_dir && hosts_sync && echo "LG hosts block removed from $HOSTS (if it was there)"
 fi
 K=${HOMEHOOK_KEYBINDS:-$KEYBINDS}
 if [ -f "$K" ] && grep -qF "$HOMEKEY_BIND" "$K"; then

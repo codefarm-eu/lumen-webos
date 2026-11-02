@@ -1004,8 +1004,10 @@ single_instance() {
 #    Netflix was reported interrupted after a cold boot with ngfts blocked;
 #  - nextlgsdp.com and tv.wiselg.com (ADBLOCK_SDP), and rdx2.nextlgsdp.com: the TV sets its clock from those servers, and blocked before the
 #    clock is valid every TLS connection fails. Glasshouse only blocks them after the clock has synced; a static list cannot wait, so not here.
-# Added: LG's firmware update servers, the same four names the Homebrew Channel's "Block system updates" sends to 127.0.0.1 (a firmware update
-# can take root away). Glasshouse's country-prefixed names use its fallback countries, as a static list cannot read the TV's.
+# LG's firmware update servers (the four names the Homebrew Channel's "Block system updates" sends to 127.0.0.1; a firmware update can take
+# root away) are blocked only while that checkbox is on (its flag file, as Glasshouse checks it), so unticking it lets updates through again.
+# Country-prefixed names: LG's regional prefixes, the countries LG is seen using, and the TV's own country, read once from the settings
+# service as Glasshouse does (smartServiceCountryCode2).
 LG_BLOCK_ADS="ad.lgsmartad.com ibis.lgappstv.com ibs.lgappstv.com lgsmartad.com rdx.lgtvcommon.com aic.lgtvcommon.com smartad.lge.com
  smartclip.com smartclip-services.com yumenetworks.com
  alphonso.tv prov-lg.alphonso.tv prov.alphonso.tv eulacheck.alphonso.tv bl-server.alphonso.tv clockskew.alphonso.tv acrdb.alphonso.tv
@@ -1013,57 +1015,120 @@ LG_BLOCK_ADS="ad.lgsmartad.com ibis.lgappstv.com ibs.lgappstv.com lgsmartad.com 
  eu-acr86.alphonso.tv
  rone-aic.lge.com rone-eic.lge.com rone-kic.lge.com rone-saic.lge.com rone-tv-aic.lge.com rone-tv-cic.lge.com rone-tv-eic.lge.com
  rone-tv-kic.lge.com rone-tv-saic.lge.com"
-# blocked bare and with each of LG_BLOCK_PREFIXES in front (the firmware builds gb.info.lgsmartad.com, aic.cdpbeacon.lgtvcommon.com ...)
+# blocked bare and with each prefix in front (the firmware builds gb.info.lgsmartad.com, aic.cdpbeacon.lgtvcommon.com ...)
 LG_BLOCK_REGIONAL="info.lgsmartad.com rdx2.lgtvsdp.com elastic.lgwebostv.com ibs.lgappstv.com ibsstat.lgappstv.com cdpbeacon.lgtvcommon.com
  cdpsvc.lgtvcommon.com wau.lgtvcommon.com api.adts.lgtvcommon.com"
-LG_BLOCK_PREFIXES="aic eic kic eu us gb au br ca de fr"
+LG_BLOCK_PREFIXES="aic eic kic eu"           # Glasshouse's ADBLOCK_REGION_PREFIXES
+LG_BLOCK_COUNTRIES="us gb au br ca de fr"    # its ADBLOCK_FALLBACK_COUNTRIES, always kept; the TV's own country is added to them
 LG_BLOCK_FIRMWARE="snu.lge.com su-dev.lge.com su.lge.com su-ssl.lge.com"
+HBC_BLOCK_FLAG=${HOMEHOOK_HBC_BLOCK_FLAG:-/var/luna/preferences/webosbrew_block_updates}
+HOSTS_BOUND_MARK=${HOMEHOOK_HOSTS_BOUND_MARK:-$RUN/hosts-bound}   # in memory, like the bind: this watcher made the bind over $HOSTS
+HOSTS_BEGIN="# >>> Lumen watcher (watch.sh hosts_sync): rebuilt about every 30 s, edits between these lines are lost"
+HOSTS_END="# <<< Lumen watcher"
+HOSTS_RETRY=1800  # seconds before a bind that failed is tried again (each try would write the table on flash)
+lgcountry=""; lgcountrytries=0; hostsfailat=0
 
-# the names blocked by default, one per line, no duplicates
+# a command with a 5 s limit (the same busybox "timeout N" or "timeout -t N" test as LS_TO above): a wedged iptables or settings service
+# must not stop the loop; without timeout it runs as is
+IPT_SECS=${HOMEHOOK_IPT_SECS:-5}
+if timeout 1 true 2>/dev/null; then T5="timeout $IPT_SECS"; elif timeout -t 1 true 2>/dev/null; then T5="timeout -t $IPT_SECS"; else T5=""; fi
+to5() { $T5 "$@"; }
+
+# the TV's country (two letters, lower case) from the settings service, once per watcher run: at most 3 tries, one a pass, then the fallback
+# countries alone
+lg_country() {
+  [ -n "$lgcountry" ] && return 0
+  [ "$lgcountrytries" -ge 3 ] && return 0
+  lgcountrytries=$((lgcountrytries + 1))
+  c=$(to5 luna-send -n 1 luna://com.webos.settingsservice/getSystemSettings '{"category":"option","keys":["smartServiceCountryCode2"]}' \
+    </dev/null 2>/dev/null | sed -n 's/.*"smartServiceCountryCode2"[[:space:]]*:[[:space:]]*"\([A-Za-z][A-Za-z]\)".*/\1/p' | tr 'A-Z' 'a-z')
+  case "$c" in [a-z][a-z]) lgcountry=$c; echo "$(date +%T) hosts: TV country $c" >> "$LOG" ;; esac
+  return 0
+}
+
+# the LG names this list blocks now, one per line, no duplicates: the firmware servers only while the Homebrew Channel blocks updates.
+# With "all", every name it may ever write (the firmware servers too), which is what it owns and takes out again.
 lg_block_names() {
-  { for n in $LG_BLOCK_ADS $LG_BLOCK_FIRMWARE; do echo "$n"; done
-    for n in $LG_BLOCK_REGIONAL; do echo "$n"; for p in $LG_BLOCK_PREFIXES; do echo "$p.$n"; done; done; } | awk '!s[$0]++'
+  { for n in $LG_BLOCK_ADS; do echo "$n"; done
+    if [ "$1" = all ] || [ -e "$HBC_BLOCK_FLAG" ]; then for n in $LG_BLOCK_FIRMWARE; do echo "$n"; done; fi
+    for n in $LG_BLOCK_REGIONAL; do echo "$n"; for p in $LG_BLOCK_PREFIXES $LG_BLOCK_COUNTRIES $lgcountry; do echo "$p.$n"; done; done
+  } | awk '!s[$0]++'
 }
 
-# every line the hosts table should hold: "0.0.0.0 <name>" and ":: <name>" for each default name (none with no-lg-block), then the owner's
-# hosts-extra, of which only "0.0.0.0 <name>" or ":: <name>" lines are ever taken, so a stray line cannot point a name somewhere real
+# the owner's hosts-extra lines: only "0.0.0.0 <name>" or ":: <name>" are ever taken, so a stray line cannot point a name somewhere real
+hosts_extra() {
+  [ -f "$EXTRA" ] && grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | awk '{print $1" "$2}'
+  return 0
+}
+
+# every line the block should hold: "0.0.0.0 <name>" and ":: <name>" for each LG name (none with no-lg-block), then hosts-extra.
+# HOSTS_ALL_OFF (stop_watch.sh) wants nothing at all.
 hosts_want() {
-  { if [ ! -f "$NOLGBLOCK_FLAG" ]; then lg_block_names | while IFS= read -r n; do echo "0.0.0.0 $n"; echo ":: $n"; done; fi
-    [ -f "$EXTRA" ] && grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | awk '{print $1" "$2}'; } | awk '!s[$0]++'
+  [ -n "$HOSTS_ALL_OFF" ] && return 0
+  { if [ ! -e "$NOLGBLOCK_FLAG" ]; then lg_block_names | while IFS= read -r n; do echo "0.0.0.0 $n"; echo ":: $n"; done; fi
+    hosts_extra; } | awk '!s[$0]++'
 }
 
-# the wanted lines /etc/hosts does not answer yet. A name another line already gives an address of the same family (the Homebrew Channel's
-# 127.0.0.1 for the update servers, another tool's redirect) counts as answered: the first line wins in a hosts file, so ours would do nothing.
-hosts_missing() {
-  hosts_want | awk -v hosts="$HOSTS" 'BEGIN {
-      while ((getline l < hosts) > 0) { sub(/#.*/, "", l); k = split(l, f, /[ \t]+/); a = 0
-        for (i = 1; i <= k; i++) { if (f[i] == "") continue; if (!a) { a = (f[i] ~ /:/) ? 6 : 4; continue } seen[a " " f[i]] = 1 } }
-    } { if (!(((($1 ~ /:/) ? 6 : 4) " " $2) in seen)) print }'
+# writes to $1 what $HOSTS should hold: every line of it that is not this watcher's, as it is (localhost, the Homebrew Channel's 127.0.0.1
+# update lines, another tool's or hook's lines), each ended with a newline (a file whose last line has none is not glued to the next), then
+# the block of wanted lines between HOSTS_BEGIN and HOSTS_END. This watcher's lines are the block, and any bare "0.0.0.0 <name>" or
+# ":: <name>" line outside it for a name it blocks or blocked (an earlier build appended them). A wanted name that a line of another
+# family-mate already answers (127.0.0.1 for a v4 name) is left out: the first line wins in a hosts file, so ours would do nothing.
+# Returns 3 when the file holds nothing of this watcher's and nothing is wanted: then it is not touched.
+hosts_build() {
+  HH_WANT=$(hosts_want) HH_OWNED=$({ lg_block_names all; hosts_extra | awk '{print $2}'; }) HH_B=$HOSTS_BEGIN HH_E=$HOSTS_END \
+  awk 'BEGIN { B = ENVIRON["HH_B"]; E = ENVIRON["HH_E"]; n = split(ENVIRON["HH_OWNED"], o, "\n"); for (i = 1; i <= n; i++) own[o[i]] = 1 }
+    FNR == NR { if ($0 == B) b = 1; else if (b && $0 == E) closed = 1; next }
+    $0 == B && closed { inb = 1; drop++; next }
+    inb { if ($0 == E) inb = 0; drop++; next }
+    { l = $0; sub(/#.*/, "", l); k = split(l, f, /[ \t]+/); m = 0; a = 0
+      for (i = 1; i <= k; i++) if (f[i] != "") g[++m] = f[i]
+      if (m == 2 && (g[1] == "0.0.0.0" || g[1] == "::") && (g[2] in own)) { drop++; next }
+      for (i = 2; i <= m; i++) seen[((g[1] ~ /:/) ? 6 : 4) " " g[i]] = 1
+      keep[++nk] = $0 }
+    END { n = split(ENVIRON["HH_WANT"], w, "\n"); nw = 0
+      for (i = 1; i <= n; i++) { if (w[i] == "") continue; split(w[i], x, " "); if (!((((x[1] ~ /:/) ? 6 : 4) " " x[2]) in seen)) out[++nw] = w[i] }
+      if (!drop && !nw) exit 3
+      printf "" > OUT
+      for (i = 1; i <= nk; i++) print keep[i] > OUT
+      if (nw) { print B > OUT; for (i = 1; i <= nw; i++) print out[i] > OUT; print E > OUT } }' OUT="$1" "$HOSTS" "$HOSTS"
 }
 
-hosts_bound() { grep -q "[[:space:]]$HOSTS[[:space:]]" "${HOMEHOOK_MOUNTS:-/proc/mounts}" 2>/dev/null; }
+# exact match on the mount point (field 2), not a pattern, so a bind is never taken for another and never stacked
+hosts_bound() { awk -v p="$HOSTS" '$2 == p { f = 1 } END { exit !f }' "${HOMEHOOK_MOUNTS:-/proc/mounts}" 2>/dev/null; }
 
-# keeps the wanted lines in /etc/hosts (from the main loop, about every 30 s, and so again after every boot). Where /etc/hosts can be written
-# (the Homebrew Channel's own table bound over it, or a writable rootfs), the missing lines are added to it. Where it cannot (on the read-only
-# rootfs), the table in $HOSTS_TABLE is made from what /etc/hosts holds now plus the missing lines and bound over it, as Glasshouse and the
-# Homebrew Channel do: the bind lives in memory, so a reboot gives the stock file back and the next pass makes the table again from it.
+hosts_log() { [ "$hostslast" = "$1" ] || echo "$(date +%T) hosts: $2" >> "$LOG"; hostslast=$1; }
+
+# keeps /etc/hosts as hosts_build says (from the main loop, about every 30 s, and so again after every boot). Written in place
+# (cat > "$HOSTS": the same inode, never mv, as app jails bind /etc/hosts into themselves) and only when its bytes would change, so a table
+# on flash is not written every pass. Where /etc/hosts can be written (the Homebrew Channel's table on /var bound over it, a tmpfs bind, a
+# writable rootfs), that is all: lines this list no longer wants (no-lg-block, a name gone from hosts-extra) go on the next pass. Where it
+# cannot (the read-only rootfs, nothing bound), the new content goes into $HOSTS_TABLE, bound over it, as Glasshouse and the Homebrew Channel
+# do; the bind lives in memory, so a reboot gives the stock file back. A failed bind is tried again only after HOSTS_RETRY. When nothing is
+# wanted any more and this watcher made the bind, it is taken off once (umount), which gives back what was under it.
 hosts_sync() {
-  miss=$(hosts_missing)
-  [ -n "$miss" ] || return 0
-  if { printf '%s\n' "$miss" >> "$HOSTS"; } 2>/dev/null; then
-    [ "$hostslast" = added ] || echo "$(date +%T) hosts: $(printf '%s\n' "$miss" | wc -l | tr -d ' ') lines added to $HOSTS" >> "$LOG"
-    hostslast=added; return 0
+  lg_country
+  if [ -z "$(hosts_want)" ] && [ -f "$HOSTS_BOUND_MARK" ] && hosts_bound; then
+    rm -f "$HOSTS_BOUND_MARK"
+    if umount "$HOSTS" 2>/dev/null; then hosts_log unbound "nothing to block, $HOSTS_TABLE taken off $HOSTS"; return 0; fi
+    hosts_log unbindfail "could not take $HOSTS_TABLE off $HOSTS, emptying it instead"
   fi
-  if hosts_bound; then
-    [ "$hostslast" = stuck ] || echo "$(date +%T) hosts: $HOSTS is bound and cannot be written, nothing added" >> "$LOG"
-    hostslast=stuck; return 1
+  tmp=$RUN/hosts.new
+  hosts_build "$tmp" 2>/dev/null; r=$?
+  if [ "$r" -eq 3 ] || { [ "$r" -eq 0 ] && cmp -s "$tmp" "$HOSTS"; }; then rm -f "$tmp"; [ "$r" -eq 3 ] || hostslast=ok; return 0; fi
+  if [ "$r" -ne 0 ]; then rm -f "$tmp"; hosts_log buildfail "could not read $HOSTS or write $tmp"; return 1; fi
+  if { cat "$tmp" > "$HOSTS"; } 2>/dev/null; then
+    rm -f "$tmp"; hosts_log written "$HOSTS rebuilt in place"; return 0
   fi
-  { cat "$HOSTS" 2>/dev/null; printf '%s\n' "$miss"; } > "$HOSTS_TABLE.new" 2>/dev/null && mv -f "$HOSTS_TABLE.new" "$HOSTS_TABLE" \
-    && chmod 644 "$HOSTS_TABLE" && mount --bind "$HOSTS_TABLE" "$HOSTS" 2>/dev/null
+  if hosts_bound; then rm -f "$tmp"; hosts_log stuck "$HOSTS is bound and cannot be written, left as it is"; return 1; fi
+  now5=$(date +%s)
+  if [ "$hostsfailat" -gt 0 ] && [ $((now5 - hostsfailat)) -lt "$HOSTS_RETRY" ]; then rm -f "$tmp"; return 1; fi
+  { cmp -s "$tmp" "$HOSTS_TABLE" || cat "$tmp" > "$HOSTS_TABLE"; } 2>/dev/null && chmod 644 "$HOSTS_TABLE" 2>/dev/null \
+    && mount --bind "$HOSTS_TABLE" "$HOSTS" 2>/dev/null
   r=$?
-  rm -f "$HOSTS_TABLE.new"
-  if [ "$r" -eq 0 ]; then echo "$(date +%T) hosts: $HOSTS read-only, $HOSTS_TABLE bound over it" >> "$LOG"; hostslast=bound
-  else [ "$hostslast" = failed ] || echo "$(date +%T) hosts: could not bind $HOSTS_TABLE over $HOSTS" >> "$LOG"; hostslast=failed; fi
+  rm -f "$tmp"
+  if [ "$r" -eq 0 ]; then : > "$HOSTS_BOUND_MARK"; hostsfailat=0; hosts_log bound "$HOSTS read-only, $HOSTS_TABLE bound over it"
+  else hostsfailat=$now5; hosts_log failed "could not bind $HOSTS_TABLE over $HOSTS, next try in $HOSTS_RETRY s"; fi
   return $r
 }
 
@@ -1074,24 +1139,39 @@ hosts_sync() {
 # ssh -L 19998:127.0.0.1:9998 (tools/tv/cdp.mjs, ares-inspect through a tunnel) still reaches it, and nothing else (ssh on 22, Luna, the
 # Homebrew Channel) is touched. The rule lives in memory: checked with -C before -I so a pass never stacks a second copy, and added again
 # after a boot by the first pass. With /var/lib/homehook/debugger-open the rule is taken out instead (ares-inspect straight from a computer).
+# Each call has the 5 s limit. A family whose call fails while the kernel has no filter table for it (/proc/net/ip_tables_names,
+# ip6_tables_names, as Glasshouse checks) has no firewall: it is not tried again until the watcher restarts. IPv4 closed with IPv6 open is
+# "partial" in the log, never "closed".
 DEBUGGER_RULE="INPUT -p tcp --dport 9998 ! -i lo -j DROP"
+PROC_NET=${HOMEHOOK_PROC_NET:-/proc/net}
+dbgnofw=""        # families found with no firewall in this kernel
 ipt_tools() {
   for n in iptables ip6tables; do for d in $IPT_DIRS; do [ -x "$d/$n" ] && { echo "$d/$n"; break; }; done; done
 }
+ipt_fam() { case "${1##*/}" in ip6tables) echo IPv6 ;; *) echo IPv4 ;; esac; }
 debugger_guard() {
   tools=$(ipt_tools)
-  if [ -f "$DEBUGGER_FLAG" ]; then
-    for t in $tools; do $t -C $DEBUGGER_RULE 2>/dev/null && $t -D $DEBUGGER_RULE 2>/dev/null; done
+  if [ -e "$DEBUGGER_FLAG" ]; then
     st=open
-  elif [ ! -f "$DEVMODE_FLAG" ]; then
-    st=off   # without Developer Mode webOS does not open the port
-  elif [ -z "$tools" ]; then
-    st=nofirewall
+    for t in $tools; do to5 $t -C $DEBUGGER_RULE 2>/dev/null && { to5 $t -D $DEBUGGER_RULE 2>/dev/null || st="open, but the rule is still in $t"; }; done
+  elif [ ! -e "$DEVMODE_FLAG" ]; then
+    st=off   # without Developer Mode webOS does not open the port (a file or, on some TVs, a folder)
   else
-    st=closed
-    for t in $tools; do $t -C $DEBUGGER_RULE 2>/dev/null || $t -I $DEBUGGER_RULE 2>/dev/null || st=partial; done
+    held=""; failed=""; nofw=""
+    for f in IPv4 IPv6; do
+      t=""; for x in $tools; do [ "$(ipt_fam "$x")" = "$f" ] && t=$x; done
+      case " $dbgnofw " in *" $f "*) nofw="$nofw $f"; continue ;; esac
+      [ "$f" = IPv6 ] && tbl=$PROC_NET/ip6_tables_names || tbl=$PROC_NET/ip_tables_names
+      if [ -z "$t" ]; then dbgnofw="$dbgnofw $f"; nofw="$nofw $f"
+      elif to5 $t -C $DEBUGGER_RULE 2>/dev/null || to5 $t -I $DEBUGGER_RULE 2>/dev/null; then held="$held $f"
+      elif [ ! -e "$tbl" ]; then dbgnofw="$dbgnofw $f"; nofw="$nofw $f"
+      else failed="$failed $f"; fi
+    done
+    if [ -z "$failed$nofw" ]; then st=closed
+    elif [ -z "$held$failed" ]; then st="nofirewall (no iptables, or no ip_tables in this kernel: port 9998 stays OPEN to the network)"
+    elif [ -z "$held" ]; then st="failed (still OPEN on$failed$nofw; tried again in 30 s)"
+    else st="partial (closed on$held, still OPEN on$failed$nofw${nofw:+, no firewall for$nofw})"; fi
   fi
-  # a TV with ip6tables but no ip6_tables in its kernel fails that family every pass: logged once, as each change of state is
   [ "$st" = "$dbglast" ] || echo "$(date +%T) debugger: port 9998 $st" >> "$LOG"
   dbglast=$st
 }
