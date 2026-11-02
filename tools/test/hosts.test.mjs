@@ -738,7 +738,8 @@ test('the mkdir lock: made mode 700, and a live watcher holding it past 60 s is 
 test('the mkdir lock: a pid reused by an unrelated process is taken over (moved aside, then cleared, never rm -r)', () => {
 	const t = setup();
 	Object.assign(t.env, MK);
-	run(t, 'hosts_sync', `sleep 3 >/dev/null 2>&1 &\nmkdir -m 700 "$HOMEHOOK_RUN/hosts.lock"; echo $! > "$HOMEHOOK_RUN/hosts.lock/pid"`);
+	// not a forked shell (busybox ash runs sleep in a fork that keeps this command line, which names watch.sh): another program
+	run(t, 'hosts_sync', `'${process.execPath}' -e 'setTimeout(() => {}, 3000)' >/dev/null 2>&1 &\nmkdir -m 700 "$HOMEHOOK_RUN/hosts.lock"; echo $! > "$HOMEHOOK_RUN/hosts.lock/pid"`);
 	assert.match(hostsOf(t), /^0\.0\.0\.0 ad\.lgsmartad\.com$/m);
 	assert.ok(!existsSync(join(t.d, 'hosts.lock')));
 	assert.equal(execFileSync('sh', ['-c', `ls -a '${t.d}' | grep -c 'hosts.lock.old' || true`], {encoding: 'utf8'}).trim(), '0');
