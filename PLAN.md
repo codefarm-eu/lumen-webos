@@ -37,7 +37,7 @@ The agent installs each change on the TV over SSH (`npm run deploy:home`), so "v
 - [ ] (verify) Port 9998: `iptables -S INPUT` and `ip6tables -S INPUT` show the DROP rule once each, `http://<tv>:9998/` from a computer
       gets no answer, `tools/tv/cdp.mjs` still works through its SSH tunnel, and the log says `debugger: port 9998 closed`. `partial` means
       IPv4 is closed but IPv6 is still open (it names the family; usually no ip6_tables in the kernel): then check `[<tv's IPv6>]:9998` from a
-      computer too. `nofirewall` means it stays open. (This TV has `devmode_enabled` as a folder, and iptables and ip6tables with filter tables.)
+      computer too. `nofirewall` means it stays open. `unknown` (or `not known on`) means `iptables -C` did not answer: nothing was added. (This TV has `devmode_enabled` as a folder, and iptables and ip6tables with filter tables.)
 - [ ] (on the TV, manual, needs approval) Remove the older hook `/var/lib/webosbrew/init.d/40-lg-privacy-hosts`. It is not from this repository
       or its history. It sends 25 names to 127.0.0.1, among them `lgtvsdp.com`, `us/uk/eu.lgtvsdp.com`, `ngfts.lge.com`,
       `aic-ngfts.lge.com` and bare `lgtvcommon.com`, which Glasshouse documents as breaking the Content Store and app updates (and

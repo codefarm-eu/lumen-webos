@@ -3,8 +3,8 @@
 // /proc/mounts, /proc/net, the flags, iptables and luna-send are files in a temp folder, and mount and umount are shell functions.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
-import {chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync} from 'node:fs';
+import {execFileSync, spawn} from 'node:child_process';
+import {chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -13,7 +13,7 @@ const STOP = new URL('../../tools/tv/stop_watch.sh', import.meta.url).pathname;
 const BEGIN = '# >>> Lumen watcher (watch.sh hosts_sync): rebuilt about every 30 s, edits between these lines are lost';
 const END = '# <<< Lumen watcher';
 const FAKE_MOUNT = `mount () { echo "mount $*" >> "$HOMEHOOK_RUN/mounts.log"; [ ! -f "$HOMEHOOK_RUN/mount-fails" ]; }
-umount () { echo "umount $*" >> "$HOMEHOOK_RUN/mounts.log"; }`;
+umount () { echo "umount $*" >> "$HOMEHOOK_RUN/mounts.log"; [ ! -f "$HOMEHOOK_RUN/umount-fails" ]; }`;
 
 function setup (hosts = '127.0.0.1 localhost\n') {
 	const d = mkdtempSync(join(tmpdir(), 'hosts-'));
@@ -155,11 +155,12 @@ test('no-lg-block: the LG lines already there go on the next pass, in place; loc
 	run(t, 'hosts_sync');
 	assert.equal(hostsOf(t), pre);
 	assert.equal(statSync(t.env.HOMEHOOK_HOSTS).ino, ino);
-	// bare lines an earlier build appended outside a block are this list's too, and go; a name the owner gave another address stays
-	const old = setup('127.0.0.1 localhost\n0.0.0.0 ad.lgsmartad.com\n:: ad.lgsmartad.com\n0.0.0.0 su.lge.com\n192.0.2.9 smartad.lge.com\n');
+	// lines outside a block are not this watcher's, whatever name they hold: they stay
+	const pre2 = '127.0.0.1 localhost\n0.0.0.0 ad.lgsmartad.com\n:: ad.lgsmartad.com\n0.0.0.0 su.lge.com\n192.0.2.9 smartad.lge.com\n';
+	const old = setup(pre2);
 	writeFileSync(old.env.HOMEHOOK_NOLGBLOCK_FLAG, '');
 	run(old, 'hosts_sync');
-	assert.equal(hostsOf(old), '127.0.0.1 localhost\n192.0.2.9 smartad.lge.com\n');
+	assert.equal(hostsOf(old), pre2);
 });
 
 test('a name another line already answers in that family is not repeated; the older 40-lg-privacy-hosts hook\'s lines are left as they are', () => {
@@ -255,9 +256,19 @@ test('a failed bind does not write the table on flash every pass: backed off, an
 	assert.equal(logOf(u).match(/could not bind/g).length, 1);
 });
 
+/** the watcher's own bind of the table over hosts, as the kernel shows it: /proc/mounts names the table's device, and through the bind
+ * hosts is the table itself (a hard link gives the same device and inode) */
+function ownBind (t) {
+	writeFileSync(t.env.HOMEHOOK_HOSTS_TABLE, readFileSync(t.env.HOMEHOOK_HOSTS));
+	rmSync(t.env.HOMEHOOK_HOSTS);
+	linkSync(t.env.HOMEHOOK_HOSTS_TABLE, t.env.HOMEHOOK_HOSTS);
+	writeFileSync(t.env.HOMEHOOK_MOUNTS, `/dev/mmcblk0p20 ${t.env.HOMEHOOK_HOSTS} ext4 rw 0 0\n`);
+	writeFileSync(join(t.d, 'hosts-bound'), '');
+}
+
 test('no-lg-block with the watcher\'s own bind: it is taken off once (umount), and not again', () => {
 	const t = setup();
-	writeFileSync(t.env.HOMEHOOK_MOUNTS, `/dev/mmcblk0p20 ${t.env.HOMEHOOK_HOSTS} ext4 rw 0 0\n`);
+	ownBind(t);
 	writeFileSync(join(t.d, 'hosts-bound'), '');
 	writeFileSync(t.env.HOMEHOOK_NOLGBLOCK_FLAG, '');
 	run(t, 'hosts_sync; hosts_sync', FAKE_MOUNT);
@@ -266,8 +277,7 @@ test('no-lg-block with the watcher\'s own bind: it is taken off once (umount), a
 	assert.match(logOf(t), /taken off/);
 	// with hosts-extra lines still wanted the bind stays, and only the LG lines go
 	const u = setup();
-	writeFileSync(u.env.HOMEHOOK_MOUNTS, `/dev/mmcblk0p20 ${u.env.HOMEHOOK_HOSTS} ext4 rw 0 0\n`);
-	writeFileSync(join(u.d, 'hosts-bound'), '');
+	ownBind(u);
 	writeFileSync(join(u.d, 'hosts-extra'), '0.0.0.0 ads.example.com\n');
 	run(u, 'hosts_sync', FAKE_MOUNT);
 	writeFileSync(u.env.HOMEHOOK_NOLGBLOCK_FLAG, '');
@@ -281,13 +291,15 @@ test('no-lg-block with the watcher\'s own bind: it is taken off once (umount), a
  * it at the top, -D removes one copy (1 when there is none). With nomod, the kernel has no filter table: every call exits 3. With hang, every
  * call sleeps (a held xtables lock). Every call is logged.
  */
-function fakeIptables (t, tools = ['iptables', 'ip6tables'], {nomod = [], hang = []} = {}) {
+function fakeIptables (t, tools = ['iptables', 'ip6tables'], {nomod = [], hang = [], hangCheck = [], failInsert = []} = {}) {
 	const sbin = join(t.d, 'sbin');
 	mkdirSync(sbin, {recursive: true});
 	for (const n of tools) {
 		writeFileSync(join(sbin, n), `#!/bin/sh
 echo "${n} $*" >> '${t.d}/calls'
 ${hang.includes(n) ? 'exec sleep 10' : ''}
+${hangCheck.includes(n) ? '[ "$1" = -C ] && exec sleep 10' : ''}
+${failInsert.includes(n) ? '[ "$1" = -I ] && exit 4' : ''}
 ${nomod.includes(n) ? `echo "${n} v1.6.1: can't initialize ${n} table \\\`filter': Table does not exist (do you need to insmod?)" >&2; exit 3` : ''}
 r='${t.d}/rules-${n}'; touch "$r"
 op=$1; shift; rule="$*"
@@ -334,7 +346,7 @@ test('IPv6 with no ip6_tables in the kernel: "partial" in the log, and that fami
 	execFileSync('rm', [join(t.d, 'net', 'ip6_tables_names')]);
 	writeFileSync(t.env.HOMEHOOK_DEVMODE_FLAG, '');
 	run(t, 'debugger_guard; debugger_guard; debugger_guard');
-	assert.equal(calls().filter((c) => c.startsWith('ip6tables')).length, 2);   // -C and -I on the first pass only
+	assert.deepEqual(calls().filter((c) => c.startsWith('ip6tables')), [`ip6tables -C ${RULE}`]);   // on the first pass only, and no -I
 	assert.deepEqual(rules(t, 'iptables'), [RULE]);
 	const log = logOf(t).trim().split('\n');
 	assert.equal(log.length, 1);
@@ -348,7 +360,7 @@ test('no filter table at all: "nofirewall" once, and no iptables call every 30 s
 	execFileSync('rm', [join(t.d, 'net', 'ip_tables_names'), join(t.d, 'net', 'ip6_tables_names')]);
 	writeFileSync(t.env.HOMEHOOK_DEVMODE_FLAG, '');
 	run(t, 'debugger_guard; debugger_guard; debugger_guard');
-	assert.equal(calls().length, 4);
+	assert.deepEqual(calls(), [`iptables -C ${RULE}`, `ip6tables -C ${RULE}`]);
 	assert.equal(logOf(t).trim().split('\n').length, 1);
 	assert.match(logOf(t), /port 9998 nofirewall .*OPEN/);
 	// no iptables binary at all: nothing run, the same state
@@ -361,11 +373,18 @@ test('no filter table at all: "nofirewall" once, and no iptables call every 30 s
 
 test('a call that fails with the filter table there is tried again next pass; a hung iptables is cut off by the time limit', () => {
 	const t = setup();
-	const calls = fakeIptables(t, ['iptables', 'ip6tables'], {nomod: ['iptables']});   // fails, but ip_tables_names is there
+	const calls = fakeIptables(t, ['iptables', 'ip6tables'], {failInsert: ['iptables']});   // -I fails, but ip_tables_names is there
 	writeFileSync(t.env.HOMEHOOK_DEVMODE_FLAG, '');
 	run(t, 'debugger_guard; debugger_guard');
 	assert.equal(calls().filter((c) => c.startsWith('iptables')).length, 4);
-	assert.match(logOf(t), /port 9998 partial \(closed on IPv6, still OPEN on IPv4\)/);
+	assert.match(logOf(t), /port 9998 partial \(closed on IPv6, still OPEN on IPv4\)$/m);
+	// -C itself fails (exit 3) with the table there: not known, so nothing is added, and it is asked again next pass
+	const k = setup();
+	const kcalls = fakeIptables(k, ['iptables', 'ip6tables'], {nomod: ['iptables']});
+	writeFileSync(k.env.HOMEHOOK_DEVMODE_FLAG, '');
+	run(k, 'debugger_guard; debugger_guard');
+	assert.deepEqual(kcalls().filter((c) => c.startsWith('iptables')), [`iptables -C ${RULE}`, `iptables -C ${RULE}`]);
+	assert.match(logOf(k), /port 9998 partial \(closed on IPv6, not known on IPv4: iptables did not answer\)$/m);
 	const h = setup();
 	fakeIptables(h, ['iptables'], {hang: ['iptables']});
 	writeFileSync(h.env.HOMEHOOK_DEVMODE_FLAG, '');
@@ -381,7 +400,7 @@ test('debugger-open takes the rule out; without Developer Mode nothing is run', 
 	run(t, 'debugger_guard');
 	writeFileSync(t.env.HOMEHOOK_DEBUGGER_FLAG, '');
 	run(t, 'debugger_guard');
-	assert.deepEqual(calls().slice(2), [`iptables -C ${RULE}`, `iptables -D ${RULE}`]);
+	assert.deepEqual(calls().slice(2), [`iptables -C ${RULE}`, `iptables -D ${RULE}`, `iptables -C ${RULE}`]);
 	assert.deepEqual(rules(t, 'iptables'), []);
 	assert.match(logOf(t), /port 9998 open$/m);
 	const off = setup();
@@ -416,4 +435,214 @@ test('the main loop runs both on its first pass and about every 30 s', () => {
 	const src = readFileSync(SCRIPT, 'utf8');
 	const loop = src.slice(src.indexOf('while true; do\n  # wake'));
 	assert.match(loop, /\[ \$\(\(ticks % 30\)\) -eq 1 \] && \{ owned hosts_sync; owned debugger_guard; \}/);
+});
+
+// ---- second review: iptables -C that does not answer, the hosts write, whose mount it is, loose lines ----------------------------------
+
+test('a -C that times out while the rule is already there adds no second copy and is never logged "closed"', () => {
+	const t = setup();
+	const calls = fakeIptables(t, ['iptables'], {hangCheck: ['iptables']});
+	writeFileSync(join(t.d, 'rules-iptables'), `${RULE}\n`);
+	writeFileSync(join(t.d, 'net', 'ip6_tables_names'), 'filter\n');
+	writeFileSync(t.env.HOMEHOOK_DEVMODE_FLAG, '');
+	run(t, 'debugger_guard; debugger_guard');
+	assert.deepEqual(calls(), [`iptables -C ${RULE}`, `iptables -C ${RULE}`]);
+	assert.deepEqual(rules(t, 'iptables'), [RULE]);
+	assert.doesNotMatch(logOf(t), /closed/);
+	assert.match(logOf(t), /port 9998 failed \(still OPEN on IPv6, not known on IPv4; tried again in 30 s\)$/m);
+	// both families silent: "unknown", not "failed" or "closed"
+	const u = setup();
+	fakeIptables(u, ['iptables', 'ip6tables'], {hangCheck: ['iptables', 'ip6tables']});
+	writeFileSync(u.env.HOMEHOOK_DEVMODE_FLAG, '');
+	run(u, 'debugger_guard');
+	assert.match(logOf(u), /port 9998 unknown \(iptables did not answer on IPv4 IPv6; tried again in 30 s\)$/m);
+	assert.deepEqual(rules(u, 'iptables'), []);
+	// debugger-open with a silent -C: nothing deleted blind, and not called open and clean
+	const o = setup();
+	const ocalls = fakeIptables(o, ['iptables'], {hangCheck: ['iptables']});
+	writeFileSync(join(o.d, 'rules-iptables'), `${RULE}\n`);
+	writeFileSync(o.env.HOMEHOOK_DEBUGGER_FLAG, '');
+	run(o, 'debugger_guard');
+	assert.deepEqual(ocalls(), [`iptables -C ${RULE}`]);
+	assert.match(logOf(o), /port 9998 open, but .*iptables did not answer: the rule may still be in it$/m);
+});
+
+test('debugger-open and stop_watch.sh take out every stacked copy of the rule; stop_watch.sh never says "removed" for a silent -C', () => {
+	const t = setup();
+	fakeIptables(t, ['iptables']);
+	writeFileSync(join(t.d, 'rules-iptables'), `${RULE}\n${RULE}\nINPUT -p tcp --dport 22 -j ACCEPT\n${RULE}\n`);
+	writeFileSync(t.env.HOMEHOOK_DEBUGGER_FLAG, '');
+	run(t, 'debugger_guard');
+	assert.deepEqual(rules(t, 'iptables'), ['INPUT -p tcp --dport 22 -j ACCEPT']);
+	assert.match(logOf(t), /port 9998 open$/m);
+	const stop = (u) => execFileSync('sh', [STOP], {encoding: 'utf8',
+		env: {...process.env, ...u.env, HOMEHOOK_WATCH_SH: SCRIPT, HOMEHOOK_KEYBINDS: join(u.d, 'no-keybinds.json')}});
+	const s = setup();
+	fakeIptables(s, ['iptables']);
+	writeFileSync(join(s.d, 'rules-iptables'), `${RULE}\n${RULE}\n${RULE}\n`);
+	assert.match(stop(s), /port 9998 rule removed \(.*\/iptables\)/);
+	assert.deepEqual(rules(s, 'iptables'), []);
+	const h = setup();
+	fakeIptables(h, ['iptables'], {hangCheck: ['iptables']});
+	writeFileSync(join(h.d, 'rules-iptables'), `${RULE}\n`);
+	const out = stop(h);
+	assert.doesNotMatch(out, /removed \(/);
+	assert.match(out, /iptables did not answer, it may still be there/);
+	assert.deepEqual(rules(h, 'iptables'), [RULE]);
+});
+
+test('hosts_write: a copy in hosts.bak before the rewrite, sync after a real change only, and a result without its localhost line is put back', () => {
+	const pre = '127.0.0.1 localhost\n::1 localhost ip6-localhost\n';
+	const t = setup(pre);
+	const SYNC = `sync () { echo sync >> "$HOMEHOOK_RUN/sync.log"; }`;
+	run(t, 'hosts_sync; hosts_sync', SYNC);
+	assert.equal(readFileSync(join(t.d, 'hosts.bak'), 'utf8'), pre);
+	assert.equal(readFileSync(join(t.d, 'sync.log'), 'utf8'), 'sync\n');
+	// a build that lost localhost: written, found wrong, put back as it was, in place
+	const b = setup(pre);
+	const ino = statSync(b.env.HOMEHOOK_HOSTS).ino;
+	assert.equal(run(b, 'hosts_sync; echo "rc=$?"', `${SYNC}\nhosts_build () { printf '0.0.0.0 ad.lgsmartad.com\\n' > "$1"; }`), 'rc=1');
+	assert.equal(hostsOf(b), pre);
+	assert.equal(statSync(b.env.HOMEHOOK_HOSTS).ino, ino);
+	assert.match(logOf(b), /came out wrong .*put back as it was/);
+	assert.doesNotMatch(logOf(b), /rebuilt in place/);
+	// a short write (a full disk): put back too
+	const c = setup(pre);
+	run(c, 'hosts_sync; true', `cat () { if [ "$1" = "$HOMEHOOK_RUN/hosts.new" ]; then command head -c 12 "$1"; return 1; fi; command cat "$@"; }`);
+	assert.equal(hostsOf(c), pre);
+	assert.match(logOf(c), /put back as it was/);
+});
+
+for (const [kind, flock] of [['mkdir', ''], ['flock', null]]) {
+	test(`hosts_sync waits for the hosts lock (${kind}) and skips the pass when it stays held; a lock whose holder is gone is taken over`, () => {
+		const env = flock === null ? {} : {HOMEHOOK_FLOCK: flock};
+		const t = setup();
+		Object.assign(t.env, env, {HOMEHOOK_HOSTS_LOCK_SECS: '1'});
+		// another holder, alive for the whole pass
+		const hold = flock === null
+			? `flock -n "$HOMEHOOK_RUN/hosts.lock.f" sleep 3 >/dev/null 2>&1 & sleep 0.3`
+			: `sleep 3 >/dev/null 2>&1 & mkdir "$HOMEHOOK_RUN/hosts.lock"; echo $! > "$HOMEHOOK_RUN/hosts.lock/pid"`;
+		assert.equal(run(t, `hosts_sync; echo "rc=$?"`, hold), 'rc=1');
+		assert.equal(hostsOf(t), '127.0.0.1 localhost\n');
+		assert.match(logOf(t), /being written by another .* skipped/);
+		if (flock === null) return;
+		// a mkdir lock left by a pid that is gone: taken over, and let go after
+		const s = setup();
+		Object.assign(s.env, env, {HOMEHOOK_HOSTS_LOCK_SECS: '1'});
+		mkdirSync(join(s.d, 'hosts.lock'));
+		writeFileSync(join(s.d, 'hosts.lock', 'pid'), `${2 ** 22 + 7}\n`);
+		run(s, 'hosts_sync');
+		assert.match(hostsOf(s), /^0\.0\.0\.0 ad\.lgsmartad\.com$/m);
+		assert.ok(!existsSync(join(s.d, 'hosts.lock')));
+	});
+}
+
+test('stop_watch.sh waits until the watcher has ended (its last hosts write done) before it takes the block out', async () => {
+	const t = setup();
+	run(t, 'hosts_sync');
+	const blocked = hostsOf(t);
+	writeFileSync(join(t.d, 'blocked'), blocked);
+	writeFileSync(t.env.HOMEHOOK_HOSTS, '127.0.0.1 localhost\n');
+	const proc = join(t.d, 'proc');
+	// a "watcher": on TERM it takes a second to finish a pass that writes the block, then its /proc entry goes
+	const child = spawn('sh', ['-c', `trap 'sleep 1; cat "${t.d}/blocked" > "${t.env.HOMEHOOK_HOSTS}"; rm -rf "${proc}/$$"; exit 0' TERM
+		mkdir -p "${proc}/$$"; printf '/bin/sh\\0/var/lib/homehook/watch.sh\\0' > "${proc}/$$/cmdline"; touch "${t.d}/ready"
+		while :; do sleep 0.1; done`], {stdio: 'ignore'});
+	const exited = new Promise((r) => child.on('exit', r));
+	while (!existsSync(join(t.d, 'ready'))) await new Promise((r) => setTimeout(r, 20));
+	const out = await new Promise((resolve, reject) => {
+		const s = spawn('sh', [STOP], {env: {...process.env, ...t.env, HOMEHOOK_PROC: proc, HOMEHOOK_WATCH_SH: SCRIPT,
+			HOMEHOOK_KEYBINDS: join(t.d, 'no-keybinds.json')}});
+		let o = '';
+		s.stdout.on('data', (b) => { o += b; });
+		s.on('exit', (code) => (code === 0 ? resolve(o) : reject(new Error(`exit ${code}`))));
+	});
+	await exited;
+	assert.match(out, /LG hosts block removed/);
+	assert.equal(hostsOf(t), '127.0.0.1 localhost\n');
+});
+
+test('the watcher\'s own bind (hosts is the table): umount, and the mark goes only once it is off; a failed umount empties it and says so', () => {
+	const t = setup();
+	ownBind(t);
+	writeFileSync(join(t.d, 'umount-fails'), '');
+	run(t, 'hosts_sync', FAKE_MOUNT);   // with something wanted: no umount tried
+	assert.deepEqual(mountsLog(t), []);
+	assert.match(hostsOf(t), /^0\.0\.0\.0 ad\.lgsmartad\.com$/m);
+	writeFileSync(t.env.HOMEHOOK_NOLGBLOCK_FLAG, '');
+	run(t, 'hosts_sync', FAKE_MOUNT);
+	assert.deepEqual(mountsLog(t), [`umount ${t.env.HOMEHOOK_HOSTS}`]);
+	assert.ok(existsSync(join(t.d, 'hosts-bound')), 'the mark stays while the bind is still on');
+	assert.equal(hostsOf(t), '127.0.0.1 localhost\n');
+	assert.match(logOf(t), /could not take .* off .*, emptied it in place instead$/m);
+	// next pass: the umount is tried again, and works
+	execFileSync('rm', [join(t.d, 'umount-fails')]);
+	run(t, 'hosts_sync', FAKE_MOUNT);
+	assert.equal(mountsLog(t).length, 2);
+	assert.ok(!existsSync(join(t.d, 'hosts-bound')));
+	assert.match(logOf(t), /taken off/);
+});
+
+test('a failed umount over a read-only bind is not reported as emptied', roSkip, () => {
+	const t = setup();
+	ownBind(t);
+	run(t, 'hosts_sync', FAKE_MOUNT);
+	chmodSync(t.env.HOMEHOOK_HOSTS, 0o444);
+	writeFileSync(join(t.d, 'umount-fails'), '');
+	writeFileSync(t.env.HOMEHOOK_NOLGBLOCK_FLAG, '');
+	assert.equal(run(t, 'hosts_sync; echo "rc=$?"', FAKE_MOUNT), 'rc=1');
+	assert.doesNotMatch(logOf(t), /empt/);
+	assert.match(logOf(t), /could not take .* off .*, nor rewrite it \(read-only\)/);
+	assert.ok(existsSync(join(t.d, 'hosts-bound')));
+});
+
+test('someone else\'s mount on hosts (a tmpfs) is never taken off, even with our mark: the mark goes and the file is rebuilt in place', () => {
+	const t = setup();
+	writeFileSync(t.env.HOMEHOOK_MOUNTS, `/dev/root / squashfs ro 0 0\ntmpfs ${t.env.HOMEHOOK_HOSTS} tmpfs rw,relatime 0 0\n`);
+	writeFileSync(t.env.HOMEHOOK_HOSTS_TABLE, '127.0.0.1 localhost\n');
+	run(t, 'hosts_sync', FAKE_MOUNT);
+	writeFileSync(join(t.d, 'hosts-bound'), '');   // a mark left from a bind of ours that someone else's mount replaced
+	writeFileSync(t.env.HOMEHOOK_NOLGBLOCK_FLAG, '');
+	run(t, 'hosts_sync; hosts_sync', FAKE_MOUNT);
+	assert.deepEqual(mountsLog(t), []);
+	assert.ok(!existsSync(join(t.d, 'hosts-bound')));
+	assert.equal(hostsOf(t), '127.0.0.1 localhost\n');
+	assert.match(logOf(t), /not this watcher's bind .* left as it is/);
+	assert.doesNotMatch(logOf(t), /empt|taken off/);
+	// a mark with nothing mounted at all: just dropped
+	const u = setup();
+	writeFileSync(join(u.d, 'hosts-bound'), '');
+	writeFileSync(u.env.HOMEHOOK_NOLGBLOCK_FLAG, '');
+	run(u, 'hosts_sync', FAKE_MOUNT);
+	assert.deepEqual(mountsLog(u), []);
+	assert.ok(!existsSync(join(u.d, 'hosts-bound')));
+});
+
+test('hosts_bound: a mount whose path differs only where a regex "." would match does not count', () => {
+	const t = setup();
+	mkdirSync(join(t.d, 'a.b'));
+	t.env.HOMEHOOK_HOSTS = join(t.d, 'a.b', 'hosts');
+	writeFileSync(t.env.HOMEHOOK_MOUNTS, `tmpfs ${join(t.d, 'aXb', 'hosts')} tmpfs rw 0 0\n`);
+	assert.equal(run(t, 'hosts_bound && echo yes || echo no'), 'no');
+	writeFileSync(t.env.HOMEHOOK_MOUNTS, `tmpfs ${join(t.d, 'a.b', 'hosts')} tmpfs rw 0 0\n`);
+	assert.equal(run(t, 'hosts_bound && echo yes || echo no'), 'yes');
+});
+
+test('a 0.0.0.0 line added by hand outside the block is left alone, even for a name on the list (the firmware servers, no update flag)', () => {
+	const pre = '127.0.0.1 localhost\n0.0.0.0 su.lge.com\n:: snu.lge.com\n';
+	const t = setup(pre);
+	run(t, 'hosts_sync');
+	assert.ok(hostsOf(t).startsWith(`${pre}${BEGIN}\n`));
+	assert.equal(resolve(hostsOf(t), 'su.lge.com'), '0.0.0.0');
+	writeFileSync(t.env.HOMEHOOK_NOLGBLOCK_FLAG, '');
+	run(t, 'hosts_sync');
+	assert.equal(hostsOf(t), pre);
+	// only lines this watcher last wrote count as ours outside a block, and only once its markers are gone
+	const u = setup();
+	run(u, 'hosts_sync');
+	const lines = hostsOf(u).split('\n').filter((l) => l !== BEGIN && l !== END);
+	writeFileSync(u.env.HOMEHOOK_HOSTS, `${lines.join('\n')}0.0.0.0 mine.example\n`);
+	writeFileSync(u.env.HOMEHOOK_NOLGBLOCK_FLAG, '');
+	run(u, 'hosts_sync');
+	assert.equal(hostsOf(u), '127.0.0.1 localhost\n0.0.0.0 mine.example\n');
 });

@@ -94,8 +94,10 @@ The watcher also blocks LG's ad and telemetry servers and closes the web app deb
   the countries LG is seen using and the TV's own country (read once from the settings service), goes into `/etc/hosts` as one block
   between `# >>> Lumen watcher` and `# <<< Lumen watcher`. About every 30 s the watcher rebuilds the file in place (same file, so app jails that
   bind it in see the change) and writes it only when its bytes would change; every line outside the block (localhost, the Homebrew Channel's
-  `127.0.0.1` lines, other tools' and hooks' lines) is kept as it is. Where `/etc/hosts` cannot be written (read-only and nothing bound over
-  it), the same content goes into `/var/lib/homehook/hosts`, bound over it. LG's firmware update servers are in the block only while the
+  `127.0.0.1` lines, other tools' and hooks' lines, a `0.0.0.0` line you added by hand, even for a name on the list) is kept as it is.
+  Before each rewrite the old file is copied to the watcher's run folder (`hosts.bak`); a result that is short or has lost its localhost
+  line is put back from it, and only one writer (the watcher or `stop_watch.sh`) changes the file at a time. Where `/etc/hosts` cannot be
+  written (read-only and nothing bound over it), the same content goes into `/var/lib/homehook/hosts`, bound over it. LG's firmware update servers are in the block only while the
   Homebrew Channel's **Block system updates** is ticked. LG's service platform and time servers are left alone, so the Content Store, apps and
   the clock keep working; the reasons for each name left out are in `hosts_sync` in [tools/tv/watch.sh](tools/tv/watch.sh). Your own names go
   in `/var/lib/homehook/hosts-extra`. The TV's resolver reads the new file at once, but the browser engine (WebAppMgr's Chromium) caches
@@ -104,15 +106,18 @@ The watcher also blocks LG's ad and telemetry servers and closes the web app deb
   (`INPUT -p tcp --dport 9998 ! -i lo -j DROP`, IPv4 and IPv6) drops it on every interface but loopback, so SSH and an SSH tunnel to
   `127.0.0.1:9998` (`tools/tv/cdp.mjs`, `ares-inspect` through it) still work. A kernel with no filter table for a family
   (`/proc/net/ip_tables_names`, `ip6_tables_names`) cannot close it there: the log says `nofirewall`, or `partial` when IPv4 is closed
-  and IPv6 is still open, and that family is not tried again until the watcher restarts.
+  and IPv6 is still open, and that family is not tried again until the watcher restarts. The rule is added only when
+  `iptables -C` says it is missing; when `-C` gives no answer (a timeout, the xtables lock), nothing is added and the log says `unknown`
+  (or `not known on` that family), never `closed`.
 
 To undo:
 
 - **Turn off the Home key bind only:** `touch /var/lib/homehook/no-home-key`. The bind is gone within 5 s.
 - **Give LG's home back:** turn off Settings > Home Screen > **Home opens Lumen**.
-- **Stop the watcher altogether:** run [tools/tv/stop_watch.sh](tools/tv/stop_watch.sh). It also removes the key bind, the port 9998 rule and the watcher's block in `/etc/hosts`.
+- **Stop the watcher altogether:** run [tools/tv/stop_watch.sh](tools/tv/stop_watch.sh). It waits until the watcher has ended, then also removes the key bind, every copy of the port 9998 rule and the watcher's block in `/etc/hosts`.
 - **Stop blocking LG's hosts:** `touch /var/lib/homehook/no-lg-block`. The LG lines leave `/etc/hosts` on the watcher's next pass (within
-  30 s; the watcher's own bind, if it made one, is taken off when nothing else is wanted). Delete the file to block them again.
+  30 s; the watcher's own bind, if it made one and it is still there, is taken off when nothing else is wanted; a mount
+  over `/etc/hosts` that is not the watcher's is never taken off). Delete the file to block them again.
 - **Open port 9998 to the network again** (for `ares-inspect` straight from a computer): `touch /var/lib/homehook/debugger-open`. The rule
   is gone within 30 s.
 
