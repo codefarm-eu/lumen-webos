@@ -28,6 +28,10 @@ The agent installs each change on the TV over SSH (`npm run deploy:home`), so "v
 ## On the TV
 
 ### Verify on the TV (built, not yet seen working)
+- [ ] (verify) LG host blocking: `getent hosts ad.lgsmartad.com` (or `nslookup`) answers 0.0.0.0 on the TV, the watcher log says how
+      (`hosts: ... added` or `bound over it`), and the Content Store, app launching, YouTube, Netflix, Jellyfin/Moonfin and the Homebrew Channel still work.
+- [ ] (verify) Port 9998: `iptables -S INPUT` shows the DROP rule once, `http://<tv>:9998/` from a computer gets no answer, `tools/tv/cdp.mjs`
+      still works through its SSH tunnel, and the log says `debugger: port 9998 closed` (or `nofirewall`, if this kernel has none).
 
 Update Lumen in the Homebrew Channel first (dev build from commit 8e2bd15 or later).
 - [ ] Down and Up at about 40 fps (verify after the next build; measured live 2026-10-23, in source, `docs/down-up-lag-review.md`): the backdrop behind the lower rows is a canvas (`components/LowerVeil.tsx`) and looks as before, with night dimming too; the bar and first grid row tiles keep a layer each. Up slides in 340 ms, Down in 276 ms. The grid's focused tile grows 1.14x. Check that the backdrop changes with the wallpaper, and that a Down within 4 s of coming back from an app still shows the backdrop (`screen--plainglass` is no longer set under Live blur, so the `settled` rule now also checks `screen--lower`).
@@ -184,7 +188,8 @@ Update Lumen in the Homebrew Channel first (dev build from commit 8e2bd15 or lat
 - [x] `backdrop-filter` on the dock only: SVG refraction runs at 56-58 fps (2026-10-18), but the video is on a hardware layer the page cannot read, so nothing can blur or bend it. Details in `RESEARCH.md` section 5.
 - [ ] `https://sylvan.apple.com/` videos play directly (then the plain HTTP fallback in `lib/wallpaperVideo.ts` goes).
 - [ ] Immich: endpoint paths against the server's `/api` docs and which permissions a read-only key needs.
-- [ ] `hosts-extra`: capture what this TV calls (LG ads and tracking) and fill it in. It is empty now; the old entries were JioHotstar's.
+- [x] LG ads and tracking hosts: the watcher now blocks Glasshouse's ads tier (`hosts_sync` in `tools/tv/watch.sh`), so `hosts-extra` is only
+      for names of your own. Still to capture what this TV calls, in case it reaches names that list lacks.
 
 ### Also at the TV
 - [ ] Note the current Lumen settings, in case the backup does not work.
@@ -373,8 +378,8 @@ In rough order of value:
 5. Bedtime button: lower backlight, Eye Comfort and sleep timer together (all three work as root).
 6. Auto-switch to an HDMI input when its device turns on; power off when idle.
 7. Profiles, and a kids mode with a PIN and allowed hours.
-8. Privacy page: LG ad and Live Plus settings, plus hosts-level blocking of LG ad and tracking hosts (check what the Homebrew Channel's own
-   telemetry and ad blocking already covers before adding to `hosts-extra`).
+8. Privacy page: LG ad and Live Plus settings. (Hosts-level blocking of LG's ad and tracking hosts is done: `hosts_sync` in `tools/tv/watch.sh`,
+   from Glasshouse's ads tier, with the Homebrew Channel's update block kept. A page could show it and switch `no-lg-block`.)
 9. Live TV row under the glass bar and a Now and Next guide (phase 1), full guide grid later (phase 2). Plan and mockups in
    `docs/live-tv-build.md`.
 

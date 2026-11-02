@@ -71,6 +71,12 @@ AMBIENT_ON=/tmp/lumen-ambient-on
 NOSAVEROVERLAY_FLAG=/var/lib/homehook/no-saver-overlay   # the screensaver over an app is full-screen Lumen again (returns with a relaunch)
 APPS=/media/developer/apps/usr/palm/applications
 EXTRA=/var/lib/homehook/hosts-extra
+HOSTS=${HOMEHOOK_HOSTS:-/etc/hosts}
+HOSTS_TABLE=${HOMEHOOK_HOSTS_TABLE:-/var/lib/homehook/hosts}   # bound over /etc/hosts only where /etc/hosts cannot be written (hosts_sync)
+NOLGBLOCK_FLAG=${HOMEHOOK_NOLGBLOCK_FLAG:-/var/lib/homehook/no-lg-block}
+DEBUGGER_FLAG=${HOMEHOOK_DEBUGGER_FLAG:-/var/lib/homehook/debugger-open}
+DEVMODE_FLAG=${HOMEHOOK_DEVMODE_FLAG:-/var/luna/preferences/devmode_enabled}
+IPT_DIRS=${HOMEHOOK_IPT_DIRS:-/usr/sbin /sbin}
 TAKEOVER_FLAG=/var/lib/homehook/home-takeover
 NOWAKE_FLAG=/var/lib/homehook/no-wake-launch
 WAKE_SECS=30
@@ -111,6 +117,8 @@ prevxhome=1   # no launch for a launcher window already listed when the watcher 
 last=0
 okhome=0
 ticks=0
+hostslast=""      # what hosts_sync last logged
+dbglast=""        # what debugger_guard last logged
 saverlast=0
 pwprev=""
 lastme=""
@@ -986,6 +994,108 @@ single_instance() {
   return 1
 }
 
+# ---- LG ad and telemetry hosts (hosts_sync) -------------------------------------------------------------------------------------------
+# Ported from Glasshouse's ads tier (server/lib/privacy.js ADBLOCK_ADS and ADBLOCK_REGIONAL, https://github.com/rorygallagher2024/glasshouse,
+# MIT licence, Copyright (c) 2026 Rory Gallagher: see THIRD_PARTY_NOTICES.md). That tier is the one Glasshouse documents as leaving LG's
+# service platform reachable, so the Content Store, app installs and updates, app launching and the streaming apps keep working.
+# Left out on purpose, with Glasshouse's reasons (docs/dashboard/privacy.md "Everything tier", docs/IMPLEMENTATION.md):
+#  - its Everything tier (ADBLOCK_PLATFORM: lgtvsdp.com and its country hosts, ngfts.lge.com, cdplauncher/lgchhomeapp.lgtvcommon.com,
+#    lgtviot.com, ueiwsp.com, avsxappcaptiveportal.com): the Content Store, app updates, LG Channels, LG search, ThinQ and Alexa stop, and
+#    Netflix was reported interrupted after a cold boot with ngfts blocked;
+#  - nextlgsdp.com and tv.wiselg.com (ADBLOCK_SDP), and rdx2.nextlgsdp.com: the TV sets its clock from those servers, and blocked before the
+#    clock is valid every TLS connection fails. Glasshouse only blocks them after the clock has synced; a static list cannot wait, so not here.
+# Added: LG's firmware update servers, the same four names the Homebrew Channel's "Block system updates" sends to 127.0.0.1 (a firmware update
+# can take root away). Glasshouse's country-prefixed names use its fallback countries, as a static list cannot read the TV's.
+LG_BLOCK_ADS="ad.lgsmartad.com ibis.lgappstv.com ibs.lgappstv.com lgsmartad.com rdx.lgtvcommon.com aic.lgtvcommon.com smartad.lge.com
+ smartclip.com smartclip-services.com yumenetworks.com
+ alphonso.tv prov-lg.alphonso.tv prov.alphonso.tv eulacheck.alphonso.tv bl-server.alphonso.tv clockskew.alphonso.tv acrdb.alphonso.tv
+ ads.alphonso.tv api.alphonso.tv tvads.alphonso.tv sync.alphonso.tv tr.alphonso.tv tn.alphonso.tv insights.alphonso.tv bwlkup.alphonso.tv
+ eu-acr86.alphonso.tv
+ rone-aic.lge.com rone-eic.lge.com rone-kic.lge.com rone-saic.lge.com rone-tv-aic.lge.com rone-tv-cic.lge.com rone-tv-eic.lge.com
+ rone-tv-kic.lge.com rone-tv-saic.lge.com"
+# blocked bare and with each of LG_BLOCK_PREFIXES in front (the firmware builds gb.info.lgsmartad.com, aic.cdpbeacon.lgtvcommon.com ...)
+LG_BLOCK_REGIONAL="info.lgsmartad.com rdx2.lgtvsdp.com elastic.lgwebostv.com ibs.lgappstv.com ibsstat.lgappstv.com cdpbeacon.lgtvcommon.com
+ cdpsvc.lgtvcommon.com wau.lgtvcommon.com api.adts.lgtvcommon.com"
+LG_BLOCK_PREFIXES="aic eic kic eu us gb au br ca de fr"
+LG_BLOCK_FIRMWARE="snu.lge.com su-dev.lge.com su.lge.com su-ssl.lge.com"
+
+# the names blocked by default, one per line, no duplicates
+lg_block_names() {
+  { for n in $LG_BLOCK_ADS $LG_BLOCK_FIRMWARE; do echo "$n"; done
+    for n in $LG_BLOCK_REGIONAL; do echo "$n"; for p in $LG_BLOCK_PREFIXES; do echo "$p.$n"; done; done; } | awk '!s[$0]++'
+}
+
+# every line the hosts table should hold: "0.0.0.0 <name>" and ":: <name>" for each default name (none with no-lg-block), then the owner's
+# hosts-extra, of which only "0.0.0.0 <name>" or ":: <name>" lines are ever taken, so a stray line cannot point a name somewhere real
+hosts_want() {
+  { if [ ! -f "$NOLGBLOCK_FLAG" ]; then lg_block_names | while IFS= read -r n; do echo "0.0.0.0 $n"; echo ":: $n"; done; fi
+    [ -f "$EXTRA" ] && grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | awk '{print $1" "$2}'; } | awk '!s[$0]++'
+}
+
+# the wanted lines /etc/hosts does not answer yet. A name another line already gives an address of the same family (the Homebrew Channel's
+# 127.0.0.1 for the update servers, another tool's redirect) counts as answered: the first line wins in a hosts file, so ours would do nothing.
+hosts_missing() {
+  hosts_want | awk -v hosts="$HOSTS" 'BEGIN {
+      while ((getline l < hosts) > 0) { sub(/#.*/, "", l); k = split(l, f, /[ \t]+/); a = 0
+        for (i = 1; i <= k; i++) { if (f[i] == "") continue; if (!a) { a = (f[i] ~ /:/) ? 6 : 4; continue } seen[a " " f[i]] = 1 } }
+    } { if (!(((($1 ~ /:/) ? 6 : 4) " " $2) in seen)) print }'
+}
+
+hosts_bound() { grep -q "[[:space:]]$HOSTS[[:space:]]" "${HOMEHOOK_MOUNTS:-/proc/mounts}" 2>/dev/null; }
+
+# keeps the wanted lines in /etc/hosts (from the main loop, about every 30 s, and so again after every boot). Where /etc/hosts can be written
+# (the Homebrew Channel's own table bound over it, or a writable rootfs), the missing lines are added to it. Where it cannot (on the read-only
+# rootfs), the table in $HOSTS_TABLE is made from what /etc/hosts holds now plus the missing lines and bound over it, as Glasshouse and the
+# Homebrew Channel do: the bind lives in memory, so a reboot gives the stock file back and the next pass makes the table again from it.
+hosts_sync() {
+  miss=$(hosts_missing)
+  [ -n "$miss" ] || return 0
+  if { printf '%s\n' "$miss" >> "$HOSTS"; } 2>/dev/null; then
+    [ "$hostslast" = added ] || echo "$(date +%T) hosts: $(printf '%s\n' "$miss" | wc -l | tr -d ' ') lines added to $HOSTS" >> "$LOG"
+    hostslast=added; return 0
+  fi
+  if hosts_bound; then
+    [ "$hostslast" = stuck ] || echo "$(date +%T) hosts: $HOSTS is bound and cannot be written, nothing added" >> "$LOG"
+    hostslast=stuck; return 1
+  fi
+  { cat "$HOSTS" 2>/dev/null; printf '%s\n' "$miss"; } > "$HOSTS_TABLE.new" 2>/dev/null && mv -f "$HOSTS_TABLE.new" "$HOSTS_TABLE" \
+    && chmod 644 "$HOSTS_TABLE" && mount --bind "$HOSTS_TABLE" "$HOSTS" 2>/dev/null
+  r=$?
+  rm -f "$HOSTS_TABLE.new"
+  if [ "$r" -eq 0 ]; then echo "$(date +%T) hosts: $HOSTS read-only, $HOSTS_TABLE bound over it" >> "$LOG"; hostslast=bound
+  else [ "$hostslast" = failed ] || echo "$(date +%T) hosts: could not bind $HOSTS_TABLE over $HOSTS" >> "$LOG"; hostslast=failed; fi
+  return $r
+}
+
+# ---- the web app debugger (debugger_guard) ----------------------------------------------------------------------------------------------
+# Developer Mode, which the root keeps on (its boot script starts the Homebrew Channel), opens WebAppMgr's DevTools on port 9998 to the whole
+# network with no login, and through it anyone on the network can run code in an app on screen, the Homebrew Channel's included, whose
+# service runs as root. Copied from Glasshouse (server/lib/devtools.js, MIT): one rule drops the port on every interface but loopback, so
+# ssh -L 19998:127.0.0.1:9998 (tools/tv/cdp.mjs, ares-inspect through a tunnel) still reaches it, and nothing else (ssh on 22, Luna, the
+# Homebrew Channel) is touched. The rule lives in memory: checked with -C before -I so a pass never stacks a second copy, and added again
+# after a boot by the first pass. With /var/lib/homehook/debugger-open the rule is taken out instead (ares-inspect straight from a computer).
+DEBUGGER_RULE="INPUT -p tcp --dport 9998 ! -i lo -j DROP"
+ipt_tools() {
+  for n in iptables ip6tables; do for d in $IPT_DIRS; do [ -x "$d/$n" ] && { echo "$d/$n"; break; }; done; done
+}
+debugger_guard() {
+  tools=$(ipt_tools)
+  if [ -f "$DEBUGGER_FLAG" ]; then
+    for t in $tools; do $t -C $DEBUGGER_RULE 2>/dev/null && $t -D $DEBUGGER_RULE 2>/dev/null; done
+    st=open
+  elif [ ! -f "$DEVMODE_FLAG" ]; then
+    st=off   # without Developer Mode webOS does not open the port
+  elif [ -z "$tools" ]; then
+    st=nofirewall
+  else
+    st=closed
+    for t in $tools; do $t -C $DEBUGGER_RULE 2>/dev/null || $t -I $DEBUGGER_RULE 2>/dev/null || st=partial; done
+  fi
+  # a TV with ip6tables but no ip6_tables in its kernel fails that family every pass: logged once, as each change of state is
+  [ "$st" = "$dbglast" ] || echo "$(date +%T) debugger: port 9998 $st" >> "$LOG"
+  dbglast=$st
+}
+
 case "$0" in */watch-key) home_key; exit 0 ;; esac
 # tools/test/watch.test.mjs sources this file for its functions only
 [ -n "$WATCH_SH_LIB" ] && return 0
@@ -1148,18 +1258,14 @@ while true; do
       fi
     fi
   fi
-  # keep the extra blocked names in /etc/hosts (about every 30 s; the dashboard rewrites the table at boot)
   ticks=$((ticks + 1))
   [ $((ticks % 5)) -eq 1 ] && { sync_home_key; owned inputhook_check "$now"; }
   [ $((ticks % 300)) -eq 2 ] && trim_log "$IH_LOG"
   [ $((ticks % 5)) -eq 3 ] && saver_leftover
   [ $((ticks % 30)) -eq 15 ] && owned self_update "$now"
-  if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
-    # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real
-    grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | while IFS= read -r l; do
-      ! grep -qF "$l" /etc/hosts 2>/dev/null && echo "$l" >> /etc/hosts
-    done
-  fi
+  # LG's ad and telemetry hosts and hosts-extra kept in /etc/hosts, and port 9998 closed to the network: the first pass after a boot, then
+  # about every 30 s, so a table or a rule something else took away comes back
+  [ $((ticks % 30)) -eq 1 ] && { owned hosts_sync; owned debugger_guard; }
   # faster ticks while a wake is open, so Lumen goes up as soon as the TV lets it (webOS 4's busybox sleep takes whole seconds: usleep)
   slept=$(date +%s)
   if [ "$now" -lt "$wakeuntil" ]; then usleep 500000 2>/dev/null || sleep 1; else sleep 1; fi

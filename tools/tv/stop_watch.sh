@@ -9,6 +9,10 @@ done
 # (homekey_unbind), so there is one copy of it: the installed watcher is sourced for its functions only (WATCH_SH_LIB), not run.
 W=${HOMEHOOK_WATCH_SH:-/var/lib/homehook/watch.sh}
 WATCH_SH_LIB=1 . "$W" 2>/dev/null || { echo "no $W: the Home key bind (if any) is left in Input Hook"; exit 0; }
+# and the port 9998 rule (debugger_guard), which no running watcher puts back now
+if command -v ipt_tools >/dev/null 2>&1; then
+  for t in $(ipt_tools); do $t -C $DEBUGGER_RULE 2>/dev/null && $t -D $DEBUGGER_RULE 2>/dev/null && echo "port 9998 rule removed ($t)"; done
+fi
 K=${HOMEHOOK_KEYBINDS:-$KEYBINDS}
 if [ -f "$K" ] && grep -qF "$HOMEKEY_BIND" "$K"; then
   if command -v homekey_unbind >/dev/null 2>&1; then

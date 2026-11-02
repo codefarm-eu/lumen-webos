@@ -87,11 +87,25 @@ The watcher is [tools/tv/watch.sh](tools/tv/watch.sh). It is copied to `/var/lib
 `/var/lib/webosbrew/init.d/60-homehook`. It keeps the Recent list, replaces LG's home, launches the screensaver, and manages the
 Home key bind.
 
+The watcher also blocks LG's ad and telemetry servers and closes the web app debugger (port 9998) to the network. Both come from
+[Glasshouse](https://github.com/rorygallagher2024/glasshouse) (MIT):
+
+- **LG hosts.** Glasshouse's ads tier (LG ads, Alphonso screen recognition, remote diagnostics, usage beacons) and LG's firmware update servers
+  go into `/etc/hosts`, added to it where it can be written, or as a table at `/var/lib/homehook/hosts` bound over it where it cannot. LG's
+  service platform and time servers are left alone, so the Content Store, apps and the clock keep working. The reasons for each name left
+  out are in `hosts_sync` in [tools/tv/watch.sh](tools/tv/watch.sh). Your own names go in `/var/lib/homehook/hosts-extra`.
+- **Port 9998.** Developer Mode opens WebAppMgr's DevTools to the whole network, with no login. One firewall rule
+  (`INPUT -p tcp --dport 9998 ! -i lo -j DROP`, IPv4 and IPv6) drops it on every interface but loopback, so SSH and an SSH tunnel to
+  `127.0.0.1:9998` (`tools/tv/cdp.mjs`, `ares-inspect` through it) still work.
+
 To undo:
 
 - **Turn off the Home key bind only:** `touch /var/lib/homehook/no-home-key`. The bind is gone within 5 s.
 - **Give LG's home back:** turn off Settings > Home Screen > **Home opens Lumen**.
-- **Stop the watcher altogether:** run [tools/tv/stop_watch.sh](tools/tv/stop_watch.sh). It also removes the key bind.
+- **Stop the watcher altogether:** run [tools/tv/stop_watch.sh](tools/tv/stop_watch.sh). It also removes the key bind and the port 9998 rule.
+- **Stop blocking LG's hosts:** `touch /var/lib/homehook/no-lg-block`, then restart the TV (lines already added stay until then).
+- **Open port 9998 to the network again** (for `ares-inspect` straight from a computer): `touch /var/lib/homehook/debugger-open`. The rule
+  is gone within 30 s.
 
 ## Known limitations
 
