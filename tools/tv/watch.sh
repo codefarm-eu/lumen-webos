@@ -1027,10 +1027,9 @@ HOSTS_BEGIN="# >>> Lumen watcher (watch.sh hosts_sync): rebuilt about every 30 s
 HOSTS_END="# <<< Lumen watcher"
 HOSTS_RETRY=1800  # seconds before a bind that failed is tried again (each try would write the table on flash)
 HOSTS_OURS=${HOMEHOOK_HOSTS_OURS:-$RUN/hosts.ours}   # the block's lines as this watcher last wrote them (hosts_build)
-HOSTS_BAK=$RUN/hosts.bak      # /etc/hosts as it was before this watcher's last rewrite of it (hosts_write)
+HOSTS_BAK=$RUN/hosts.bak      # /etc/hosts as it was before this watcher's last good rewrite of it (hosts_write)
 HOSTS_LOCK=$RUN/hosts.lock    # one writer of /etc/hosts at a time (hosts_lock)
-HOSTS_LOCK_SECS=${HOMEHOOK_HOSTS_LOCK_SECS:-10}   # how long a pass waits for that lock before it skips
-HOSTS_LOCK_STALE=60           # a mkdir lock older than this is left over (a pass holds it for a second or two)
+HOSTS_LOCK_SECS=${HOMEHOOK_HOSTS_LOCK_SECS:-10}   # how many one-second tries a pass waits for that lock before it skips
 HOSTS_FLOCK=${HOMEHOOK_FLOCK-$(command -v flock 2>/dev/null)}   # flock where busybox has it, else the mkdir lock
 lgcountry=""; lgcountrytries=0; hostsfailat=0
 
@@ -1118,10 +1117,21 @@ hosts_is_table() {
 hosts_log() { [ "$hostslast" = "$1" ] || echo "$(date +%T) hosts: $2" >> "$LOG"; hostslast=$1; }
 
 # one writer of $HOSTS at a time: a watcher's pass, and stop_watch.sh (which waits for the watcher to be gone, then takes this lock too).
-# With flock, a lock on $HOSTS_LOCK.f held on fd 9, let go when it is closed or its holder dies. Without it, a folder (mkdir is atomic)
-# holding the holder's pid, taken over when that pid is gone or the folder is older than HOSTS_LOCK_STALE. Waits at most HOSTS_LOCK_SECS.
+# With flock, a lock on $HOSTS_LOCK.f held on fd 9, let go when it is closed or its holder dies. Without it, a folder made mode 700 (mkdir
+# is atomic) holding the holder's pid. As single_instance does, it is taken over only when that pid is gone, or is alive but not a
+# watch.sh or stop_watch.sh (the pid was reused); a live writer is waited for, however long it has held it. Never by its age or the clock:
+# the wait is counted in tries (one a second, HOSTS_LOCK_SECS of them), so a clock step can neither steal it nor end the wait early. A lock
+# with no pid yet is being made: waited for two tries, then taken over. Taking over moves it aside (run_aside), never rm -r.
+hosts_lock_live() {
+  [ -n "$1" ] && kill -0 "$1" 2>/dev/null && tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q 'watch\.sh'
+}
+hosts_lock_steal() {
+  run_aside "$HOSTS_LOCK" || return 1
+  rm -f "$ra/${HOSTS_LOCK##*/}/pid"; rmdir "$ra/${HOSTS_LOCK##*/}" "$ra" 2>/dev/null
+  return 0
+}
 hosts_lock() {
-  hl_end=$(( $(date +%s) + HOSTS_LOCK_SECS ))
+  hl_n=0; hl_nopid=0
   while :; do
     if [ -n "$HOSTS_FLOCK" ]; then
       # a failed redirection on exec would end the shell: the file is made first, and a folder that cannot hold it gives up here
@@ -1129,39 +1139,81 @@ hosts_lock() {
       exec 9>> "$HOSTS_LOCK.f"
       "$HOSTS_FLOCK" -n 9 2>/dev/null && return 0
       exec 9>&-
-    elif mkdir "$HOSTS_LOCK" 2>/dev/null; then
+    elif mkdir -m 700 "$HOSTS_LOCK" 2>/dev/null; then
       echo $$ > "$HOSTS_LOCK/pid"; return 0
     else
       hl_pid=$(cat "$HOSTS_LOCK/pid" 2>/dev/null)
-      hl_at=$(stat -c %Y "$HOSTS_LOCK" 2>/dev/null) || hl_at=0
-      if { [ -n "$hl_pid" ] && ! kill -0 "$hl_pid" 2>/dev/null; } || [ $(( $(date +%s) - hl_at )) -gt "$HOSTS_LOCK_STALE" ]; then
-        rm -rf "$HOSTS_LOCK"; continue
+      if [ -z "$hl_pid" ]; then hl_nopid=$((hl_nopid + 1)); fi
+      if { [ -n "$hl_pid" ] && ! hosts_lock_live "$hl_pid"; } || [ "$hl_nopid" -gt 2 ]; then
+        hl_nopid=0
+        # each takeover is a try too: a lock that keeps coming back ends the wait like any other
+        if hosts_lock_steal; then hl_n=$((hl_n + 1)); [ "$hl_n" -le "$HOSTS_LOCK_SECS" ] && continue; return 1; fi
       fi
     fi
-    [ "$(date +%s)" -lt "$hl_end" ] || return 1
+    hl_n=$((hl_n + 1))
+    [ "$hl_n" -le "$HOSTS_LOCK_SECS" ] || return 1
     sleep 1
   done
 }
-hosts_unlock() { if [ -n "$HOSTS_FLOCK" ]; then exec 9>&-; else rm -rf "$HOSTS_LOCK"; fi; }
+# lets go of the lock only if it is still this process's: a lock someone else holds now is never removed
+hosts_unlock() {
+  if [ -n "$HOSTS_FLOCK" ]; then exec 9>&-
+  elif [ "$(cat "$HOSTS_LOCK/pid" 2>/dev/null)" = "$$" ]; then rm -f "$HOSTS_LOCK/pid" && rmdir "$HOSTS_LOCK" 2>/dev/null; fi
+  return 0
+}
 
-# every line of $HOSTS_BAK that names localhost is still a line of $HOSTS
+# every line of $1 that names localhost is still a line of $2
 hosts_localhost_kept() {
   awk 'FILENAME == ARGV[1] { l = $0; sub(/#.*/, "", l); if (l ~ /[ \t]localhost([ \t]|$)/) want[$0] = 1; next }
-    { delete want[$0] } END { for (k in want) exit 1; exit 0 }' "$HOSTS_BAK" "$HOSTS" 2>/dev/null
+    { delete want[$0] } END { for (k in want) exit 1; exit 0 }' "$1" "$2" 2>/dev/null
 }
 
-# $1 into $HOSTS in place (cat >: the same inode, never mv, as app jails bind /etc/hosts into themselves), after a copy of it in $HOSTS_BAK.
-# The result must be $1 byte for byte and keep every localhost line the copy had; if not (a short write, a full disk), the copy is written
-# back. Then sync, so a power cut does not leave it half written. 0 written; 1 it cannot be written (not opened: nothing changed);
-# 2 written wrong and put back; 3 written wrong and not even put back ($HOSTS_BAK holds it); 4 no copy could be made, nothing written.
-hosts_write() {
-  { cat "$HOSTS" > "$HOSTS_BAK"; } 2>/dev/null || return 4
-  { cat "$1" > "$HOSTS"; } 2>/dev/null; hw_r=$?
-  [ "$hw_r" -ne 0 ] && cmp -s "$HOSTS_BAK" "$HOSTS" && return 1
-  if [ "$hw_r" -eq 0 ] && cmp -s "$1" "$HOSTS" && hosts_localhost_kept; then sync; return 0; fi
-  if { cat "$HOSTS_BAK" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK" "$HOSTS"; then sync; return 2; fi
-  sync; return 3
+# runs "$@" with TERM, INT and HUP held off: one that comes meanwhile is acted on once it is done (the lock let go, then exit), so a stop
+# (stop_watch.sh, the app's watcher restart) never lands between /etc/hosts being cut to nothing and being written. KILL cannot be held
+# off: hosts_recover puts the file back on the next pass.
+hosts_unkillable() {
+  hu_sig=""
+  trap 'hu_sig=1' TERM INT HUP
+  "$@"; hu_r=$?
+  trap - TERM INT HUP
+  if [ -n "$hu_sig" ]; then hosts_unlock; exit 143; fi
+  return $hu_r
 }
+
+# $1 into $HOSTS in place (cat >: the same inode, never mv, as app jails bind /etc/hosts into themselves). The file as it was goes to
+# $HOSTS_BAK.new first, and becomes $HOSTS_BAK only once the result is $1 byte for byte and keeps every localhost line it had, so a bad
+# write never replaces a good copy. If the result is wrong (a short write, a full disk), the old file is written back. Then sync (with the
+# 5 s limit), so a power cut does not leave it half written. 0 written; 1 it cannot be written (not opened: nothing changed); 2 written
+# wrong and put back; 3 written wrong and not even put back ($HOSTS_BAK.new holds it); 4 no copy could be made, nothing written.
+hosts_write_now() {
+  { cat "$HOSTS" > "$HOSTS_BAK.new"; } 2>/dev/null || { rm -f "$HOSTS_BAK.new"; return 4; }
+  { cat "$1" > "$HOSTS"; } 2>/dev/null; hw_r=$?
+  if [ "$hw_r" -ne 0 ] && cmp -s "$HOSTS_BAK.new" "$HOSTS"; then rm -f "$HOSTS_BAK.new"; return 1; fi
+  if [ "$hw_r" -eq 0 ] && cmp -s "$1" "$HOSTS" && hosts_localhost_kept "$HOSTS_BAK.new" "$HOSTS"; then
+    to5 sync; mv -f "$HOSTS_BAK.new" "$HOSTS_BAK"; return 0
+  fi
+  if { cat "$HOSTS_BAK.new" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK.new" "$HOSTS"; then
+    to5 sync; mv -f "$HOSTS_BAK.new" "$HOSTS_BAK"; return 2
+  fi
+  to5 sync; return 3
+}
+hosts_write() { hosts_unkillable hosts_write_now "$1"; }
+
+# before a pass reads /etc/hosts: a $HOSTS_BAK.new still there means a write was cut short (KILL, a power cut), and it is the file as it was
+# before that write; else, a file that has lost a localhost line $HOSTS_BAK has (emptied) is not built on either. Either is written back
+# in place first. 0 nothing to do or put back; 1 it could not be put back (the pass stops there).
+hosts_recover_now() {
+  if [ -f "$HOSTS_BAK.new" ]; then hr_src=$HOSTS_BAK.new
+  elif [ -f "$HOSTS_BAK" ] && ! hosts_localhost_kept "$HOSTS_BAK" "$HOSTS"; then hr_src=$HOSTS_BAK
+  else return 0; fi
+  if { cat "$hr_src" > "$HOSTS"; } 2>/dev/null && cmp -s "$hr_src" "$HOSTS"; then
+    to5 sync
+    [ "$hr_src" = "$HOSTS_BAK" ] || mv -f "$hr_src" "$HOSTS_BAK"
+    hosts_log recovered "$HOSTS was left cut short or without its localhost line: put back from ${hr_src##*/}"; return 0
+  fi
+  hosts_log recoverfail "$HOSTS was left cut short or without its localhost line and could not be put back from $hr_src"; return 1
+}
+hosts_recover() { hosts_unkillable hosts_recover_now; }
 
 # keeps /etc/hosts as hosts_build says (from the main loop, about every 30 s, and so again after every boot), under hosts_lock. Written in
 # place (hosts_write) and only when its bytes would change, so a table on flash is not written every pass. Where /etc/hosts can be written
@@ -1180,12 +1232,13 @@ hosts_sync() {
 }
 hosts_sync_locked() {
   unbind=""
+  hosts_recover || return 1
   if [ -f "$HOSTS_BOUND_MARK" ]; then
     if ! hosts_bound || ! hosts_is_table; then
       rm -f "$HOSTS_BOUND_MARK"
       hosts_bound && hosts_log foreign "the mount on $HOSTS is not this watcher's bind of $HOSTS_TABLE: left as it is"
     elif [ -z "$(hosts_want)" ]; then
-      if umount "$HOSTS" 2>/dev/null; then rm -f "$HOSTS_BOUND_MARK" "$HOSTS_OURS"; hosts_log unbound "nothing to block, $HOSTS_TABLE taken off $HOSTS"; return 0; fi
+      if to5 umount "$HOSTS" 2>/dev/null; then rm -f "$HOSTS_BOUND_MARK" "$HOSTS_OURS" "$HOSTS_BAK"; hosts_log unbound "nothing to block, $HOSTS_TABLE taken off $HOSTS"; return 0; fi
       unbind=failed   # the mark stays, so the next pass tries the umount again
     fi
   fi
@@ -1216,7 +1269,7 @@ hosts_sync_locked() {
   if hosts_bound; then rm -f "$tmp"; hosts_log stuck "$HOSTS is bound and cannot be written, left as it is"; return 1; fi
   now5=$(date +%s)
   if [ "$hostsfailat" -gt 0 ] && [ $((now5 - hostsfailat)) -lt "$HOSTS_RETRY" ]; then rm -f "$tmp"; return 1; fi
-  { cmp -s "$tmp" "$HOSTS_TABLE" || { cat "$tmp" > "$HOSTS_TABLE" && sync; }; } 2>/dev/null && chmod 644 "$HOSTS_TABLE" 2>/dev/null \
+  { cmp -s "$tmp" "$HOSTS_TABLE" || { cat "$tmp" > "$HOSTS_TABLE" && to5 sync; }; } 2>/dev/null && chmod 644 "$HOSTS_TABLE" 2>/dev/null \
     && mount --bind "$HOSTS_TABLE" "$HOSTS" 2>/dev/null
   r=$?
   if [ "$r" -eq 0 ]; then

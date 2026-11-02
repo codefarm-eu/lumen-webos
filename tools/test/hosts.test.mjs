@@ -12,8 +12,10 @@ const SCRIPT = new URL('../../tools/tv/watch.sh', import.meta.url).pathname;
 const STOP = new URL('../../tools/tv/stop_watch.sh', import.meta.url).pathname;
 const BEGIN = '# >>> Lumen watcher (watch.sh hosts_sync): rebuilt about every 30 s, edits between these lines are lost';
 const END = '# <<< Lumen watcher';
-const FAKE_MOUNT = `mount () { echo "mount $*" >> "$HOMEHOOK_RUN/mounts.log"; [ ! -f "$HOMEHOOK_RUN/mount-fails" ]; }
-umount () { echo "umount $*" >> "$HOMEHOOK_RUN/mounts.log"; [ ! -f "$HOMEHOOK_RUN/umount-fails" ]; }`;
+// mount and umount are commands in the temp bin (every setup has them), as umount runs under timeout; FAKE_MOUNT is kept for the tests'
+// wording only
+const FAKE_MOUNT = '';
+const SYNC_BIN = '#!/bin/sh\nexit 0\n';
 
 function setup (hosts = '127.0.0.1 localhost\n') {
 	const d = mkdtempSync(join(tmpdir(), 'hosts-'));
@@ -24,6 +26,10 @@ function setup (hosts = '127.0.0.1 localhost\n') {
 	writeFileSync(join(d, 'net', 'ip6_tables_names'), 'filter\n');
 	mkdirSync(join(d, 'bin'));
 	// luna-send answers nothing unless a test gives it an answer
+	for (const n of ['mount', 'umount']) {
+		writeFileSync(join(d, 'bin', n), `#!/bin/sh\necho "${n} $*" >> '${d}/mounts.log'\n[ ! -f '${d}/${n}-fails' ]\n`, {mode: 0o755});
+	}
+	writeFileSync(join(d, 'bin', 'sync'), SYNC_BIN, {mode: 0o755});
 	writeFileSync(join(d, 'bin', 'luna-send'), `#!/bin/sh\necho "$*" >> '${d}/luna.log'\n[ -f '${d}/luna.answer' ] && cat '${d}/luna.answer'\nexit 0\n`, {mode: 0o755});
 	const env = {HOMEHOOK_HOSTS: join(d, 'hosts'), HOMEHOOK_HOSTS_TABLE: join(d, 'table'), HOMEHOOK_MOUNTS: join(d, 'mounts'),
 		HOMEHOOK_NOLGBLOCK_FLAG: join(d, 'no-lg-block'), HOMEHOOK_DEBUGGER_FLAG: join(d, 'debugger-open'),
@@ -494,7 +500,8 @@ test('debugger-open and stop_watch.sh take out every stacked copy of the rule; s
 test('hosts_write: a copy in hosts.bak before the rewrite, sync after a real change only, and a result without its localhost line is put back', () => {
 	const pre = '127.0.0.1 localhost\n::1 localhost ip6-localhost\n';
 	const t = setup(pre);
-	const SYNC = `sync () { echo sync >> "$HOMEHOOK_RUN/sync.log"; }`;
+	const SYNC = '';
+	writeFileSync(join(t.d, 'bin', 'sync'), `#!/bin/sh\necho sync >> '${t.d}/sync.log'\n`, {mode: 0o755});
 	run(t, 'hosts_sync; hosts_sync', SYNC);
 	assert.equal(readFileSync(join(t.d, 'hosts.bak'), 'utf8'), pre);
 	assert.equal(readFileSync(join(t.d, 'sync.log'), 'utf8'), 'sync\n');
@@ -513,6 +520,9 @@ test('hosts_write: a copy in hosts.bak before the rewrite, sync after a real cha
 	assert.match(logOf(c), /put back as it was/);
 });
 
+// a live writer holding the mkdir lock: a process whose command line is a watch.sh, as a watcher's is
+const LEGIT_HOLDER = `printf 'sleep 3\\n' > "$HOMEHOOK_RUN/watch.sh"; sh "$HOMEHOOK_RUN/watch.sh" >/dev/null 2>&1 &
+mkdir -m 700 "$HOMEHOOK_RUN/hosts.lock"; echo $! > "$HOMEHOOK_RUN/hosts.lock/pid"; sleep 0.2`;
 for (const [kind, flock] of [['mkdir', ''], ['flock', null]]) {
 	test(`hosts_sync waits for the hosts lock (${kind}) and skips the pass when it stays held; a lock whose holder is gone is taken over`, () => {
 		const env = flock === null ? {} : {HOMEHOOK_FLOCK: flock};
@@ -521,7 +531,7 @@ for (const [kind, flock] of [['mkdir', ''], ['flock', null]]) {
 		// another holder, alive for the whole pass
 		const hold = flock === null
 			? `flock -n "$HOMEHOOK_RUN/hosts.lock.f" sleep 3 >/dev/null 2>&1 & sleep 0.3`
-			: `sleep 3 >/dev/null 2>&1 & mkdir "$HOMEHOOK_RUN/hosts.lock"; echo $! > "$HOMEHOOK_RUN/hosts.lock/pid"`;
+			: `${LEGIT_HOLDER}`;
 		assert.equal(run(t, `hosts_sync; echo "rc=$?"`, hold), 'rc=1');
 		assert.equal(hostsOf(t), '127.0.0.1 localhost\n');
 		assert.match(logOf(t), /being written by another .* skipped/);
@@ -537,19 +547,26 @@ for (const [kind, flock] of [['mkdir', ''], ['flock', null]]) {
 	});
 }
 
+/** the real watch.sh, sourced, running one hosts_sync whose write of the block into hosts stops half way for a second (touching inwrite
+ * there), then idling. With proc, it also shows up there with a watcher's command line, for stop_watch.sh. */
+function slowWriter (t, proc = '') {
+	const reg = proc ? `mkdir -p "${proc}/$$"; printf '/bin/sh\\0/var/lib/homehook/watch.sh\\0' > "${proc}/$$/cmdline"` : ':';
+	return spawn('sh', ['-c', `WATCH_SH_LIB=1 . '${SCRIPT}'
+		EXTRA='${join(t.d, 'hosts-extra')}'
+		${reg}
+		cat () { if [ "$1" = "$RUN/hosts.new" ]; then command head -c 30 "$1"; : > "${t.d}/inwrite"; sleep 1; command tail -c +31 "$1"; else command cat "$@"; fi; }
+		hosts_sync; : > "${t.d}/synced"
+		while :; do sleep 0.1; done`], {stdio: 'ignore', env: {...process.env, ...t.env}});
+}
+
 test('stop_watch.sh waits until the watcher has ended (its last hosts write done) before it takes the block out', async () => {
 	const t = setup();
-	run(t, 'hosts_sync');
-	const blocked = hostsOf(t);
-	writeFileSync(join(t.d, 'blocked'), blocked);
-	writeFileSync(t.env.HOMEHOOK_HOSTS, '127.0.0.1 localhost\n');
 	const proc = join(t.d, 'proc');
-	// a "watcher": on TERM it takes a second to finish a pass that writes the block, then its /proc entry goes
-	const child = spawn('sh', ['-c', `trap 'sleep 1; cat "${t.d}/blocked" > "${t.env.HOMEHOOK_HOSTS}"; rm -rf "${proc}/$$"; exit 0' TERM
-		mkdir -p "${proc}/$$"; printf '/bin/sh\\0/var/lib/homehook/watch.sh\\0' > "${proc}/$$/cmdline"; touch "${t.d}/ready"
-		while :; do sleep 0.1; done`], {stdio: 'ignore'});
+	// a "watcher" with no TERM trap of its own: the real watch.sh, sourced, in a pass whose write of the block is slow (a cat that stops
+	// half way for a second); it is stopped in the middle of that write
+	const child = slowWriter(t, proc);
 	const exited = new Promise((r) => child.on('exit', r));
-	while (!existsSync(join(t.d, 'ready'))) await new Promise((r) => setTimeout(r, 20));
+	while (!existsSync(join(t.d, 'inwrite'))) await new Promise((r) => setTimeout(r, 20));
 	const out = await new Promise((resolve, reject) => {
 		const s = spawn('sh', [STOP], {env: {...process.env, ...t.env, HOMEHOOK_PROC: proc, HOMEHOOK_WATCH_SH: SCRIPT,
 			HOMEHOOK_KEYBINDS: join(t.d, 'no-keybinds.json')}});
@@ -560,6 +577,8 @@ test('stop_watch.sh waits until the watcher has ended (its last hosts write done
 	await exited;
 	assert.match(out, /LG hosts block removed/);
 	assert.equal(hostsOf(t), '127.0.0.1 localhost\n');
+	// the watcher's write was whole when it ended: nothing had to be put back
+	assert.doesNotMatch(logOf(t), /put back/);
 });
 
 test('the watcher\'s own bind (hosts is the table): umount, and the mark goes only once it is off; a failed umount empties it and says so', () => {
@@ -645,4 +664,98 @@ test('a 0.0.0.0 line added by hand outside the block is left alone, even for a n
 	writeFileSync(u.env.HOMEHOOK_NOLGBLOCK_FLAG, '');
 	run(u, 'hosts_sync');
 	assert.equal(hostsOf(u), '127.0.0.1 localhost\n0.0.0.0 mine.example\n');
+});
+
+// ---- third review: a stop in the middle of the write, and the mkdir lock ---------------------------------------------------------------
+
+const waitFor = async (f) => { while (!existsSync(f)) await new Promise((r) => setTimeout(r, 20)); };
+
+test('TERM in the middle of the real hosts write: the write is finished first, then the watcher exits (no half-written hosts)', async () => {
+	const t = setup();
+	const child = slowWriter(t);
+	const exited = new Promise((r) => child.on('exit', (code, sig) => r({code, sig})));
+	await waitFor(join(t.d, 'inwrite'));
+	child.kill('SIGTERM');
+	const {code, sig} = await exited;
+	assert.equal(sig, null);
+	assert.equal(code, 143);
+	const h = hostsOf(t);
+	assert.ok(h.startsWith(`127.0.0.1 localhost\n${BEGIN}\n`));
+	assert.ok(h.endsWith(`${END}\n`));
+	assert.equal(readFileSync(join(t.d, 'hosts.bak'), 'utf8'), '127.0.0.1 localhost\n');
+	assert.ok(!existsSync(join(t.d, 'hosts.bak.new')));
+	assert.ok(!existsSync(join(t.d, 'synced')), 'it exits right after the write, not at the end of its pass');
+});
+
+test('KILL in the middle of the real hosts write: the next pass puts the old file back before it builds on it', async () => {
+	const t = setup();
+	const child = slowWriter(t);
+	const exited = new Promise((r) => child.on('exit', r));
+	await waitFor(join(t.d, 'inwrite'));
+	child.kill('SIGKILL');
+	await exited;
+	assert.ok(!hostsOf(t).endsWith(`${END}\n`), 'cut short');
+	assert.ok(existsSync(join(t.d, 'hosts.bak.new')));
+	run(t, 'hosts_sync');
+	const h = hostsOf(t);
+	assert.ok(h.startsWith(`127.0.0.1 localhost\n${BEGIN}\n0.0.0.0 ad.lgsmartad.com\n`));
+	assert.equal(h.split('\n').filter((l) => l === BEGIN).length, 1);
+	assert.match(logOf(t), /put back from hosts\.bak\.new/);
+	assert.equal(readFileSync(join(t.d, 'hosts.bak'), 'utf8'), '127.0.0.1 localhost\n');
+	// and stop_watch.sh after such a kill: the file is put back and the block taken out, not left empty
+	const u = setup('127.0.0.1 localhost\n::1 localhost\n');
+	run(u, 'hosts_sync');
+	writeFileSync(u.env.HOMEHOOK_HOSTS, '');
+	execFileSync('sh', [STOP], {encoding: 'utf8', env: {...process.env, ...u.env, HOMEHOOK_WATCH_SH: SCRIPT, HOMEHOOK_KEYBINDS: join(u.d, 'none.json')}});
+	assert.equal(hostsOf(u), '127.0.0.1 localhost\n::1 localhost\n');
+});
+
+test('a hosts file found emptied is put back from hosts.bak, and the empty file never replaces the good copy', () => {
+	const pre = '127.0.0.1 localhost\n::1 localhost ip6-localhost\n';
+	const t = setup(pre);
+	run(t, 'hosts_sync');
+	const good = hostsOf(t);
+	writeFileSync(t.env.HOMEHOOK_HOSTS, '');
+	run(t, 'hosts_sync; hosts_sync');
+	assert.equal(hostsOf(t), good);
+	assert.equal(readFileSync(join(t.d, 'hosts.bak'), 'utf8'), pre);
+	assert.match(logOf(t), /put back from hosts\.bak$/m);
+});
+
+const MK = {HOMEHOOK_FLOCK: '', HOMEHOOK_HOSTS_LOCK_SECS: '1'};
+
+test('the mkdir lock: made mode 700, and a live watcher holding it past 60 s is waited for, not taken over', () => {
+	const t = setup();
+	Object.assign(t.env, MK);
+	assert.equal(run(t, 'hosts_lock && stat -c %a "$HOSTS_LOCK"; hosts_unlock; [ -e "$HOSTS_LOCK" ] || echo gone'), '700\ngone');
+	const out = run(t, 'hosts_sync; echo "rc=$?"; cat "$HOSTS_LOCK/pid"',
+		`${LEGIT_HOLDER}\ntouch -t 202001010000 "$HOMEHOOK_RUN/hosts.lock"\nholder=$(cat "$HOMEHOOK_RUN/hosts.lock/pid")`).split('\n');
+	assert.equal(out[0], 'rc=1');
+	assert.equal(hostsOf(t), '127.0.0.1 localhost\n');
+	assert.ok(existsSync(join(t.d, 'hosts.lock', 'pid')));
+});
+
+test('the mkdir lock: a pid reused by an unrelated process is taken over (moved aside, then cleared, never rm -r)', () => {
+	const t = setup();
+	Object.assign(t.env, MK);
+	run(t, 'hosts_sync', `sleep 3 >/dev/null 2>&1 &\nmkdir -m 700 "$HOMEHOOK_RUN/hosts.lock"; echo $! > "$HOMEHOOK_RUN/hosts.lock/pid"`);
+	assert.match(hostsOf(t), /^0\.0\.0\.0 ad\.lgsmartad\.com$/m);
+	assert.ok(!existsSync(join(t.d, 'hosts.lock')));
+	assert.equal(execFileSync('sh', ['-c', `ls -a '${t.d}' | grep -c 'hosts.lock.old' || true`], {encoding: 'utf8'}).trim(), '0');
+});
+
+test('the mkdir lock: unlock leaves a lock another process holds now', () => {
+	const t = setup();
+	Object.assign(t.env, MK);
+	assert.equal(run(t, 'mkdir -m 700 "$HOSTS_LOCK"; echo 1 > "$HOSTS_LOCK/pid"; hosts_unlock; cat "$HOSTS_LOCK/pid"'), '1');
+});
+
+test('the mkdir lock: a clock step forward does not make a live holder\'s lock look stale', () => {
+	const t = setup();
+	Object.assign(t.env, MK, {HOMEHOOK_HOSTS_LOCK_SECS: '2'});
+	const real = execFileSync('sh', ['-c', 'command -v date'], {encoding: 'utf8'}).trim();
+	writeFileSync(join(t.d, 'bin', 'date'), `#!/bin/sh\nif [ "$1" = +%s ]; then echo $(( $(${real} +%s) + 100000 )); else exec ${real} "$@"; fi\n`, {mode: 0o755});
+	assert.equal(run(t, 'hosts_sync; echo "rc=$?"', LEGIT_HOLDER), 'rc=1');
+	assert.equal(hostsOf(t), '127.0.0.1 localhost\n');
+	assert.ok(existsSync(join(t.d, 'hosts.lock', 'pid')));
 });
