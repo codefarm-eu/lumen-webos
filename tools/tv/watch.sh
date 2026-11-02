@@ -71,6 +71,12 @@ AMBIENT_ON=/tmp/lumen-ambient-on
 NOSAVEROVERLAY_FLAG=/var/lib/homehook/no-saver-overlay   # the screensaver over an app is full-screen Lumen again (returns with a relaunch)
 APPS=/media/developer/apps/usr/palm/applications
 EXTRA=/var/lib/homehook/hosts-extra
+HOSTS=${HOMEHOOK_HOSTS:-/etc/hosts}
+HOSTS_TABLE=${HOMEHOOK_HOSTS_TABLE:-/var/lib/homehook/hosts}   # bound over /etc/hosts only where /etc/hosts cannot be written (hosts_sync)
+NOLGBLOCK_FLAG=${HOMEHOOK_NOLGBLOCK_FLAG:-/var/lib/homehook/no-lg-block}
+DEBUGGER_FLAG=${HOMEHOOK_DEBUGGER_FLAG:-/var/lib/homehook/debugger-open}
+DEVMODE_FLAG=${HOMEHOOK_DEVMODE_FLAG:-/var/luna/preferences/devmode_enabled}
+IPT_DIRS=${HOMEHOOK_IPT_DIRS:-/usr/sbin /sbin}
 TAKEOVER_FLAG=/var/lib/homehook/home-takeover
 NOWAKE_FLAG=/var/lib/homehook/no-wake-launch
 WAKE_SECS=30
@@ -111,6 +117,8 @@ prevxhome=1   # no launch for a launcher window already listed when the watcher 
 last=0
 okhome=0
 ticks=0
+hostslast=""      # what hosts_sync last logged
+dbglast=""        # what debugger_guard last logged
 saverlast=0
 pwprev=""
 lastme=""
@@ -986,6 +994,393 @@ single_instance() {
   return 1
 }
 
+# ---- LG ad and telemetry hosts (hosts_sync) -------------------------------------------------------------------------------------------
+# Ported from Glasshouse's ads tier (server/lib/privacy.js ADBLOCK_ADS and ADBLOCK_REGIONAL, https://github.com/rorygallagher2024/glasshouse,
+# MIT licence, Copyright (c) 2026 Rory Gallagher: see THIRD_PARTY_NOTICES.md). That tier is the one Glasshouse documents as leaving LG's
+# service platform reachable, so the Content Store, app installs and updates, app launching and the streaming apps keep working.
+# Left out on purpose, with Glasshouse's reasons (docs/dashboard/privacy.md "Everything tier", docs/IMPLEMENTATION.md):
+#  - its Everything tier (ADBLOCK_PLATFORM: lgtvsdp.com and its country hosts, ngfts.lge.com, cdplauncher/lgchhomeapp.lgtvcommon.com,
+#    lgtviot.com, ueiwsp.com, avsxappcaptiveportal.com): the Content Store, app updates, LG Channels, LG search, ThinQ and Alexa stop, and
+#    Netflix was reported interrupted after a cold boot with ngfts blocked;
+#  - nextlgsdp.com and tv.wiselg.com (ADBLOCK_SDP), and rdx2.nextlgsdp.com: the TV sets its clock from those servers, and blocked before the
+#    clock is valid every TLS connection fails. Glasshouse only blocks them after the clock has synced; a static list cannot wait, so not here.
+# LG's firmware update servers (the four names the Homebrew Channel's "Block system updates" sends to 127.0.0.1; a firmware update can take
+# root away) are blocked only while that checkbox is on (its flag file, as Glasshouse checks it), so unticking it lets updates through again.
+# Country-prefixed names: LG's regional prefixes, the countries LG is seen using, and the TV's own country, read once from the settings
+# service as Glasshouse does (smartServiceCountryCode2).
+LG_BLOCK_ADS="ad.lgsmartad.com ibis.lgappstv.com ibs.lgappstv.com lgsmartad.com rdx.lgtvcommon.com aic.lgtvcommon.com smartad.lge.com
+ smartclip.com smartclip-services.com yumenetworks.com
+ alphonso.tv prov-lg.alphonso.tv prov.alphonso.tv eulacheck.alphonso.tv bl-server.alphonso.tv clockskew.alphonso.tv acrdb.alphonso.tv
+ ads.alphonso.tv api.alphonso.tv tvads.alphonso.tv sync.alphonso.tv tr.alphonso.tv tn.alphonso.tv insights.alphonso.tv bwlkup.alphonso.tv
+ eu-acr86.alphonso.tv
+ rone-aic.lge.com rone-eic.lge.com rone-kic.lge.com rone-saic.lge.com rone-tv-aic.lge.com rone-tv-cic.lge.com rone-tv-eic.lge.com
+ rone-tv-kic.lge.com rone-tv-saic.lge.com"
+# blocked bare and with each prefix in front (the firmware builds gb.info.lgsmartad.com, aic.cdpbeacon.lgtvcommon.com ...)
+LG_BLOCK_REGIONAL="info.lgsmartad.com rdx2.lgtvsdp.com elastic.lgwebostv.com ibs.lgappstv.com ibsstat.lgappstv.com cdpbeacon.lgtvcommon.com
+ cdpsvc.lgtvcommon.com wau.lgtvcommon.com api.adts.lgtvcommon.com"
+LG_BLOCK_PREFIXES="aic eic kic eu"           # Glasshouse's ADBLOCK_REGION_PREFIXES
+LG_BLOCK_COUNTRIES="us gb au br ca de fr"    # its ADBLOCK_FALLBACK_COUNTRIES, always kept; the TV's own country is added to them
+LG_BLOCK_FIRMWARE="snu.lge.com su-dev.lge.com su.lge.com su-ssl.lge.com"
+HBC_BLOCK_FLAG=${HOMEHOOK_HBC_BLOCK_FLAG:-/var/luna/preferences/webosbrew_block_updates}
+HOSTS_BOUND_MARK=${HOMEHOOK_HOSTS_BOUND_MARK:-$RUN/hosts-bound}   # in memory, like the bind: this watcher made the bind over $HOSTS
+HOSTS_BEGIN="# >>> Lumen watcher (watch.sh hosts_sync): rebuilt about every 30 s, edits between these lines are lost"
+HOSTS_END="# <<< Lumen watcher"
+HOSTS_RETRY=1800  # seconds before a bind that failed is tried again (each try would write the table on flash)
+HOSTS_OURS=${HOMEHOOK_HOSTS_OURS:-$RUN/hosts.ours}   # the block's lines as this watcher last wrote them (hosts_build)
+HOSTS_BAK=$RUN/hosts.bak      # the known-good copy of /etc/hosts, as it was before this watcher's last rewrite of it (hosts_write)
+HOSTS_LOCK=$RUN/hosts.lock    # one writer of /etc/hosts at a time (hosts_lock)
+HOSTS_LOCK_SECS=${HOMEHOOK_HOSTS_LOCK_SECS:-10}   # how many one-second tries a pass waits for that lock before it skips
+HOSTS_FLOCK=${HOMEHOOK_FLOCK-$(command -v flock 2>/dev/null)}   # flock where busybox has it, else the mkdir lock
+lgcountry=""; lgcountrytries=0; hostsfailat=0
+
+# a command with a 5 s limit (the same busybox "timeout N" or "timeout -t N" test as LS_TO above): a wedged iptables or settings service
+# must not stop the loop; without timeout it runs as is
+IPT_SECS=${HOMEHOOK_IPT_SECS:-5}
+if timeout 1 true 2>/dev/null; then T5="timeout $IPT_SECS"; elif timeout -t 1 true 2>/dev/null; then T5="timeout -t $IPT_SECS"; else T5=""; fi
+to5() { $T5 "$@"; }
+
+# the TV's country (two letters, lower case) from the settings service, once per watcher run: at most 3 tries, one a pass, then the fallback
+# countries alone
+lg_country() {
+  [ -n "$lgcountry" ] && return 0
+  [ "$lgcountrytries" -ge 3 ] && return 0
+  lgcountrytries=$((lgcountrytries + 1))
+  c=$(to5 luna-send -n 1 luna://com.webos.settingsservice/getSystemSettings '{"category":"option","keys":["smartServiceCountryCode2"]}' \
+    </dev/null 2>/dev/null | sed -n 's/.*"smartServiceCountryCode2"[[:space:]]*:[[:space:]]*"\([A-Za-z][A-Za-z]\)".*/\1/p' | tr 'A-Z' 'a-z')
+  case "$c" in [a-z][a-z]) lgcountry=$c; echo "$(date +%T) hosts: TV country $c" >> "$LOG" ;; esac
+  return 0
+}
+
+# the LG names this list blocks now, one per line, no duplicates: the firmware servers only while the Homebrew Channel blocks updates.
+# With "all", every name it may ever write (the firmware servers too), which is what it owns and takes out again.
+lg_block_names() {
+  { for n in $LG_BLOCK_ADS; do echo "$n"; done
+    if [ "$1" = all ] || [ -e "$HBC_BLOCK_FLAG" ]; then for n in $LG_BLOCK_FIRMWARE; do echo "$n"; done; fi
+    for n in $LG_BLOCK_REGIONAL; do echo "$n"; for p in $LG_BLOCK_PREFIXES $LG_BLOCK_COUNTRIES $lgcountry; do echo "$p.$n"; done; done
+  } | awk '!s[$0]++'
+}
+
+# the owner's hosts-extra lines: only "0.0.0.0 <name>" or ":: <name>" are ever taken, so a stray line cannot point a name somewhere real
+hosts_extra() {
+  [ -f "$EXTRA" ] && grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | awk '{print $1" "$2}'
+  return 0
+}
+
+# every line the block should hold: "0.0.0.0 <name>" and ":: <name>" for each LG name (none with no-lg-block), then hosts-extra.
+# HOSTS_ALL_OFF (stop_watch.sh) wants nothing at all.
+hosts_want() {
+  [ -n "$HOSTS_ALL_OFF" ] && return 0
+  { if [ ! -e "$NOLGBLOCK_FLAG" ]; then lg_block_names | while IFS= read -r n; do echo "0.0.0.0 $n"; echo ":: $n"; done; fi
+    hosts_extra; } | awk '!s[$0]++'
+}
+
+# writes to $1 what $HOSTS should hold: every line of it that is not this watcher's, as it is (localhost, the Homebrew Channel's 127.0.0.1
+# update lines, another tool's or hook's lines, a 0.0.0.0 line added by hand), each ended with a newline (a file whose last line has none is
+# not glued to the next), then the block of wanted lines between HOSTS_BEGIN and HOSTS_END. This watcher's lines are the block, and nothing
+# outside it, whatever name it holds: only when the file has no whole block left (its markers were edited away) does a line outside it that
+# is exactly one this watcher last wrote ($HOSTS_OURS) count as ours. A wanted name that a line of another family-mate already answers
+# (127.0.0.1 for a v4 name) is left out: the first line wins in a hosts file, so ours would do nothing.
+# Returns 3 when the file holds nothing of this watcher's and nothing is wanted: then it is not touched.
+hosts_build() {
+  HH_WANT=$(hosts_want) HH_OURS=$(cat "$HOSTS_OURS" 2>/dev/null) HH_B=$HOSTS_BEGIN HH_E=$HOSTS_END \
+  awk 'BEGIN { B = ENVIRON["HH_B"]; E = ENVIRON["HH_E"]; n = split(ENVIRON["HH_OURS"], o, "\n"); for (i = 1; i <= n; i++) if (o[i] != "") ours[o[i]] = 1 }
+    FNR == NR { if ($0 == B) b = 1; else if (b && $0 == E) closed = 1; next }
+    $0 == B && closed { inb = 1; drop++; next }
+    inb { if ($0 == E) inb = 0; drop++; next }
+    !closed && ($0 in ours) { drop++; next }
+    { l = $0; sub(/#.*/, "", l); k = split(l, f, /[ \t]+/); m = 0
+      for (i = 1; i <= k; i++) if (f[i] != "") g[++m] = f[i]
+      for (i = 2; i <= m; i++) seen[((g[1] ~ /:/) ? 6 : 4) " " g[i]] = 1
+      keep[++nk] = $0 }
+    END { n = split(ENVIRON["HH_WANT"], w, "\n"); nw = 0
+      for (i = 1; i <= n; i++) { if (w[i] == "") continue; split(w[i], x, " "); if (!((((x[1] ~ /:/) ? 6 : 4) " " x[2]) in seen)) out[++nw] = w[i] }
+      if (!drop && !nw) exit 3
+      printf "" > OUT
+      for (i = 1; i <= nk; i++) print keep[i] > OUT
+      if (nw) { print B > OUT; for (i = 1; i <= nw; i++) print out[i] > OUT; print E > OUT } }' OUT="$1" "$HOSTS" "$HOSTS"
+}
+
+# the lines of the block in $1 (what hosts_build wrote), for $HOSTS_OURS
+hosts_block_of() {
+  HH_B=$HOSTS_BEGIN HH_E=$HOSTS_END awk 'inb && $0 == ENVIRON["HH_E"] { exit } inb { print } $0 == ENVIRON["HH_B"] { inb = 1 }' "$1" 2>/dev/null
+}
+
+# exact match on the mount point (field 2), not a pattern, so a bind is never taken for another and never stacked
+hosts_bound() { awk -v p="$HOSTS" '$2 == p { f = 1 } END { exit !f }' "${HOMEHOOK_MOUNTS:-/proc/mounts}" 2>/dev/null; }
+
+# the file on $HOSTS is $HOSTS_TABLE itself (the same device and inode), which is what this watcher's bind gives. /proc/mounts cannot say
+# whose a bind is: for a bind its first field is the device the table lives on (/dev/mmcblk0p.. for /var), never the table's path.
+hosts_is_table() {
+  hit_a=$(stat -L -c '%d:%i' "$HOSTS" 2>/dev/null) && hit_b=$(stat -L -c '%d:%i' "$HOSTS_TABLE" 2>/dev/null) && [ "$hit_a" = "$hit_b" ]
+}
+
+hosts_log() { [ "$hostslast" = "$1" ] || echo "$(date +%T) hosts: $2" >> "$LOG"; hostslast=$1; }
+
+# one writer of $HOSTS at a time: a watcher's pass, and stop_watch.sh (which waits for the watcher to be gone, then takes this lock too).
+# With flock, a lock on $HOSTS_LOCK.f held on fd 9, let go when it is closed or its holder dies. Without it, a folder made mode 700 (mkdir
+# is atomic) holding the holder's pid. As single_instance does, it is taken over only when that pid is gone, or is alive but not a
+# watch.sh or stop_watch.sh (the pid was reused); a live writer is waited for, however long it has held it. Never by its age or the clock:
+# the wait is counted in tries (one a second, HOSTS_LOCK_SECS of them), so a clock step can neither steal it nor end the wait early. A lock
+# with no pid yet is being made: waited for two tries, then taken over. Taking over moves it aside (run_aside), never rm -r.
+hosts_lock_live() {
+  [ -n "$1" ] && kill -0 "$1" 2>/dev/null && tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q 'watch\.sh'
+}
+hosts_lock_steal() {
+  run_aside "$HOSTS_LOCK" || return 1
+  rm -f "$ra/${HOSTS_LOCK##*/}/pid"; rmdir "$ra/${HOSTS_LOCK##*/}" "$ra" 2>/dev/null
+  return 0
+}
+hosts_lock() {
+  hl_n=0; hl_nopid=0
+  while :; do
+    if [ -n "$HOSTS_FLOCK" ]; then
+      # a failed redirection on exec would end the shell: the file is made first, and a folder that cannot hold it gives up here
+      { : >> "$HOSTS_LOCK.f"; } 2>/dev/null || return 1
+      exec 9>> "$HOSTS_LOCK.f"
+      "$HOSTS_FLOCK" -n 9 2>/dev/null && return 0
+      exec 9>&-
+    elif mkdir -m 700 "$HOSTS_LOCK" 2>/dev/null; then
+      echo $$ > "$HOSTS_LOCK/pid"; return 0
+    else
+      hl_pid=$(cat "$HOSTS_LOCK/pid" 2>/dev/null)
+      if [ -z "$hl_pid" ]; then hl_nopid=$((hl_nopid + 1)); fi
+      if { [ -n "$hl_pid" ] && ! hosts_lock_live "$hl_pid"; } || [ "$hl_nopid" -gt 2 ]; then
+        hl_nopid=0
+        # each takeover is a try too: a lock that keeps coming back ends the wait like any other
+        if hosts_lock_steal; then hl_n=$((hl_n + 1)); [ "$hl_n" -le "$HOSTS_LOCK_SECS" ] && continue; return 1; fi
+      fi
+    fi
+    hl_n=$((hl_n + 1))
+    [ "$hl_n" -le "$HOSTS_LOCK_SECS" ] || return 1
+    sleep 1
+  done
+}
+# lets go of the lock only if it is still this process's: a lock someone else holds now is never removed
+hosts_unlock() {
+  if [ -n "$HOSTS_FLOCK" ]; then exec 9>&-
+  elif [ "$(cat "$HOSTS_LOCK/pid" 2>/dev/null)" = "$$" ]; then rm -f "$HOSTS_LOCK/pid" && rmdir "$HOSTS_LOCK" 2>/dev/null; fi
+  return 0
+}
+
+# $1 has a localhost line: an address, then "localhost" as one of its names (comments left out)
+hosts_has_localhost() {
+  awk '{ sub(/#.*/, ""); for (i = 2; i <= NF; i++) if ($i == "localhost") f = 1 } END { exit !f }' "$1" 2>/dev/null
+}
+# $1 has a localhost line, and every line of it that names localhost is still a line of $2 (never true of a file with none)
+hosts_localhost_kept() {
+  hosts_has_localhost "$1" && awk 'FILENAME == ARGV[1] { l = $0; sub(/#.*/, "", l); n = split(l, f)
+      for (i = 2; i <= n; i++) if (f[i] == "localhost") want[$0] = 1; next }
+    { delete want[$0] } END { for (k in want) exit 1; exit 0 }' "$1" "$2" 2>/dev/null
+}
+
+# runs "$@" with TERM, INT and HUP held off: one that comes meanwhile is acted on once it is done (the lock let go, then exit), so a stop
+# (stop_watch.sh, the app's watcher restart) never lands between /etc/hosts being cut to nothing and being written. KILL cannot be held
+# off: hosts_recover puts the file back on the next pass.
+hosts_unkillable() {
+  hu_sig=""
+  trap 'hu_sig=1' TERM INT HUP
+  "$@"; hu_r=$?
+  trap - TERM INT HUP
+  if [ -n "$hu_sig" ]; then hosts_unlock; exit 143; fi
+  return $hu_r
+}
+
+# How /etc/hosts is rewritten. It has to be written in place (cat >: the same inode, never mv, as app jails bind /etc/hosts into
+# themselves), so the write itself cannot be atomic; everything around it is kept to two files and two rules:
+#  - $HOSTS_BAK is the one known-good copy: a whole file with a localhost line. It only ever changes by mv of a $HOSTS_BAK.part that was
+#    compared byte for byte with $HOSTS, has a localhost line and was synced (with the 5 s limit; a failed or timed-out sync promotes
+#    nothing). A .part left over is never read, only removed.
+#  - $HOSTS_WRITING exists (made, then synced, before $HOSTS is opened) for as long as $HOSTS may be half written.
+# hosts_recover, before every pass: with $HOSTS_WRITING there, or with no localhost line left in $HOSTS (emptied, cut short), $HOSTS_BAK is
+# written back. Otherwise $HOSTS is left as it is, whatever it holds: a hand edit is never rolled back.
+HOSTS_WRITING=$RUN/hosts.writing
+
+# $HOSTS (with a localhost line) into $HOSTS_BAK, by the rule above. 0 the copy is there; 1 it could not be made
+hosts_backup() {
+  hosts_has_localhost "$HOSTS" || return 1
+  cmp -s "$HOSTS" "$HOSTS_BAK" 2>/dev/null && return 0
+  rm -f "$HOSTS_BAK.part"
+  if { cat "$HOSTS" > "$HOSTS_BAK.part"; } 2>/dev/null && cmp -s "$HOSTS_BAK.part" "$HOSTS" && hosts_has_localhost "$HOSTS_BAK.part" \
+    && to5 sync && mv -f "$HOSTS_BAK.part" "$HOSTS_BAK"; then return 0; fi
+  rm -f "$HOSTS_BAK.part"; return 1
+}
+
+# $1 into $HOSTS in place. Never when $1 would drop a localhost line $HOSTS has; only with the known-good copy made and $HOSTS_WRITING
+# synced first. If the result is not $1 byte for byte (a short write, a full disk), $HOSTS_BAK is written back. 0 written; 1 it cannot be
+# written (read-only, or not opened: nothing changed); 2 written wrong and put back; 3 written wrong and not even put back ($HOSTS_BAK holds
+# it, and $HOSTS_WRITING stays, so the next pass tries again); 4 no good copy could be made, nothing written; 5 $1 would lose a localhost
+# line, nothing written.
+hosts_write_now() {
+  [ -w "$HOSTS" ] || return 1
+  hosts_has_localhost "$HOSTS" || return 4
+  hosts_localhost_kept "$HOSTS" "$1" || return 5
+  hosts_backup || return 4
+  { : > "$HOSTS_WRITING"; } 2>/dev/null && to5 sync || { rm -f "$HOSTS_WRITING"; return 4; }
+  { cat "$1" > "$HOSTS"; } 2>/dev/null; hw_r=$?
+  if [ "$hw_r" -eq 0 ] && cmp -s "$1" "$HOSTS"; then to5 sync; rm -f "$HOSTS_WRITING"; return 0; fi
+  if [ "$hw_r" -ne 0 ] && cmp -s "$HOSTS_BAK" "$HOSTS"; then rm -f "$HOSTS_WRITING"; return 1; fi
+  if { cat "$HOSTS_BAK" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK" "$HOSTS"; then to5 sync; rm -f "$HOSTS_WRITING"; return 2; fi
+  return 3
+}
+hosts_write() { hosts_unkillable hosts_write_now "$1"; }
+
+# 0 nothing to do, or put back; 1 it had to be put back and could not be (the pass stops there)
+hosts_recover_now() {
+  # hosts.bak.new: an older build's copy, which may itself be cut short; never trusted
+  rm -f "$HOSTS_BAK.part" "$HOSTS_BAK.new"
+  if [ -f "$HOSTS_WRITING" ]; then hr_why="was left half written"
+  elif ! hosts_has_localhost "$HOSTS"; then hr_why="has no localhost line"
+  else return 0; fi
+  if ! hosts_has_localhost "$HOSTS_BAK"; then
+    rm -f "$HOSTS_WRITING"
+    hosts_log recovernone "$HOSTS $hr_why and there is no good copy to put back"; return 0
+  fi
+  if { cat "$HOSTS_BAK" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK" "$HOSTS"; then
+    to5 sync; rm -f "$HOSTS_WRITING"
+    hosts_log recovered "$HOSTS $hr_why: put back from ${HOSTS_BAK##*/}"; return 0
+  fi
+  hosts_log recoverfail "$HOSTS $hr_why and could not be put back from $HOSTS_BAK"; return 1
+}
+hosts_recover() { hosts_unkillable hosts_recover_now; }
+
+# keeps /etc/hosts as hosts_build says (from the main loop, about every 30 s, and so again after every boot), under hosts_lock. Written in
+# place (hosts_write) and only when its bytes would change, so a table on flash is not written every pass. Where /etc/hosts can be written
+# (the Homebrew Channel's table on /var bound over it, a tmpfs bind, a writable rootfs), that is all: lines this list no longer wants
+# (no-lg-block, a name gone from hosts-extra) go on the next pass. Where it cannot (the read-only rootfs, nothing bound), the new content
+# goes into $HOSTS_TABLE, bound over it, as Glasshouse and the Homebrew Channel do; the bind lives in memory, so a reboot gives the stock
+# file back. A failed bind is tried again only after HOSTS_RETRY. When nothing is wanted any more and the mount on /etc/hosts is still this
+# watcher's own bind (hosts_is_table), it is taken off (umount), which gives back what was under it; a mount there that is not (someone
+# else's, over or instead of ours) is never taken off: the mark is dropped and that file is rebuilt in place like any other.
+hosts_sync() {
+  lg_country
+  hosts_lock || { hosts_log locked "$HOSTS is being written by another (lock $HOSTS_LOCK), this pass skipped"; return 1; }
+  hosts_sync_locked; hs_r=$?
+  hosts_unlock
+  return $hs_r
+}
+hosts_sync_locked() {
+  unbind=""
+  hosts_recover || return 1
+  if [ -f "$HOSTS_BOUND_MARK" ]; then
+    if ! hosts_bound || ! hosts_is_table; then
+      rm -f "$HOSTS_BOUND_MARK"
+      hosts_bound && hosts_log foreign "the mount on $HOSTS is not this watcher's bind of $HOSTS_TABLE: left as it is"
+    elif [ -z "$(hosts_want)" ]; then
+      if to5 umount "$HOSTS" 2>/dev/null; then rm -f "$HOSTS_BOUND_MARK" "$HOSTS_OURS" "$HOSTS_BAK" "$HOSTS_WRITING"; hosts_log unbound "nothing to block, $HOSTS_TABLE taken off $HOSTS"; return 0; fi
+      unbind=failed   # the mark stays, so the next pass tries the umount again
+    fi
+  fi
+  tmp=$RUN/hosts.new
+  hosts_build "$tmp" 2>/dev/null; r=$?
+  if [ "$r" -eq 3 ] || { [ "$r" -eq 0 ] && cmp -s "$tmp" "$HOSTS"; }; then
+    rm -f "$tmp"
+    if [ "$r" -eq 3 ]; then rm -f "$HOSTS_OURS"; elif [ ! -f "$HOSTS_OURS" ]; then hosts_block_of "$HOSTS" > "$HOSTS_OURS"; fi
+    if [ -n "$unbind" ]; then hosts_log unbindfail "could not take $HOSTS_TABLE off $HOSTS; nothing of this watcher's is left in it"
+    elif [ "$r" -eq 0 ]; then hostslast=ok; fi
+    return 0
+  fi
+  if [ "$r" -ne 0 ]; then rm -f "$tmp"; hosts_log buildfail "could not read $HOSTS or write $tmp"; return 1; fi
+  hosts_write "$tmp"; w=$?
+  case "$w" in
+    0) hosts_block_of "$tmp" > "$HOSTS_OURS"; rm -f "$tmp"
+       if [ -n "$unbind" ]; then hosts_log unbindfail "could not take $HOSTS_TABLE off $HOSTS, emptied it in place instead"
+       else hosts_log written "$HOSTS rebuilt in place"; fi
+       return 0 ;;
+    2) rm -f "$tmp"; hosts_log restored "$HOSTS came out wrong (a short write): put back as it was"; return 1 ;;
+    3) rm -f "$tmp"; hosts_log broken "$HOSTS came out wrong and could not be put back: the old file is in $HOSTS_BAK, tried again next pass"; return 1 ;;
+    4) rm -f "$tmp"; hosts_log nobackup "could not make a good copy of $HOSTS in $HOSTS_BAK (no localhost line, or the copy or sync failed), so it is not rewritten"; return 1 ;;
+    5) rm -f "$tmp"; hosts_log wouldlose "the rebuilt $HOSTS would lose a localhost line: not written"; return 1 ;;
+  esac
+  if [ -n "$unbind" ]; then
+    rm -f "$tmp"; hosts_log unbindstuck "could not take $HOSTS_TABLE off $HOSTS, nor rewrite it (read-only): its lines stay, tried again in 30 s"
+    return 1
+  fi
+  if hosts_bound; then rm -f "$tmp"; hosts_log stuck "$HOSTS is bound and cannot be written, left as it is"; return 1; fi
+  now5=$(date +%s)
+  if [ "$hostsfailat" -gt 0 ] && [ $((now5 - hostsfailat)) -lt "$HOSTS_RETRY" ]; then rm -f "$tmp"; return 1; fi
+  { cmp -s "$tmp" "$HOSTS_TABLE" || { cat "$tmp" > "$HOSTS_TABLE" && to5 sync; }; } 2>/dev/null && chmod 644 "$HOSTS_TABLE" 2>/dev/null \
+    && mount --bind "$HOSTS_TABLE" "$HOSTS" 2>/dev/null
+  r=$?
+  if [ "$r" -eq 0 ]; then
+    hosts_block_of "$tmp" > "$HOSTS_OURS"; : > "$HOSTS_BOUND_MARK"; hostsfailat=0; hosts_log bound "$HOSTS read-only, $HOSTS_TABLE bound over it"
+  else hostsfailat=$now5; hosts_log failed "could not bind $HOSTS_TABLE over $HOSTS, next try in $HOSTS_RETRY s"; fi
+  rm -f "$tmp"
+  return $r
+}
+
+# ---- the web app debugger (debugger_guard) ----------------------------------------------------------------------------------------------
+# Developer Mode, which the root keeps on (its boot script starts the Homebrew Channel), opens WebAppMgr's DevTools on port 9998 to the whole
+# network with no login, and through it anyone on the network can run code in an app on screen, the Homebrew Channel's included, whose
+# service runs as root. Copied from Glasshouse (server/lib/devtools.js, MIT): one rule drops the port on every interface but loopback, so
+# ssh -L 19998:127.0.0.1:9998 (tools/tv/cdp.mjs, ares-inspect through a tunnel) still reaches it, and nothing else (ssh on 22, Luna, the
+# Homebrew Channel) is touched. The rule lives in memory: checked with -C, and added (-I) only when -C says it is not there (exit 1), so a
+# pass never stacks a second copy, and added again after a boot by the first pass. Any other answer from -C (a timeout, the xtables lock,
+# no table) says nothing: nothing is added, and the family is logged as not known, never as closed. With /var/lib/homehook/debugger-open
+# every copy of the rule is taken out instead (ares-inspect straight from a computer).
+# Each call has the 5 s limit. A family whose call fails while the kernel has no filter table for it (/proc/net/ip_tables_names,
+# ip6_tables_names, as Glasshouse checks) has no firewall: it is not tried again until the watcher restarts. IPv4 closed with IPv6 open is
+# "partial" in the log, never "closed".
+DEBUGGER_RULE="INPUT -p tcp --dport 9998 ! -i lo -j DROP"
+PROC_NET=${HOMEHOOK_PROC_NET:-/proc/net}
+dbgnofw=""        # families found with no firewall in this kernel
+ipt_tools() {
+  for n in iptables ip6tables; do for d in $IPT_DIRS; do [ -x "$d/$n" ] && { echo "$d/$n"; break; }; done; done
+}
+ipt_fam() { case "${1##*/}" in ip6tables) echo IPv6 ;; *) echo IPv4 ;; esac; }
+ipt_table() { if [ "$(ipt_fam "$1")" = IPv6 ]; then echo "$PROC_NET/ip6_tables_names"; else echo "$PROC_NET/ip_tables_names"; fi; }
+# -C as xtables answers it: 0 the rule is in $1, 1 it is not. Anything else (124 or 143 a timeout, 4 the lock, 3 no table) is neither.
+ipt_check() { to5 $1 -C $DEBUGGER_RULE 2>/dev/null; }
+# every copy of the rule out of $1 (one stacked by an older build is taken too): -D until -C says 1. 0 none left (iro_gone: how many
+# were taken out), 2 a -D failed, 3 -C gave no answer (a copy may still be there)
+ipt_rule_out() {
+  iro_gone=0
+  while [ "$iro_gone" -lt 32 ]; do
+    ipt_check $1; iro_c=$?
+    [ "$iro_c" -eq 1 ] && return 0
+    [ "$iro_c" -eq 0 ] || return 3
+    to5 $1 -D $DEBUGGER_RULE 2>/dev/null || return 2
+    iro_gone=$((iro_gone + 1))
+  done
+  return 2
+}
+debugger_guard() {
+  tools=$(ipt_tools)
+  if [ -e "$DEBUGGER_FLAG" ]; then
+    st=open
+    for t in $tools; do
+      ipt_rule_out $t
+      case $? in
+        0) ;;
+        2) st="open, but the rule is still in $t" ;;
+        *) [ -e "$(ipt_table $t)" ] && st="open, but $t did not answer: the rule may still be in it" ;;
+      esac
+    done
+  elif [ ! -e "$DEVMODE_FLAG" ]; then
+    st=off   # without Developer Mode webOS does not open the port (a file or, on some TVs, a folder)
+  else
+    held=""; failed=""; nofw=""; unk=""
+    for f in IPv4 IPv6; do
+      t=""; for x in $tools; do [ "$(ipt_fam "$x")" = "$f" ] && t=$x; done
+      case " $dbgnofw " in *" $f "*) nofw="$nofw $f"; continue ;; esac
+      [ "$f" = IPv6 ] && tbl=$PROC_NET/ip6_tables_names || tbl=$PROC_NET/ip_tables_names
+      if [ -z "$t" ]; then dbgnofw="$dbgnofw $f"; nofw="$nofw $f"; continue; fi
+      ipt_check $t; dg_c=$?
+      if [ "$dg_c" -eq 0 ] || { [ "$dg_c" -eq 1 ] && to5 $t -I $DEBUGGER_RULE 2>/dev/null; }; then held="$held $f"
+      elif [ ! -e "$tbl" ]; then dbgnofw="$dbgnofw $f"; nofw="$nofw $f"
+      elif [ "$dg_c" -eq 1 ]; then failed="$failed $f"
+      else unk="$unk $f"; fi
+    done
+    open="$failed$nofw"
+    if [ -z "$open$unk" ]; then st=closed
+    elif [ -z "$held$failed$unk" ]; then st="nofirewall (no iptables, or no ip_tables in this kernel: port 9998 stays OPEN to the network)"
+    elif [ -z "$held$open" ]; then st="unknown (iptables did not answer on$unk; tried again in 30 s)"
+    elif [ -z "$held" ]; then st="failed (still OPEN on$open${unk:+, not known on$unk}; tried again in 30 s)"
+    else st="partial (closed on$held${open:+, still OPEN on$open}${nofw:+, no firewall for$nofw}${unk:+, not known on$unk: iptables did not answer})"; fi
+  fi
+  [ "$st" = "$dbglast" ] || echo "$(date +%T) debugger: port 9998 $st" >> "$LOG"
+  dbglast=$st
+}
+
 case "$0" in */watch-key) home_key; exit 0 ;; esac
 # tools/test/watch.test.mjs sources this file for its functions only
 [ -n "$WATCH_SH_LIB" ] && return 0
@@ -1148,18 +1543,14 @@ while true; do
       fi
     fi
   fi
-  # keep the extra blocked names in /etc/hosts (about every 30 s; the dashboard rewrites the table at boot)
   ticks=$((ticks + 1))
   [ $((ticks % 5)) -eq 1 ] && { sync_home_key; owned inputhook_check "$now"; }
   [ $((ticks % 300)) -eq 2 ] && trim_log "$IH_LOG"
   [ $((ticks % 5)) -eq 3 ] && saver_leftover
   [ $((ticks % 30)) -eq 15 ] && owned self_update "$now"
-  if [ $((ticks % 30)) -eq 1 ] && [ -f "$EXTRA" ]; then
-    # only "0.0.0.0 <name>" or ":: <name>" lines are ever copied, so a stray line in the file cannot point a name somewhere real
-    grep -E '^(0\.0\.0\.0|::)[[:space:]]+[A-Za-z0-9.-]+[[:space:]]*$' "$EXTRA" | while IFS= read -r l; do
-      ! grep -qF "$l" /etc/hosts 2>/dev/null && echo "$l" >> /etc/hosts
-    done
-  fi
+  # LG's ad and telemetry hosts and hosts-extra kept in /etc/hosts, and port 9998 closed to the network: the first pass after a boot, then
+  # about every 30 s, so a table or a rule something else took away comes back
+  [ $((ticks % 30)) -eq 1 ] && { owned hosts_sync; owned debugger_guard; }
   # faster ticks while a wake is open, so Lumen goes up as soon as the TV lets it (webOS 4's busybox sleep takes whole seconds: usleep)
   slept=$(date +%s)
   if [ "$now" -lt "$wakeuntil" ]; then usleep 500000 2>/dev/null || sleep 1; else sleep 1; fi

@@ -1,3 +1,4 @@
-# Extra names blocked on this TV, kept in /etc/hosts by watch.sh (the dashboard rebuilds its own table at boot and would drop hand edits).
-# One name per line as "0.0.0.0 <name>" and ":: <name>"; watch.sh copies nothing else. Empty for now: the old list was JioHotstar's ad hosts
-# from the previous TV. Fill it from a capture of what this TV actually calls.
+# Extra names blocked on this TV, on top of the LG ad and telemetry list built into watch.sh (hosts_sync, from Glasshouse's ads tier).
+# Not shipped in the build: copy it by hand to /var/lib/homehook/hosts-extra. One name per line as "0.0.0.0 <name>" and ":: <name>";
+# watch.sh takes nothing else, and keeps them in its block in /etc/hosts; a line taken out here leaves /etc/hosts on the next pass.
+# /var/lib/homehook/no-lg-block turns the built-in list off and keeps only these lines.
