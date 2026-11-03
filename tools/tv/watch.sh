@@ -44,6 +44,11 @@
 #    (networkinput, which Input Hook does not see). The bind is removed again when home-takeover goes, with /var/lib/homehook/no-home-key, or
 #    by stop_watch.sh. A bind on 773 that is not ours is never touched. If Input Hook stops working, Home reaches LG again and the log
 #    path (NL_HOME_SHOWN) below takes over as before.
+#  - Two more Input Hook binds, kept by sync_remote_keys every 5 s (with or without home-takeover), each only while it is wanted and only when
+#    nobody else has bound that key: the Netflix key (1037) opens Moonfin (org.moonfin.webos) instead of Netflix while Moonfin is installed
+#    (off: /var/lib/homehook/no-netflix-moonfin); the colour keys red, green, yellow, blue (398 to 401) POST {"key":"red"} and so on to a
+#    Home Assistant webhook while its id is in /var/lib/homehook/ha-webhook-id (root only, written by tools/set_ha_webhook.sh; never in this
+#    repo and never logged). No id file: the colour keys are not bound and reach apps as before. Both run this file as watch-key <key>.
 #  - Input Hook injects itself into lginput2 once per boot; if lginput2 restarts, the hook is gone. Every 5 s the watcher checks lginput2 for
 #    the hook (libphp in its maps) and re-injects it (inputhook_check: at most once a minute, 5 times a boot), logging "Input Hook
 #    re-injected". LG's bar shown with no Home key before it is logged as a warning, with lginput2's hook state.
@@ -89,6 +94,14 @@ HOMEKEY_SH=/var/lib/homehook/home-key.sh
 HOMEKEY_RUN=/var/lib/homehook/watch-key
 # the bind, exactly as written (and looked for) in keybinds.json
 HOMEKEY_BIND='"773":{"action":"exec","command":"/bin/sh /var/lib/homehook/home-key.sh"}'
+# the Netflix key opens Moonfin, and the colour keys call a Home Assistant webhook (sync_remote_keys, remote_key). Key ids are LG Input Hook's
+# (uinput codes, as Home's 773): Netflix 1037, red 398, green 399, yellow 400, blue 401 ("Button IDs.md" in Simon34545/lginputhook).
+MOONFIN=org.moonfin.webos
+NONETFLIX_FLAG=/var/lib/homehook/no-netflix-moonfin
+HA_ID_FILE=${HOMEHOOK_HA_ID_FILE:-/var/lib/homehook/ha-webhook-id}
+HA_URL=${HOMEHOOK_HA_URL:-http://192.168.253.244:8123}
+REMOTE_KEYS="netflix:1037 red:398 green:399 yellow:400 blue:401"
+remote_bind() { echo "\"$2\":{\"action\":\"exec\",\"command\":\"/bin/sh /var/lib/homehook/watch-key $1\"}"; }
 # The watcher's own state and its log, written as root: in RUN, a folder only root can write (run_dir), never as a name in /tmp itself, where
 # any user could have put a link first and had root write through it (truncating or appending to a root file).
 # this watcher's uid (root's 0 on the TV; the tests run it as themselves). A busybox without id: 0, as the watcher only ever runs as root
@@ -118,6 +131,7 @@ last=0
 okhome=0
 ticks=0
 hostslast=""      # what hosts_sync last logged
+halast=""         # whether sync_remote_keys last saw a webhook id (logged when it changes)
 dbglast=""        # what debugger_guard last logged
 saverlast=0
 pwprev=""
@@ -648,37 +662,98 @@ sync_home_key() {
   [ -f "$KEYBINDS" ] || return 0
   want=0
   [ -f "$TAKEOVER_FLAG" ] && [ ! -f "$NOHOMEKEY_FLAG" ] && want=1
-  cur=$(cat "$KEYBINDS" 2>/dev/null)
-  case "$cur" in *"$HOMEKEY_BIND"*) have=1 ;; *) have=0 ;; esac
   if [ "$want" -eq 1 ]; then
     # home-key.sh: runs this file as watch-key; if the watcher was removed (watch.sh gone), the key does LG's own Home
     if [ ! -f "$HOMEKEY_SH" ] || [ ! -L "$HOMEKEY_RUN" ]; then
-      ln -sf watch.sh "$HOMEKEY_RUN"
+      watch_key_link
       printf '%s\n' '#!/bin/sh' '# LG Input Hook runs this for the Home key (bind added by watch.sh; undo: touch /var/lib/homehook/no-home-key).' \
         'export PATH="/bin:/sbin:/usr/bin:/usr/sbin:$PATH"' \
         '[ -f /var/lib/homehook/watch-key ] && exec /bin/sh /var/lib/homehook/watch-key' \
         "exec luna-send -n 1 luna://com.webos.service.networkinput/sendSpecialKey '{\"key\":\"HOME\"}'" > "$HOMEKEY_SH.tmp" \
         && chmod 755 "$HOMEKEY_SH.tmp" && mv "$HOMEKEY_SH.tmp" "$HOMEKEY_SH"
     fi
+  fi
+  kb_set "$want" 773 "$HOMEKEY_BIND" "Home key"
+}
+# adds ($1 = 1) or removes ($1 = 0) one bind of ours ($3, on key $2) in keybinds.json; a bind on that key that is not ours is never touched,
+# and every other bind is kept. $4 names it in the log.
+kb_set() {
+  [ -f "$KEYBINDS" ] || return 0
+  cur=$(cat "$KEYBINDS" 2>/dev/null)
+  case "$cur" in *"$3"*) have=1 ;; *) have=0 ;; esac
+  if [ "$1" -eq 1 ]; then
     [ "$have" -eq 1 ] && return 0
-    case "$cur" in *'"773"'*) return 0 ;; esac
+    case "$cur" in *"\"$2\""*) return 0 ;; esac
     if [ -z "$(printf '%s' "$cur" | tr -d ' \t\r\n{}')" ]; then
-      new="{$HOMEKEY_BIND}"
+      new="{$3}"
     else
-      new=$(printf '%s' "$cur" | awk -v b="$HOMEKEY_BIND" 'BEGIN { d = 0 } { if (!d && (i = index($0, "{")) > 0) { $0 = substr($0, 1, i) b "," substr($0, i + 1); d = 1 } print }')
+      new=$(printf '%s' "$cur" | awk -v b="$3" 'BEGIN { d = 0 } { if (!d && (i = index($0, "{")) > 0) { $0 = substr($0, 1, i) b "," substr($0, i + 1); d = 1 } print }')
     fi
-    printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind added (LG Input Hook)" >> "$LOG"
+    printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) $4 bind added (LG Input Hook)" >> "$LOG"
   elif [ "$have" -eq 1 ]; then
-    new=$(printf '%s' "$cur" | homekey_unbind)
-    printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) Home key bind removed" >> "$LOG"
+    new=$(printf '%s' "$cur" | kb_unbind "$3")
+    printf '%s\n' "$new" > "$KEYBINDS.tmp" && mv "$KEYBINDS.tmp" "$KEYBINDS" && echo "$(date +%T) $4 bind removed" >> "$LOG"
   fi
 }
 
-# keybinds.json text (stdin) without our Home bind and its comma (stdout). Also used by tools/tv/stop_watch.sh, which sources this file.
-homekey_unbind() {
-  awk -v b="$HOMEKEY_BIND" '{ while ((i = index($0, b ",")) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
+watch_key_link() { [ -L "$HOMEKEY_RUN" ] || ln -sf watch.sh "$HOMEKEY_RUN"; }
+# the Netflix key and the colour keys (see the top of this file): bound only while wanted, the colour keys only while the webhook id is there
+sync_remote_keys() {
+  [ -f "$KEYBINDS" ] || return 0
+  rk_has=0
+  ha_id >/dev/null && rk_has=1
+  if [ "$rk_has" != "$halast" ]; then
+    if [ "$rk_has" -eq 1 ]; then rk_m="webhook id found, colour keys bound"; else rk_m="no webhook id in $HA_ID_FILE, colour keys not bound"; fi
+    echo "$(date +%T) colour keys: $rk_m" >> "$LOG"
+    halast=$rk_has
+  fi
+  for rk in $REMOTE_KEYS; do
+    rk_k=${rk%%:*}
+    case "$rk_k" in
+      netflix) rk_w=0; [ ! -f "$NONETFLIX_FLAG" ] && [ -d "$APPS/$MOONFIN" ] && rk_w=1 ;;
+      *) rk_w=$rk_has ;;
+    esac
+    [ "$rk_w" -eq 1 ] && watch_key_link
+    kb_set "$rk_w" "${rk#*:}" "$(remote_bind "$rk_k" "${rk#*:}")" "$rk_k key"
+  done
+}
+# prints the Home Assistant webhook id from HA_ID_FILE (a plain file, letters, digits, - and _ only); fails when there is none. Never logged.
+ha_id() {
+  [ -f "$HA_ID_FILE" ] && [ ! -h "$HA_ID_FILE" ] || return 1
+  hi=$(head -n 1 "$HA_ID_FILE" 2>/dev/null | tr -d ' \t\r')
+  case "$hi" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
+  printf '%s' "$hi"
+}
+# a Netflix or colour key from LG Input Hook (watch-key <key>). Returns at once: the webhook call runs in the background, 3 s at most, no retry.
+remote_key() {
+  export PATH="/bin:/sbin:/usr/bin:/usr/sbin:$PATH"
+  run_dir
+  case "$1" in
+    netflix)
+      r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$MOONFIN\"}" </dev/null 2>&1)
+      echo "$(date +%T) Netflix key -> Moonfin: $r" >> "$LOG" ;;
+    red|green|yellow|blue)
+      id=$(ha_id) || { echo "$(date +%T) $1 key: no webhook id, nothing sent" >> "$LOG"; return 0; }
+      # the URL goes to curl on stdin (-K -), so the id is never on a command line (ps) or in the log; only the HTTP status is logged
+      ( c=$(printf 'url = "%s/api/webhook/%s"\n' "$HA_URL" "$id" | curl -s -o /dev/null -w '%{http_code}' -m 3 -X POST \
+          -H 'Content-Type: application/json' -d "{\"key\":\"$1\"}" -K - 2>/dev/null) || c="failed${c:+ ($c)}"
+        echo "$(date +%T) $1 key -> Home Assistant: $c" >> "$LOG" ) </dev/null >/dev/null 2>&1 &
+      ;;
+  esac
+}
+# keybinds.json text (stdin) without bind $1 and its comma (stdout)
+kb_unbind() {
+  awk -v b="$1" '{ while ((i = index($0, b ",")) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
     while ((i = index($0, "," b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b) + 1);
     while ((i = index($0, b)) > 0) $0 = substr($0, 1, i - 1) substr($0, i + length(b)); print }'
+}
+# keybinds.json text (stdin) without our Home bind (stdout). Also used by tools/tv/stop_watch.sh, which sources this file.
+homekey_unbind() { kb_unbind "$HOMEKEY_BIND"; }
+# the same for the Netflix and colour key binds (stop_watch.sh)
+remotekeys_unbind() {
+  t=$(cat)
+  for rk in $REMOTE_KEYS; do t=$(printf '%s' "$t" | kb_unbind "$(remote_bind "${rk%%:*}" "${rk#*:}")"); done
+  printf '%s\n' "$t"
 }
 # true when our Home bind is in Input Hook's keybinds.json (takeover on, so a Home press should come through home_key)
 home_bind_on() {
@@ -1381,7 +1456,7 @@ debugger_guard() {
   dbglast=$st
 }
 
-case "$0" in */watch-key) home_key; exit 0 ;; esac
+case "$0" in */watch-key) if [ -n "$1" ]; then remote_key "$1"; else home_key; fi; exit 0 ;; esac
 # tools/test/watch.test.mjs sources this file for its functions only
 [ -n "$WATCH_SH_LIB" ] && return 0
 run_dir || exit 0
@@ -1544,7 +1619,7 @@ while true; do
     fi
   fi
   ticks=$((ticks + 1))
-  [ $((ticks % 5)) -eq 1 ] && { sync_home_key; owned inputhook_check "$now"; }
+  [ $((ticks % 5)) -eq 1 ] && { sync_home_key; sync_remote_keys; owned inputhook_check "$now"; }
   [ $((ticks % 300)) -eq 2 ] && trim_log "$IH_LOG"
   [ $((ticks % 5)) -eq 3 ] && saver_leftover
   [ $((ticks % 30)) -eq 15 ] && owned self_update "$now"

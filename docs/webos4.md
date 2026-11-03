@@ -349,6 +349,20 @@ Now the Home key never reaches the surface manager.
 - **Undo:** `touch /var/lib/homehook/no-home-key` (the watcher takes its bind out within 5 s), or turn off Home opens Lumen, or run
   `tools/tv/stop_watch.sh`, which also removes it.
 
+### Netflix and colour keys (verify)
+
+The same mechanism, in `sync_remote_keys` (every 5 s, with or without `home-takeover`): key 1037 (Netflix) runs `watch-key netflix`, which
+launches `org.moonfin.webos`; keys 398 to 401 (red, green, yellow, blue) run `watch-key <colour>`, which POSTs `{"key":"<colour>"}` to
+`$HA_URL/api/webhook/<id>` with curl in the background (`-m 3`, no retry; the URL goes to curl on stdin, `-K -`, so the id is not on a
+command line) and logs only the HTTP status. The id is read from `/var/lib/homehook/ha-webhook-id` (root, 600; `tools/set_ha_webhook.sh`).
+Netflix is bound only while Moonfin is installed and `no-netflix-moonfin` is absent; the colour keys only while the id file holds a valid id
+(no file: not bound, logged once as `colour keys: no webhook id ...`). A bind on any of these keys that is not ours is left alone.
+
+- **Key ids:** from Input Hook's own `Button IDs.md` (Simon34545/lginputhook), the same table as Home's 773, which was seen working on the C8.
+  Not yet seen on this TV's remote: a Magic Remote may have no colour keys (they then come from the on-screen keypad, which may not pass
+  through `lginput2`), and its Netflix key may send a different id. `/tmp/lginput-hook-lginput2.log` on the TV shows each key's id.
+- **Not checked yet:** that the TV has `curl` (webOS usually does), and that Home Assistant at `HA_URL` answers from the TV.
+
 ## Control Center: Sound and Picture
 
 The choices come from the TV. At the first Control Center opening in a session, `getSystemSettingDesc` (as root) is read for `pictureMode`
