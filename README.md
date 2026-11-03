@@ -66,6 +66,13 @@ TV's own app icons and the Geist font instead.
 - **Home key bind.** With [LG Input Hook](https://github.com/Simon34545/lginputhook) installed, the watcher binds the Home key so it opens
   Lumen or the bar directly, and LG's bar never flashes up. Without Input Hook, Home still works, but the watcher only reacts once LG's home has appeared, so LG's bar shows for a moment. Lumen's
   **LG Home** button still opens LG's own home, for LG's Settings and inputs.
+- **Netflix key opens Moonfin.** With LG Input Hook and Moonfin (`org.moonfin.webos`) installed, the
+  watcher binds the remote's Netflix key (Input Hook id 1037) so it opens Moonfin instead. Off: `touch /var/lib/homehook/no-netflix-moonfin`.
+- **Colour keys call Home Assistant.** With LG Input Hook installed and a webhook id in `/var/lib/homehook/ha-webhook-id`, red, green, yellow
+  and blue (Input Hook ids 398 to 401) each send `POST /api/webhook/<id>` with `{"key":"red"}` (and so on) to Home Assistant, 3 s at most,
+  never retried. The id is a secret: it is never in this repository and never logged. Put it on the TV with `npm run set-ha-webhook` (it
+  reads `HA_WEBHOOK_ID` or asks without echoing, and sends it over SSH's stdin). Without the file the colour keys are not bound and reach
+  apps as before. The Home Assistant address is `HA_URL` in [tools/tv/watch.sh](tools/tv/watch.sh).
 - **Screensaver.** It starts after a set time on the home screen or from the Control Center. It can also replace the TV's own
   screensaver: turn on **Use Lumen's screensaver**, which reads **Use my photos** once Immich is set up. Without Immich it shows Lumen's
   built-in wallpapers. With an [Immich](docs/immich.md) server it can show your photos instead.
@@ -113,8 +120,10 @@ The watcher also blocks LG's ad and telemetry servers and closes the web app deb
 To undo:
 
 - **Turn off the Home key bind only:** `touch /var/lib/homehook/no-home-key`. The bind is gone within 5 s.
+- **Netflix key back to Netflix:** `touch /var/lib/homehook/no-netflix-moonfin`. **Colour keys off:** `npm run set-ha-webhook -- --remove`.
+  Each bind is gone within 5 s.
 - **Give LG's home back:** turn off Settings > Home Screen > **Home opens Lumen**.
-- **Stop the watcher altogether:** run [tools/tv/stop_watch.sh](tools/tv/stop_watch.sh). It waits until the watcher has ended, then also removes the key bind, every copy of the port 9998 rule and the watcher's block in `/etc/hosts`.
+- **Stop the watcher altogether:** run [tools/tv/stop_watch.sh](tools/tv/stop_watch.sh). It waits until the watcher has ended, then also removes the key binds (Home, Netflix, colour keys), every copy of the port 9998 rule and the watcher's block in `/etc/hosts`.
 - **Stop blocking LG's hosts:** `touch /var/lib/homehook/no-lg-block`. The LG lines leave `/etc/hosts` on the watcher's next pass (within
   30 s; the watcher's own bind, if it made one and it is still there, is taken off when nothing else is wanted; a mount
   over `/etc/hosts` that is not the watcher's is never taken off). Delete the file to block them again.

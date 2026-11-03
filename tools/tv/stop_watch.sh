@@ -48,3 +48,7 @@ if [ -f "$K" ] && grep -qF "$HOMEKEY_BIND" "$K"; then
     echo "$W is an older watcher: open Lumen once (it updates the watcher), then run this again to remove the Home key bind"
   fi
 fi
+# and the Netflix and colour key binds (watch.sh remotekeys_unbind), so those keys reach LG and the apps again
+if [ -f "$K" ] && command -v remotekeys_unbind >/dev/null 2>&1 && grep -qF '/var/lib/homehook/watch-key ' "$K"; then
+  remotekeys_unbind < "$K" > "$K.tmp" && mv "$K.tmp" "$K" && echo "Netflix and colour key binds removed"
+fi
