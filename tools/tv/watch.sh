@@ -46,9 +46,11 @@
 #    path (NL_HOME_SHOWN) below takes over as before.
 #  - Two more Input Hook binds, kept by sync_remote_keys every 5 s (with or without home-takeover), each only while it is wanted and only when
 #    nobody else has bound that key: the Netflix key (1037) opens Moonfin (org.moonfin.webos) instead of Netflix while Moonfin is installed
-#    (off: /var/lib/homehook/no-netflix-moonfin); the colour keys red, green, yellow, blue (398 to 401) POST {"key":"red"} and so on to a
-#    Home Assistant webhook while its id is in /var/lib/homehook/ha-webhook-id (root only, written by tools/set_ha_webhook.sh; never in this
-#    repo and never logged). No id file: the colour keys are not bound and reach apps as before. Both run this file as watch-key <key>.
+#    (off: /var/lib/homehook/no-netflix-moonfin). Moonfin already in front is never relaunched (a relaunch drops it to its home screen and
+#    stops the player): the key does nothing there, or closes Lumen bar when the bar is up over it. The colour keys red, green, yellow, blue
+#    (398 to 401) POST {"key":"red"} and so on to a Home Assistant webhook while its id is in /var/lib/homehook/ha-webhook-id (root only,
+#    written by tools/set_ha_webhook.sh; never in this repo and never logged). No id file: the colour keys are not bound and reach apps as
+#    before. Both run this file as watch-key <key>.
 #  - Input Hook injects itself into lginput2 once per boot; if lginput2 restarts, the hook is gone. Every 5 s the watcher checks lginput2 for
 #    the hook (libphp in its maps) and re-injects it (inputhook_check: at most once a minute, 5 times a boot), logging "Input Hook
 #    re-injected". LG's bar shown with no Home key before it is logged as a warning, with lginput2's hook state.
@@ -730,6 +732,19 @@ remote_key() {
   run_dir
   case "$1" in
     netflix)
+      # Moonfin answers every relaunch with its home screen and drops the player (App.js handleRelaunch), so it is not relaunched when it
+      # is already in front: with Lumen bar up over it (an overlay, never the app in front) the bar is closed as Home does, else nothing
+      fg=$(lsend luna://com.webos.applicationManager/getForegroundAppInfo '{}' </dev/null 2>/dev/null | sed -n 's/.*"appId": *"\([^"]*\)".*/\1/p')
+      if [ "$fg" = "$MOONFIN" ]; then
+        if bar_shown_at >/dev/null; then
+          r=$(lsend luna://com.webos.applicationManager/closeByAppId "{\"id\":\"$BAR\"}" </dev/null 2>&1 | tr -d ' \n')
+          case "$r" in *'"returnValue":true'*) up_cs > "$BAR_CLOSED_AT"; rm -f "$AMBIENT_ON"; saver_backlight_restore ;; esac
+          echo "$(date +%T) Netflix key over Moonfin: Lumen bar closed: $r" >> "$LOG"
+        else
+          echo "$(date +%T) Netflix key: Moonfin already in front, nothing to do" >> "$LOG"
+        fi
+        return 0
+      fi
       r=$(lsend luna://com.webos.applicationManager/launch "{\"id\":\"$MOONFIN\"}" </dev/null 2>&1)
       echo "$(date +%T) Netflix key -> Moonfin: $r" >> "$LOG" ;;
     red|green|yellow|blue)
