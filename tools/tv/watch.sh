@@ -1027,7 +1027,9 @@ HOSTS_BEGIN="# >>> Lumen watcher (watch.sh hosts_sync): rebuilt about every 30 s
 HOSTS_END="# <<< Lumen watcher"
 HOSTS_RETRY=1800  # seconds before a bind that failed is tried again (each try would write the table on flash)
 HOSTS_OURS=${HOMEHOOK_HOSTS_OURS:-$RUN/hosts.ours}   # the block's lines as this watcher last wrote them (hosts_build)
-HOSTS_BAK=$RUN/hosts.bak      # the known-good copy of /etc/hosts, as it was before this watcher's last rewrite of it (hosts_write)
+# the known-good copy of /etc/hosts and the "being written" mark are on flash next to the other state, not in RUN (tmpfs): a power cut
+# during the write must not take them with it, as it leaves /etc/hosts itself cut short
+HOSTS_BAK=${HOMEHOOK_HOSTS_BAK:-/var/lib/homehook/hosts.bak}   # a whole /etc/hosts this watcher wrote and synced (hosts_write)
 HOSTS_LOCK=$RUN/hosts.lock    # one writer of /etc/hosts at a time (hosts_lock)
 HOSTS_LOCK_SECS=${HOMEHOOK_HOSTS_LOCK_SECS:-10}   # how many one-second tries a pass waits for that lock before it skips
 HOSTS_FLOCK=${HOMEHOOK_FLOCK-$(command -v flock 2>/dev/null)}   # flock where busybox has it, else the mkdir lock
@@ -1189,13 +1191,16 @@ hosts_unkillable() {
 # themselves), so the write itself cannot be atomic; everything around it is kept to two files and two rules:
 #  - $HOSTS_BAK is the one known-good copy: a whole file with a localhost line. It only ever changes by mv of a $HOSTS_BAK.part that was
 #    compared byte for byte with $HOSTS, has a localhost line and was synced (with the 5 s limit; a failed or timed-out sync promotes
-#    nothing). A .part left over is never read, only removed.
-#  - $HOSTS_WRITING exists (made, then synced, before $HOSTS is opened) for as long as $HOSTS may be half written.
+#    nothing). A .part left over is never read, only removed. It is taken from $HOSTS only right after this watcher's own write of it
+#    came out whole and synced; from whatever $HOSTS holds only when there is no good copy at all yet (the first write).
+#  - $HOSTS_WRITING exists (made, then synced, before $HOSTS is opened) for as long as $HOSTS may be half written: it goes only once the
+#    sync after the write returned 0.
 # hosts_recover, before every pass: with $HOSTS_WRITING there, or with no localhost line left in $HOSTS (emptied, cut short), $HOSTS_BAK is
 # written back. Otherwise $HOSTS is left as it is, whatever it holds: a hand edit is never rolled back.
-HOSTS_WRITING=$RUN/hosts.writing
+HOSTS_WRITING=${HOMEHOOK_HOSTS_WRITING:-/var/lib/homehook/hosts.writing}
+HOSTS_BAK_OLD=$RUN/hosts.bak.new   # an older build's copy of /etc/hosts from before its write (hosts_recover)
 
-# $HOSTS (with a localhost line) into $HOSTS_BAK, by the rule above. 0 the copy is there; 1 it could not be made
+# $HOSTS (with a localhost line) into $HOSTS_BAK, by the rule above: only for a first write, with no good copy yet. 0 the copy is there; 1 not
 hosts_backup() {
   hosts_has_localhost "$HOSTS" || return 1
   cmp -s "$HOSTS" "$HOSTS_BAK" 2>/dev/null && return 0
@@ -1214,20 +1219,34 @@ hosts_write_now() {
   [ -w "$HOSTS" ] || return 1
   hosts_has_localhost "$HOSTS" || return 4
   hosts_localhost_kept "$HOSTS" "$1" || return 5
-  hosts_backup || return 4
+  hosts_has_localhost "$HOSTS_BAK" || hosts_backup || return 4
   { : > "$HOSTS_WRITING"; } 2>/dev/null && to5 sync || { rm -f "$HOSTS_WRITING"; return 4; }
   { cat "$1" > "$HOSTS"; } 2>/dev/null; hw_r=$?
-  if [ "$hw_r" -eq 0 ] && cmp -s "$1" "$HOSTS"; then to5 sync; rm -f "$HOSTS_WRITING"; return 0; fi
+  if [ "$hw_r" -eq 0 ] && cmp -s "$1" "$HOSTS"; then
+    # the new good copy, made before the sync that commits the write (one sync for both); kept and the mark cleared only if it returned 0
+    rm -f "$HOSTS_BAK.part"
+    { cat "$HOSTS" > "$HOSTS_BAK.part"; } 2>/dev/null && cmp -s "$HOSTS_BAK.part" "$HOSTS" || rm -f "$HOSTS_BAK.part"
+    if to5 sync; then rm -f "$HOSTS_WRITING"; [ -f "$HOSTS_BAK.part" ] && mv -f "$HOSTS_BAK.part" "$HOSTS_BAK"; fi
+    rm -f "$HOSTS_BAK.part"; return 0
+  fi
   if [ "$hw_r" -ne 0 ] && cmp -s "$HOSTS_BAK" "$HOSTS"; then rm -f "$HOSTS_WRITING"; return 1; fi
-  if { cat "$HOSTS_BAK" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK" "$HOSTS"; then to5 sync; rm -f "$HOSTS_WRITING"; return 2; fi
+  if { cat "$HOSTS_BAK" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK" "$HOSTS"; then to5 sync && rm -f "$HOSTS_WRITING"; return 2; fi
   return 3
 }
 hosts_write() { hosts_unkillable hosts_write_now "$1"; }
 
-# 0 nothing to do, or put back; 1 it had to be put back and could not be (the pass stops there)
+# 0 nothing to do, or put back; 1 it had to be put back and could not be; 2 put back from an older build's copy (both stop the pass, so
+# nothing is built on that file or copied from it before the next)
 hosts_recover_now() {
-  # hosts.bak.new: an older build's copy, which may itself be cut short; never trusted
-  rm -f "$HOSTS_BAK.part" "$HOSTS_BAK.new"
+  rm -f "$HOSTS_BAK.part"
+  # hosts.bak.new (ecf96ed): /etc/hosts as it was before that build's write, which may have been cut short with no mark. With a localhost
+  # line it is that write's pre-image and is put back; without one it is dropped
+  if [ -f "$HOSTS_BAK_OLD" ]; then
+    if ! hosts_has_localhost "$HOSTS_BAK_OLD"; then rm -f "$HOSTS_BAK_OLD"
+    elif { cat "$HOSTS_BAK_OLD" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK_OLD" "$HOSTS" && to5 sync; then
+      rm -f "$HOSTS_BAK_OLD"; hosts_log recoveredold "$HOSTS put back from ${HOSTS_BAK_OLD##*/} (an older build's copy)"; return 2
+    else hosts_log recoverfail "$HOSTS could not be put back from $HOSTS_BAK_OLD"; return 1; fi
+  fi
   if [ -f "$HOSTS_WRITING" ]; then hr_why="was left half written"
   elif ! hosts_has_localhost "$HOSTS"; then hr_why="has no localhost line"
   else return 0; fi
@@ -1236,7 +1255,7 @@ hosts_recover_now() {
     hosts_log recovernone "$HOSTS $hr_why and there is no good copy to put back"; return 0
   fi
   if { cat "$HOSTS_BAK" > "$HOSTS"; } 2>/dev/null && cmp -s "$HOSTS_BAK" "$HOSTS"; then
-    to5 sync; rm -f "$HOSTS_WRITING"
+    to5 sync && rm -f "$HOSTS_WRITING"
     hosts_log recovered "$HOSTS $hr_why: put back from ${HOSTS_BAK##*/}"; return 0
   fi
   hosts_log recoverfail "$HOSTS $hr_why and could not be put back from $HOSTS_BAK"; return 1
