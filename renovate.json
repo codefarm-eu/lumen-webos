@@ -1,42 +1,70 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "ignorePresets": [
+    "replacements:all"
   ],
   "timezone": "Europe/London",
   "schedule": [
-    "before 6am on the first day of the month"
+    "* 0-5 1 * *"
   ],
+  "updateNotScheduled": false,
   "automerge": false,
-  "dependencyDashboard": {
-    "enabled": true
-  },
   "prConcurrentLimit": 2,
+  "prHourlyLimit": 2,
+  "minimumReleaseAge": "7 days",
   "lockFileMaintenance": {
     "enabled": false
   },
+  "vulnerabilityAlerts": {
+    "automerge": false
+  },
+  "major": {
+    "dependencyDashboardApproval": true
+  },
   "packageRules": [
     {
+      "description": "All npm (app/, tools/): one monthly PR; majors split off and wait for Dashboard approval",
       "matchManagers": [
         "npm"
       ],
-      "groupName": "npm dependencies",
-      "schedule": [
-        "before 6am on the first day of the month"
-      ],
-      "separateMajorMinor": false,
-      "automerge": false
+      "groupName": "npm dependencies"
     },
     {
+      "description": "All Actions incl. setup-node node-version: one monthly PR; majors wait for approval",
       "matchManagers": [
         "github-actions"
       ],
-      "groupName": "github-actions",
-      "schedule": [
-        "before 6am on the first day of the month"
+      "groupName": "github-actions"
+    },
+    {
+      "description": "0.x minors are breaking (babel-plugin-polyfill-corejs3 drives the Chromium 53 polyfills): own branch, approval only",
+      "matchManagers": [
+        "npm"
       ],
-      "separateMajorMinor": false,
-      "automerge": false
+      "matchCurrentVersion": "<1.0.0",
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "groupName": "npm 0.x minor",
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Vite 8 drops its esbuild dependency (app/vite.config.ts imports esbuild) and lowers syntax via Rolldown/Oxc; chrome53 unverified",
+      "matchPackageNames": [
+        "vite"
+      ],
+      "allowedVersions": "<8"
+    },
+    {
+      "description": "@preact/preset-vite 2.x peers @babel/core 7.x",
+      "matchPackageNames": [
+        "@babel/core"
+      ],
+      "allowedVersions": "<8"
     }
   ]
 }
