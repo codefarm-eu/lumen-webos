@@ -719,8 +719,11 @@ test('syncBar: the run lock stays in data/, and only a lock that is not this scr
 	assert.equal(runSync(own, {sig: 'own', json, icons, roots: app, hook: ownHook}), 'written');
 	assert.equal(read(join(own, 'data', 'sig')), 'own\n');
 	assert.equal(gone(ownLock), true);
-	const scriptPid = spawn('sh', ['-c', '# lumen-bar-sync\nsleep 60'], {stdio: 'ignore'});
-	const binPid = spawn('/bin/sh', ['-c', '# lumen-bar-sync\nsleep 60'], {stdio: 'ignore'});
+	// trap : EXIT, as the real script does, so busybox ash does not exec sleep and
+	// replace /proc/pid/cmdline (the lock only counts a pid whose cmdline starts
+	// with `sh -c # lumen-bar-sync`).
+	const scriptPid = spawn('sh', ['-c', '# lumen-bar-sync\ntrap : EXIT\nsleep 60'], {stdio: 'ignore'});
+	const binPid = spawn('/bin/sh', ['-c', '# lumen-bar-sync\ntrap : EXIT\nsleep 60'], {stdio: 'ignore'});
 	const buried = spawn('sh', ['-c', 'sleep 60 # lumen-bar-sync'], {stdio: 'ignore'});
 	try {
 		const cm = execFileSync('sh', ['-c', `tr '\\0' ' ' < /proc/${scriptPid.pid}/cmdline`], {encoding: 'utf8'});
