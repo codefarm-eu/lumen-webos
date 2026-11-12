@@ -2,5 +2,41 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "timezone": "Europe/London",
+  "schedule": [
+    "before 6am on the first day of the month"
+  ],
+  "automerge": false,
+  "dependencyDashboard": {
+    "enabled": true
+  },
+  "prConcurrentLimit": 2,
+  "lockFileMaintenance": {
+    "enabled": false
+  },
+  "packageRules": [
+    {
+      "matchManagers": [
+        "npm"
+      ],
+      "groupName": "npm dependencies",
+      "schedule": [
+        "before 6am on the first day of the month"
+      ],
+      "separateMajorMinor": false,
+      "automerge": false
+    },
+    {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github-actions",
+      "schedule": [
+        "before 6am on the first day of the month"
+      ],
+      "separateMajorMinor": false,
+      "automerge": false
+    }
   ]
 }
