@@ -1,6 +1,7 @@
 import {chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {dirname, join, normalize, resolve} from 'node:path';
+import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {defineConfig, loadEnv, type Plugin} from 'vite';
 import preact from '@preact/preset-vite';
@@ -23,6 +24,14 @@ const REPO_ROOT = resolve(APP_DIR, '..');
 const BROWSER_TARGET = 'chrome53';
 const BROWSERSLIST = ['chrome 53'];
 
+const require = createRequire(import.meta.url);
+const CORE_JS_VERSION = (() => {
+	const raw = String((require('core-js/package.json') as {version: string}).version);
+	const m = /^(\d+)\.(\d+)/.exec(raw);
+	if (!m) throw new Error(`core-js version ${raw} is not major.minor.patch`);
+	return `${m[1]}.${m[2]}`;
+})();
+
 /** core-js for what the finished bundle uses and Chromium 53 lacks (String#padStart, Promise#finally, ...). Babel only reads the bundle to
  *  find them (usage-global, no syntax changes); they are bundled into one small script put in front of the app, so they are in place before
  *  any app code runs. Web APIs core-js has no polyfill for (ResizeObserver, backdrop-filter) are feature-tested in lib/compat.ts instead. */
@@ -40,7 +49,7 @@ function polyfills (): Plugin {
 				if (file.type !== 'chunk' || !file.isEntry) continue;
 				const found = await transformAsync(file.code, {
 					configFile: false, babelrc: false, sourceType: 'script', compact: true, code: true,
-					plugins: [['polyfill-corejs3', {method: 'usage-global', version: '3.51', targets: {chrome: '53'}}]]
+					plugins: [['polyfill-corejs3', {method: 'usage-global', version: CORE_JS_VERSION, targets: {chrome: '53'}}]]
 				});
 				const mods = Array.from(new Set(((found && found.code) || '').match(/core-js\/modules\/[\w.-]+\.js/g) || [])).filter((m) => !SKIP_POLYFILL.test(m)).sort();
 				if (!mods.length) continue;
